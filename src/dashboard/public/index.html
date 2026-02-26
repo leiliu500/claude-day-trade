@@ -1,0 +1,114 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Day Trade Dashboard</title>
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <header>
+    <h1>📈 Day Trade Dashboard</h1>
+    <div id="status-bar">
+      <span id="last-updated">Loading...</span>
+      <span id="auto-refresh">🔄 Auto-refresh: 30s</span>
+    </div>
+  </header>
+
+  <main>
+    <!-- Summary Cards -->
+    <section class="cards">
+      <div class="card" id="card-positions">
+        <h3>Open Positions</h3>
+        <div class="card-value" id="val-positions">—</div>
+      </div>
+      <div class="card" id="card-pnl">
+        <h3>Today P&amp;L</h3>
+        <div class="card-value" id="val-pnl">—</div>
+      </div>
+      <div class="card" id="card-signals">
+        <h3>Signals Today</h3>
+        <div class="card-value" id="val-signals">—</div>
+      </div>
+      <div class="card" id="card-grade">
+        <h3>Last Grade</h3>
+        <div class="card-value" id="val-grade">—</div>
+      </div>
+    </section>
+
+    <!-- Tab navigation -->
+    <nav class="tabs">
+      <button class="tab active" data-tab="positions">Positions</button>
+      <button class="tab" data-tab="signals">Signals</button>
+      <button class="tab" data-tab="decisions">Decisions</button>
+      <button class="tab" data-tab="evaluations">Evaluations</button>
+      <button class="tab" data-tab="orders">Orders</button>
+    </nav>
+
+    <!-- Tab content -->
+    <section id="tab-positions" class="tab-content active">
+      <table id="tbl-positions">
+        <thead>
+          <tr>
+            <th>Symbol</th><th>Side</th><th>Qty</th>
+            <th>Entry</th><th>Stop</th><th>TP</th><th>Opened</th>
+          </tr>
+        </thead>
+        <tbody></tbody>
+      </table>
+    </section>
+
+    <section id="tab-signals" class="tab-content">
+      <table id="tbl-signals">
+        <thead>
+          <tr>
+            <th>Time</th><th>Ticker</th><th>Direction</th>
+            <th>Alignment</th><th>Confidence</th><th>Trigger</th>
+            <th>Winner</th><th>Entry</th><th>R:R</th>
+          </tr>
+        </thead>
+        <tbody></tbody>
+      </table>
+    </section>
+
+    <section id="tab-decisions" class="tab-content">
+      <table id="tbl-decisions">
+        <thead>
+          <tr>
+            <th>Time</th><th>Ticker</th><th>Decision</th>
+            <th>Confirms</th><th>Confidence</th><th>Execute</th><th>Reasoning</th>
+          </tr>
+        </thead>
+        <tbody></tbody>
+      </table>
+    </section>
+
+    <section id="tab-evaluations" class="tab-content">
+      <table id="tbl-evaluations">
+        <thead>
+          <tr>
+            <th>Date</th><th>Ticker</th><th>Grade</th>
+            <th>Score</th><th>Outcome</th><th>P&amp;L</th>
+            <th>Duration</th><th>Lessons</th>
+          </tr>
+        </thead>
+        <tbody></tbody>
+      </table>
+    </section>
+
+    <section id="tab-orders" class="tab-content">
+      <table id="tbl-orders">
+        <thead>
+          <tr>
+            <th>Time</th><th>Symbol</th><th>Side</th>
+            <th>Qty</th><th>Price</th><th>Fill</th><th>Status</th>
+          </tr>
+        </thead>
+        <tbody></tbody>
+      </table>
+    </section>
+  </main>
+
+  <script src="/app.js"></script>
+</body>
+</html>
