@@ -46,6 +46,7 @@ export async function submitLimitBuyOrder(
   const res = await fetch(`${config.ALPACA_BASE_URL}/v2/orders`, {
     method: 'POST',
     headers: headers(),
+    signal: AbortSignal.timeout(15_000),
     body: JSON.stringify({
       symbol,
       qty: String(qty),
@@ -75,6 +76,7 @@ export async function submitMarketSellOrder(
     const res = await fetch(`${config.ALPACA_BASE_URL}/v2/orders`, {
       method: 'POST',
       headers: headers(),
+      signal: AbortSignal.timeout(15_000),
       body: JSON.stringify({
         symbol,
         qty: String(qty),
@@ -100,7 +102,7 @@ export async function submitMarketSellOrder(
 export async function cancelOpenOrdersForSymbol(symbol: string): Promise<void> {
   const res = await fetch(
     `${config.ALPACA_BASE_URL}/v2/orders?status=open&symbols=${encodeURIComponent(symbol)}`,
-    { headers: authHeaders() },
+    { headers: authHeaders(), signal: AbortSignal.timeout(10_000) },
   );
   if (!res.ok) return;
 
@@ -109,6 +111,7 @@ export async function cancelOpenOrdersForSymbol(symbol: string): Promise<void> {
     await fetch(`${config.ALPACA_BASE_URL}/v2/orders/${order.id}`, {
       method: 'DELETE',
       headers: authHeaders(),
+      signal: AbortSignal.timeout(10_000),
     }).catch(() => {}); // ignore if already filled/cancelled
   }
 }
@@ -119,7 +122,7 @@ export async function closeAlpacaPosition(symbol: string): Promise<AlpacaOrderRe
 
   const res = await fetch(
     `${config.ALPACA_BASE_URL}/v2/positions/${encodeURIComponent(symbol)}`,
-    { method: 'DELETE', headers: authHeaders() },
+    { method: 'DELETE', headers: authHeaders(), signal: AbortSignal.timeout(15_000) },
   );
 
   // 404 = order was never filled, no position to close — treat as success
@@ -141,7 +144,7 @@ export async function reduceAlpacaPosition(
   try {
     const res = await fetch(
       `${config.ALPACA_BASE_URL}/v2/positions/${encodeURIComponent(symbol)}?qty=${qty}`,
-      { method: 'DELETE', headers: authHeaders() },
+      { method: 'DELETE', headers: authHeaders(), signal: AbortSignal.timeout(15_000) },
     );
 
     if (!res.ok) return { error: await res.text() };
@@ -157,7 +160,7 @@ export async function getAlpacaOrder(orderId: string): Promise<AlpacaOrder | nul
   try {
     const res = await fetch(
       `${config.ALPACA_BASE_URL}/v2/orders/${orderId}`,
-      { headers: authHeaders() },
+      { headers: authHeaders(), signal: AbortSignal.timeout(10_000) },
     );
     if (!res.ok) return null;
     return (await res.json()) as AlpacaOrder;
@@ -171,7 +174,7 @@ export async function getAlpacaPositionPrices(): Promise<Map<string, number>> {
   try {
     const res = await fetch(
       `${config.ALPACA_BASE_URL}/v2/positions`,
-      { headers: authHeaders() },
+      { headers: authHeaders(), signal: AbortSignal.timeout(10_000) },
     );
     if (!res.ok) return new Map();
 

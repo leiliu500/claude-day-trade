@@ -22,6 +22,12 @@ function fmt(val, decimals = 2) {
   return parseFloat(val).toFixed(decimals);
 }
 
+function fmtPct(val, decimals = 1) {
+  if (val === null || val === undefined) return '—';
+  const n = parseFloat(val) * 100;
+  return (n >= 0 ? '+' : '') + n.toFixed(decimals) + '%';
+}
+
 function fmtPnl(val) {
   if (val === null || val === undefined) return '—';
   const n = parseFloat(val);
@@ -55,11 +61,19 @@ async function loadPositions() {
     <tr>
       <td><code>${p.option_symbol}</code></td>
       <td class="${p.option_right}">${p.option_right?.toUpperCase()}</td>
+      <td>${p.strike ? '$' + fmt(p.strike, 0) : '—'}</td>
+      <td>${p.expiration ? fmtDate(p.expiration) : '—'}</td>
       <td>${p.qty}</td>
       <td>$${fmt(p.entry_price)}</td>
-      <td>$${p.current_stop ? fmt(p.current_stop) : '—'}</td>
-      <td>$${p.current_tp ? fmt(p.current_tp) : '—'}</td>
+      <td>${p.current_stop ? '$' + fmt(p.current_stop) : '—'}</td>
+      <td>${p.current_tp ? '$' + fmt(p.current_tp) : '—'}</td>
+      <td>${p.conviction_score ?? '—'}</td>
+      <td>${p.conviction_tier ?? '—'}</td>
+      <td class="${p.direction ?? ''}">${p.direction ?? '—'}</td>
+      <td class="decision-${p.decision_type}">${p.decision_type ?? '—'}</td>
+      <td>${p.confirmation_count ?? '—'}</td>
       <td>${fmtTime(p.opened_at)}</td>
+      <td class="reasoning" title="${p.entry_reasoning || ''}">${p.entry_reasoning || '—'}</td>
     </tr>
   `);
   setRows('tbl-positions', rows);
@@ -72,17 +86,24 @@ async function loadSignals() {
     <tr>
       <td>${fmtTime(s.created_at)}</td>
       <td><b>${s.ticker}</b></td>
+      <td>${s.profile}</td>
       <td class="${s.direction}">${s.direction}</td>
       <td>${s.alignment}</td>
       <td>${(parseFloat(s.confidence) * 100).toFixed(0)}%</td>
+      <td>${s.confidence_meets_threshold ? '✅' : '—'}</td>
       <td>${s.triggered_by}</td>
-      <td>${s.selected_right?.toUpperCase() ?? '—'}</td>
+      <td class="${s.selected_right ?? ''}">${s.selected_right?.toUpperCase() ?? '—'}</td>
+      <td><code>${s.selected_symbol ?? '—'}</code></td>
       <td>${s.entry_premium ? '$' + fmt(s.entry_premium) : '—'}</td>
+      <td>${s.stop_premium ? '$' + fmt(s.stop_premium) : '—'}</td>
+      <td>${s.tp_premium ? '$' + fmt(s.tp_premium) : '—'}</td>
       <td>${s.risk_reward ? fmt(s.risk_reward) : '—'}</td>
+      <td>${s.spread_pct ? fmt(s.spread_pct, 1) + '%' : '—'}</td>
+      <td>${s.option_liquidity_ok ? '✅' : '—'}</td>
     </tr>
   `);
   setRows('tbl-signals', rows);
-  document.getElementById('val-signals').textContent = data.signals?.length ?? 0;
+  document.getElementById('val-signals').textContent = data.total_today ?? 0;
 }
 
 async function loadDecisions() {
@@ -91,9 +112,12 @@ async function loadDecisions() {
     <tr>
       <td>${fmtTime(d.created_at)}</td>
       <td><b>${d.ticker}</b></td>
+      <td>${d.profile}</td>
+      <td class="${d.direction ?? ''}">${d.direction ?? '—'}</td>
       <td class="decision-${d.decision_type}"><b>${d.decision_type}</b></td>
       <td>${d.confirmation_count}</td>
       <td>${d.orchestration_confidence ? (parseFloat(d.orchestration_confidence) * 100).toFixed(0) + '%' : '—'}</td>
+      <td>${d.urgency ?? '—'}</td>
       <td>${d.should_execute ? '✅' : '—'}</td>
       <td class="reasoning" title="${d.reasoning || ''}">${d.reasoning || '—'}</td>
     </tr>
@@ -107,11 +131,18 @@ async function loadEvaluations() {
     <tr>
       <td>${fmtDate(e.evaluated_at)}</td>
       <td><b>${e.ticker}</b></td>
+      <td><code>${e.option_symbol ?? '—'}</code></td>
       <td class="grade-${e.evaluation_grade}">${e.evaluation_grade}</td>
       <td>${e.evaluation_score}</td>
-      <td>${e.outcome}</td>
+      <td class="${e.outcome === 'WIN' ? 'bullish' : e.outcome === 'LOSS' ? 'bearish' : ''}">${e.outcome}</td>
       <td>${fmtPnl(e.pnl_total)}</td>
-      <td>${e.hold_duration_min}m</td>
+      <td>${e.pnl_pct !== null && e.pnl_pct !== undefined ? fmtPct(e.pnl_pct) : '—'}</td>
+      <td>${e.entry_price ? '$' + fmt(e.entry_price) : '—'}</td>
+      <td>${e.exit_price ? '$' + fmt(e.exit_price) : '—'}</td>
+      <td>${e.hold_duration_min != null ? e.hold_duration_min + 'm' : '—'}</td>
+      <td>${e.signal_quality ?? '—'}</td>
+      <td>${e.timing_quality ?? '—'}</td>
+      <td>${e.risk_management_quality ?? '—'}</td>
       <td class="reasoning" title="${e.lessons_learned || ''}">${e.lessons_learned || '—'}</td>
     </tr>
   `);
@@ -131,12 +162,17 @@ async function loadOrders() {
   const rows = (data.orders || []).map(o => `
     <tr>
       <td>${fmtTime(o.submitted_at)}</td>
+      <td><b>${o.ticker}</b></td>
       <td><code>${o.option_symbol}</code></td>
-      <td>${o.order_side}</td>
+      <td class="${o.order_side === 'buy' ? 'bullish' : 'bearish'}">${o.order_side}</td>
+      <td>${o.order_type ?? '—'}</td>
       <td>${o.submitted_qty}</td>
+      <td>${o.filled_qty ?? '—'}</td>
       <td>${o.submitted_price ? '$' + fmt(o.submitted_price) : '—'}</td>
       <td>${o.fill_price ? '$' + fmt(o.fill_price) : '—'}</td>
       <td>${o.alpaca_status ?? '—'}</td>
+      <td>${o.filled_at ? fmtTime(o.filled_at) : '—'}</td>
+      <td class="${o.error_message ? 'bearish' : ''}" title="${o.error_message || ''}">${o.error_message ? '⚠ ' + o.error_message.slice(0, 30) : '—'}</td>
     </tr>
   `);
   setRows('tbl-orders', rows);

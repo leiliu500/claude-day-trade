@@ -2,6 +2,7 @@ import OpenAI from 'openai';
 import { v4 as uuidv4 } from 'uuid';
 import { config } from '../config.js';
 import { loadSkill } from '../utils/skill-loader.js';
+import { checkFomcWindow } from '../lib/fomc-calendar.js';
 import type { SignalPayload } from '../types/signal.js';
 import type { OptionEvaluation } from '../types/options.js';
 import type { AnalysisResult } from '../types/analysis.js';
@@ -68,6 +69,7 @@ export class DecisionOrchestrator {
   async run(input: OrchestratorInput): Promise<DecisionResult> {
     const { signal, option, analysis, context, timeGateOk } = input;
     const { isEodWindow, minutesToClose } = computeEodWindow();
+    const { isFomcWindow, minutesToEvent: fomcMinutesToEvent, eventDescription: fomcEventDescription } = checkFomcWindow(30);
 
     // Build the user message with full context
     const userMessage = JSON.stringify({
@@ -89,6 +91,9 @@ export class DecisionOrchestrator {
       time_gate_ok: timeGateOk,
       is_eod_window: isEodWindow,
       minutes_to_close: minutesToClose,
+      is_fomc_window: isFomcWindow,
+      fomc_minutes_to_event: isFomcWindow ? fomcMinutesToEvent : null,
+      fomc_event_description: isFomcWindow ? fomcEventDescription : null,
       liquidity_ok: option.liquidityOk,
       candidate_pass: option.candidatePass,
       winner_side: option.winner,
@@ -98,6 +103,11 @@ export class DecisionOrchestrator {
       winner_entry: option.winnerCandidate?.entryPremium,
       winner_stop: option.winnerCandidate?.stopPremium,
       winner_tp: option.winnerCandidate?.tpPremium,
+      winner_volume: option.winnerCandidate?.contract.volume,
+      winner_open_interest: option.winnerCandidate?.contract.openInterest,
+      winner_vol_to_oi: (option.winnerCandidate && option.winnerCandidate.contract.openInterest > 0)
+        ? parseFloat((option.winnerCandidate.contract.volume / option.winnerCandidate.contract.openInterest).toFixed(2))
+        : null,
 
       // TF indicators summary
       timeframes: signal.timeframes.map(tf => ({
@@ -180,6 +190,13 @@ export class DecisionOrchestrator {
       rawOutput.decision_type = 'WAIT';
       rawOutput.should_execute = false;
       rawOutput.reasoning = `[EOD GATE] New entries forbidden in EOD window. ${rawOutput.reasoning}`;
+    }
+
+    // FOMC gate: block new entries when an FOMC event is within 30 minutes
+    if (isFomcWindow && (rawOutput.decision_type === 'NEW_ENTRY' || rawOutput.decision_type === 'ADD_POSITION')) {
+      rawOutput.decision_type = 'WAIT';
+      rawOutput.should_execute = false;
+      rawOutput.reasoning = `[FOMC GATE] ${fomcEventDescription} in ${fomcMinutesToEvent} min — new entries forbidden. ${rawOutput.reasoning}`;
     }
 
     // Final safety: override to WAIT if safety gates fail for entry decisions

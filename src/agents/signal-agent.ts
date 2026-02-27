@@ -38,7 +38,7 @@ async function fetchBars(
   url.searchParams.set('adjustment', 'raw');
   url.searchParams.set('feed', 'iex');
 
-  const res = await fetch(url.toString(), { headers });
+  const res = await fetch(url.toString(), { headers, signal: AbortSignal.timeout(20_000) });
   if (!res.ok) {
     throw new Error(`Alpaca bars error ${res.status} for ${ticker} ${timeframe}`);
   }

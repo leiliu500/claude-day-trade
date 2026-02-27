@@ -11,11 +11,11 @@ const openai = new OpenAI({ apiKey: config.OPENAI_API_KEY });
  * Compute deterministic confidence score from signal data.
  * Range: 0.00 – 1.00
  */
-function computeConfidence(signal: SignalPayload, _option: OptionEvaluation): ConfidenceBreakdown {
+function computeConfidence(signal: SignalPayload, option: OptionEvaluation): ConfidenceBreakdown {
   const tfs = signal.timeframes;
   const [ltf, mtf, htf] = tfs;
   if (!ltf || !mtf || !htf) {
-    return { base: 0.40, diSpreadBonus: 0, adxBonus: 0, alignmentBonus: 0, tdAdjustment: 0, total: 0.40 };
+    return { base: 0.40, diSpreadBonus: 0, adxBonus: 0, alignmentBonus: 0, tdAdjustment: 0, oiVolumeBonus: 0, total: 0.40 };
   }
 
   // Base: slight bullish bias
@@ -54,9 +54,34 @@ function computeConfidence(signal: SignalPayload, _option: OptionEvaluation): Co
   }
   tdAdjustment = Math.max(-0.05, Math.min(0.03, tdAdjustment));
 
-  const total = Math.max(0, Math.min(1, base + diSpreadBonus + adxBonus + alignmentBonus + tdAdjustment));
+  // OI/Volume bonus — triggered only when option volume is extremely high.
+  // High volume relative to open interest signals fresh speculative momentum.
+  //   volume >= 1000 AND vol/OI >= 1.0  → +0.05 (volume exceeds all existing OI)
+  //   volume >= 1000 AND vol/OI >= 0.5  → +0.03 (volume is 50%+ of OI)
+  //   volume >= 1000                     → +0.01 (high volume, modest OI ratio)
+  //   volume >= 500                      → +0.01 (moderate-high volume)
+  let oiVolumeBonus = 0;
+  const winner = option.winnerCandidate;
+  if (winner) {
+    const { volume, openInterest } = winner.contract;
+    if (volume >= 1000) {
+      const volToOI = openInterest > 0 ? volume / openInterest : 1;
+      if (volToOI >= 1.0) {
+        oiVolumeBonus = 0.05;
+      } else if (volToOI >= 0.5) {
+        oiVolumeBonus = 0.03;
+      } else {
+        oiVolumeBonus = 0.01;
+      }
+    } else if (volume >= 500) {
+      oiVolumeBonus = 0.01;
+    }
+  }
+  oiVolumeBonus = Math.min(oiVolumeBonus, 0.05);
 
-  return { base, diSpreadBonus, adxBonus, alignmentBonus, tdAdjustment, total };
+  const total = Math.max(0, Math.min(1, base + diSpreadBonus + adxBonus + alignmentBonus + tdAdjustment + oiVolumeBonus));
+
+  return { base, diSpreadBonus, adxBonus, alignmentBonus, tdAdjustment, oiVolumeBonus, total };
 }
 
 /**
@@ -123,6 +148,12 @@ async function generateExplanation(
           stop: option.winnerCandidate.stopPremium,
           tp: option.winnerCandidate.tpPremium,
           rr: option.winnerCandidate.rrRatio?.toFixed(2),
+          volume: option.winnerCandidate.contract.volume,
+          open_interest: option.winnerCandidate.contract.openInterest,
+          vol_to_oi: option.winnerCandidate.contract.openInterest > 0
+            ? (option.winnerCandidate.contract.volume / option.winnerCandidate.contract.openInterest).toFixed(2)
+            : null,
+          oi_volume_bonus: cb.oiVolumeBonus,
         }
       : null,
   };

@@ -31,17 +31,23 @@ export function startDashboard(port: number): void {
     try {
       const pool = getPool();
       const limit = Math.min(parseInt(String(req.query['limit'] ?? '50')), 200);
-      const { rows } = await pool.query(
-        `SELECT id, ticker, profile, direction, alignment, confidence,
-                confidence_meets_threshold, selected_right, selected_symbol,
-                entry_premium, risk_reward, option_liquidity_ok, triggered_by, created_at
-         FROM trading.signal_snapshots
-         WHERE trade_date >= CURRENT_DATE - INTERVAL '7 days'
-         ORDER BY created_at DESC
-         LIMIT $1`,
-        [limit]
-      );
-      res.json({ signals: rows });
+      const [{ rows }, { rows: countRows }] = await Promise.all([
+        pool.query(
+          `SELECT id, ticker, profile, direction, alignment, confidence,
+                  confidence_meets_threshold, selected_right, selected_symbol,
+                  entry_premium, stop_premium, tp_premium, risk_reward,
+                  option_liquidity_ok, spread_pct, triggered_by, created_at
+           FROM trading.signal_snapshots
+           WHERE trade_date >= CURRENT_DATE - INTERVAL '7 days'
+           ORDER BY created_at DESC
+           LIMIT $1`,
+          [limit]
+        ),
+        pool.query(
+          `SELECT COUNT(*)::int AS total FROM trading.signal_snapshots WHERE trade_date = CURRENT_DATE`
+        ),
+      ]);
+      res.json({ signals: rows, total_today: countRows[0]?.total ?? 0 });
     } catch (err) {
       res.status(500).json({ error: (err as Error).message });
     }
@@ -52,8 +58,8 @@ export function startDashboard(port: number): void {
     try {
       const pool = getPool();
       const { rows } = await pool.query(
-        `SELECT id, ticker, profile, decision_type, confirmation_count,
-                orchestration_confidence, should_execute, reasoning, created_at
+        `SELECT id, ticker, profile, direction, decision_type, confirmation_count,
+                orchestration_confidence, urgency, should_execute, reasoning, created_at
          FROM trading.trading_decisions
          WHERE trade_date >= CURRENT_DATE - INTERVAL '7 days'
          ORDER BY created_at DESC

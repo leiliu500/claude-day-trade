@@ -4,6 +4,7 @@ export interface ConfidenceBreakdown {
   adxBonus: number;       // 0 or +0.05
   alignmentBonus: number; // 0, +0.02, +0.05, or +0.10
   tdAdjustment: number;   // -0.05..+0.03
+  oiVolumeBonus: number;  // 0..0.05 — triggered when option volume is extremely high
   total: number;          // clamped 0..1
 }
 

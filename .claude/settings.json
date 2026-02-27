@@ -1,0 +1,17 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(node -e \":*)",
+      "Bash(docker exec day-trade-postgres psql -U trader -d day_trade -c \"DELETE FROM trading._migrations WHERE filename = ''003_view_updates.sql'';\")",
+      "Bash(docker compose build --no-cache orchestrator)",
+      "Bash(docker compose up -d)",
+      "Bash(docker exec day-trade-postgres psql -U trader -d day_trade -c \"\\\\dt trading.scheduler_runs\")",
+      "Bash(docker exec day-trade-postgres psql -U trader -d day_trade -c \"SELECT filename FROM trading._migrations ORDER BY filename;\")",
+      "Bash(docker compose restart orchestrator)",
+      "Bash(docker exec day-trade-orchestrator ls /app/sql/)",
+      "Bash(docker exec day-trade-postgres psql -U trader -d day_trade -c \"SELECT id, run_at, trigger_type, status, skipped_reason, total_duration_ms, jsonb_array_length\\(ticker_runs\\) AS tickers FROM trading.scheduler_runs ORDER BY run_at DESC LIMIT 10;\")",
+      "Bash(docker exec day-trade-postgres psql -U trader -d day_trade -c \"SELECT run_at AT TIME ZONE ''UTC'' AS run_at_utc, status, total_duration_ms, ticker_runs FROM trading.scheduler_runs ORDER BY run_at DESC LIMIT 5;\")",
+      "Bash(docker exec day-trade-orchestrator sh -c 'echo \"\"TOKEN=${TELEGRAM_BOT_TOKEN:0:20}... CHAT=${TELEGRAM_CHAT_ID}\"\"')"
+    ]
+  }
+}

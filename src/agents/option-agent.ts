@@ -134,7 +134,7 @@ export class OptionAgent {
     url.searchParams.set('strike_price_lte', String(strikeMax));
     url.searchParams.set('limit', '50');
 
-    const res = await fetch(url.toString(), { headers: this.headers });
+    const res = await fetch(url.toString(), { headers: this.headers, signal: AbortSignal.timeout(20_000) });
     if (!res.ok) return [];
 
     const data = (await res.json()) as { option_contracts?: AlpacaOptionContract[] };
@@ -148,7 +148,7 @@ export class OptionAgent {
     url.searchParams.set('symbols', symbols.join(','));
     url.searchParams.set('feed', 'indicative');
 
-    const res = await fetch(url.toString(), { headers: this.headers });
+    const res = await fetch(url.toString(), { headers: this.headers, signal: AbortSignal.timeout(20_000) });
     if (!res.ok) return {};
 
     const data = (await res.json()) as { snapshots?: Record<string, AlpacaOptionSnapshot> };

@@ -2,7 +2,11 @@ import cron from 'node-cron';
 import { runPipeline } from './pipeline/trading-pipeline.js';
 import { runDailyCleanup } from './pipeline/daily-cleanup.js';
 import { notifySignalAnalysis, notifyAlert } from './telegram/notifier.js';
-import { config } from './config.js';
+import {
+  insertSchedulerRun,
+  completeSchedulerRun,
+  type TickerRunResult,
+} from './db/repositories/scheduler-runs.js';
 
 // Default AUTO tickers — can be extended via config
 const AUTO_TICKERS: Array<{ ticker: string; profile: 'S' | 'M' | 'L' }> = [
@@ -35,31 +39,79 @@ function msUntilNextBoundary(): number {
 let isRunning = false;
 
 async function runAutoMode(): Promise<void> {
+  const runAt = new Date();
+
   if (isRunning) {
     console.log('[Scheduler] Skipping — previous run still active');
+    void insertSchedulerRun(runAt, 'AUTO', 'SKIPPED', 'PREV_RUN_ACTIVE').catch(() => {});
     return;
   }
 
   isRunning = true;
-  console.log(`[Scheduler] AUTO trigger at ${new Date().toUTCString()}`);
+  console.log(`[Scheduler] AUTO trigger at ${runAt.toUTCString()}`);
 
-  await Promise.allSettled(
-    AUTO_TICKERS.map(async ({ ticker, profile }) => {
-      try {
-        const result = await runPipeline(ticker, profile, 'AUTO');
-        // Only notify if there's something meaningful (not WAIT with no positions)
-        if (result.decision !== 'WAIT' || result.orderSubmitted || result.error) {
-          await notifySignalAnalysis(result);
-        }
-      } catch (err) {
-        const msg = `AUTO run failed for ${ticker}: ${(err as Error).message}`;
-        console.error('[Scheduler]', msg);
-        await notifyAlert(msg);
+  const startMs = Date.now();
+  const tickerRuns: TickerRunResult[] = [];
+  let runId: string | undefined;
+
+  try {
+    runId = await insertSchedulerRun(runAt, 'AUTO', 'RUNNING');
+  } catch (err) {
+    console.error('[Scheduler] Failed to insert scheduler run:', (err as Error).message);
+  }
+
+  // Safety net: force-reset isRunning if the run exceeds 150 s (2.5 min).
+  // This prevents a hung fetch() from blocking all future ticks even after
+  // the per-call AbortSignal.timeout fires.
+  const forceReset = setTimeout(() => {
+    if (isRunning) {
+      console.error('[Scheduler] Run exceeded 150 s — force-resetting isRunning');
+      void notifyAlert('[Scheduler] Tick timed out after 150 s — isRunning force-reset');
+      if (runId) {
+        void completeSchedulerRun(runId, 'TIMEOUT', tickerRuns, Date.now() - startMs).catch(() => {});
       }
-    })
-  );
+      isRunning = false;
+    }
+  }, 150_000);
 
-  isRunning = false;
+  try {
+    await Promise.allSettled(
+      AUTO_TICKERS.map(async ({ ticker, profile }) => {
+        const t0 = Date.now();
+        try {
+          const result = await runPipeline(ticker, profile, 'AUTO');
+          tickerRuns.push({
+            ticker,
+            profile,
+            status: 'ok',
+            decision: result.decision,
+            duration_ms: Date.now() - t0,
+          });
+          // Only notify if there's something meaningful (not WAIT with no positions)
+          if (result.decision !== 'WAIT' || result.orderSubmitted || result.error) {
+            await notifySignalAnalysis(result);
+          }
+        } catch (err) {
+          const msg = `AUTO run failed for ${ticker}: ${(err as Error).message}`;
+          console.error('[Scheduler]', msg);
+          tickerRuns.push({
+            ticker,
+            profile,
+            status: 'error',
+            duration_ms: Date.now() - t0,
+            error: (err as Error).message,
+          });
+          await notifyAlert(msg);
+        }
+      })
+    );
+  } finally {
+    clearTimeout(forceReset);
+    if (runId) {
+      void completeSchedulerRun(runId, 'COMPLETED', tickerRuns, Date.now() - startMs).catch(() => {});
+    }
+    isRunning = false;
+  }
 }
 
 /**

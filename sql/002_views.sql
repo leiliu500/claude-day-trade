@@ -93,6 +93,7 @@ SELECT
   oe.ticker,
   oe.option_symbol,
   oe.order_side,
+  oe.order_type,
   oe.submitted_qty,
   oe.filled_qty,
   oe.submitted_price,

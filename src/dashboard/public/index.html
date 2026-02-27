@@ -55,8 +55,10 @@
       <table id="tbl-positions">
         <thead>
           <tr>
-            <th>Symbol</th><th>Side</th><th>Qty</th>
-            <th>Entry</th><th>Stop</th><th>TP</th><th>Opened</th>
+            <th>Symbol</th><th>Side</th><th>Strike</th><th>Expiry</th>
+            <th>Qty</th><th>Entry</th><th>Stop</th><th>TP</th>
+            <th>Conv</th><th>Tier</th><th>Direction</th><th>Decision</th>
+            <th>Confirms</th><th>Opened</th><th>Reasoning</th>
           </tr>
         </thead>
         <tbody></tbody>
@@ -67,9 +69,10 @@
       <table id="tbl-signals">
         <thead>
           <tr>
-            <th>Time</th><th>Ticker</th><th>Direction</th>
-            <th>Alignment</th><th>Confidence</th><th>Trigger</th>
-            <th>Winner</th><th>Entry</th><th>R:R</th>
+            <th>Time</th><th>Ticker</th><th>Profile</th><th>Direction</th>
+            <th>Alignment</th><th>Confidence</th><th>Thresh?</th><th>Trigger</th>
+            <th>Side</th><th>Symbol</th><th>Entry</th><th>Stop</th><th>TP</th>
+            <th>R:R</th><th>Spread%</th><th>Liq?</th>
           </tr>
         </thead>
         <tbody></tbody>
@@ -80,8 +83,9 @@
       <table id="tbl-decisions">
         <thead>
           <tr>
-            <th>Time</th><th>Ticker</th><th>Decision</th>
-            <th>Confirms</th><th>Confidence</th><th>Execute</th><th>Reasoning</th>
+            <th>Time</th><th>Ticker</th><th>Profile</th><th>Direction</th>
+            <th>Decision</th><th>Confirms</th><th>Confidence</th>
+            <th>Urgency</th><th>Execute</th><th>Reasoning</th>
           </tr>
         </thead>
         <tbody></tbody>
@@ -92,9 +96,10 @@
       <table id="tbl-evaluations">
         <thead>
           <tr>
-            <th>Date</th><th>Ticker</th><th>Grade</th>
-            <th>Score</th><th>Outcome</th><th>P&amp;L</th>
-            <th>Duration</th><th>Lessons</th>
+            <th>Date</th><th>Ticker</th><th>Symbol</th><th>Grade</th>
+            <th>Score</th><th>Outcome</th><th>P&amp;L</th><th>P&amp;L%</th>
+            <th>Entry</th><th>Exit</th><th>Duration</th>
+            <th>Signal Q</th><th>Timing Q</th><th>Risk Q</th><th>Lessons</th>
           </tr>
         </thead>
         <tbody></tbody>
@@ -105,8 +110,9 @@
       <table id="tbl-orders">
         <thead>
           <tr>
-            <th>Time</th><th>Symbol</th><th>Side</th>
-            <th>Qty</th><th>Price</th><th>Fill</th><th>Status</th>
+            <th>Time</th><th>Ticker</th><th>Symbol</th><th>Side</th><th>Type</th>
+            <th>Qty</th><th>Filled</th><th>Price</th><th>Fill</th>
+            <th>Status</th><th>Fill Time</th><th>Error</th>
           </tr>
         </thead>
         <tbody></tbody>
