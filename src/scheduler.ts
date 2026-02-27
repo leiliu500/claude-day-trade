@@ -16,12 +16,12 @@ const AUTO_TICKERS: Array<{ ticker: string; profile: 'S' | 'M' | 'L' }> = [
 
 const TRADING_INTERVAL_MS = 3 * 60 * 1000; // 3 minutes
 
-/** True when current UTC time is within the trading window: Mon-Fri 12:00-21:59 UTC */
+/** True when current UTC time is within the trading window: Mon-Fri 12:00-20:59 UTC (market closes 21:00 UTC / 4 PM ET) */
 function isTradingWindow(): boolean {
   const now = new Date();
   const day  = now.getUTCDay();   // 0=Sun, 6=Sat
   const hour = now.getUTCHours();
-  return day >= 1 && day <= 5 && hour >= 12 && hour <= 21;
+  return day >= 1 && day <= 5 && hour >= 12 && hour < 21;
 }
 
 /**
