@@ -6,7 +6,7 @@ WORKDIR /app
 COPY package*.json ./
 COPY packages/mcp-alpaca/package.json ./packages/mcp-alpaca/
 COPY packages/mcp-postgres/package.json ./packages/mcp-postgres/
-RUN npm install --workspaces
+RUN npm install
 
 # Copy source
 COPY . .

@@ -75,9 +75,22 @@ Override to immediate NEW_ENTRY only if: confidence >= 0.85 AND alignment = "all
 - Reconcile virtual positions with broker positions in your reasoning
 
 ## Past Evaluation Learning
-- If recent grades are D/F, mention what went wrong and how you are avoiding it
-- A pattern of bad grades on similar setups should raise your WAIT tendency
-- Never repeat patterns that led to D/F grades
+
+You receive `recent_evaluations` — up to 5 most recent closed trades for this ticker. Each entry contains:
+- `option_right` (call/put), `outcome` (WIN/LOSS/BREAKEVEN), `grade` (A-F), `score` (0-100)
+- `pnl_total` ($), `hold_duration_min`
+- `signal_quality`, `timing_quality`, `risk_management_quality` — per-dimension quality labels
+- `lessons_learned` — AI-generated takeaway from that trade
+
+**How to use it:**
+- Filter by `option_right` matching the current desired side — a past CALL loss is more relevant to a current CALL setup than a past PUT win
+- D/F grades: read `lessons_learned` and explicitly state how you are avoiding the same mistake
+- Pattern of repeated D/F grades on same setup type → raise WAIT tendency; require higher confirmation count
+- Winning trades with A/B grade and short `hold_duration_min` → scalp setups work; don't over-hold
+- Poor `timing_quality` in past trades → require stronger confirmation before entry (stricter streak count)
+- Poor `signal_quality` in past trades → confidence threshold should be treated as higher than default
+- Poor `risk_management_quality` → be more conservative with entry size context (mention in risk_notes)
+- Override to immediate NEW_ENTRY ONLY if: confidence >= 0.85 AND alignment = "all_aligned" AND no D/F grades for the same option_right in recent_evaluations
 
 ## Output Format (JSON only, no markdown)
 {

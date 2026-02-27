@@ -124,12 +124,127 @@ tr:hover td { background: #1c2128; }
 .decision-EXIT         { color: #f85149; }
 .decision-WAIT         { color: #8b949e; }
 
-.reasoning { max-width: 300px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: #8b949e; font-size: 12px; }
+.reasoning { max-width: 400px; white-space: normal; word-break: break-word; color: #8b949e; font-size: 12px; line-height: 1.5; }
 
 .empty-state { text-align: center; color: #8b949e; padding: 40px; font-size: 13px; }
 
+/* Agent Team cards */
+.agent-cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(380px, 1fr));
+  gap: 16px;
+}
+
+.agent-empty {
+  color: #8b949e;
+  text-align: center;
+  padding: 40px;
+  font-size: 13px;
+}
+
+.agent-card {
+  background: #161b22;
+  border: 1px solid #30363d;
+  border-radius: 8px;
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.agent-card-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.agent-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-weight: 600;
+}
+
+.agent-ticker {
+  font-size: 1.1rem;
+  font-weight: 700;
+}
+
+.agent-symbol {
+  font-size: 11px;
+  color: #8b949e;
+  background: #0d1117;
+  padding: 2px 6px;
+  border-radius: 4px;
+}
+
+.agent-meta {
+  font-size: 12px;
+  color: #8b949e;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex-wrap: wrap;
+}
+
+.meta-sep { color: #30363d; }
+
+.agent-stats {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 8px;
+}
+
+.agent-stat {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.stat-label {
+  font-size: 10px;
+  color: #8b949e;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.agent-reasoning {
+  font-size: 12px;
+  color: #8b949e;
+  white-space: normal;
+  word-break: break-word;
+  line-height: 1.5;
+  border-top: 1px solid #21262d;
+  padding-top: 8px;
+}
+
+/* Phase badges */
+.phase-badge {
+  font-size: 11px;
+  font-weight: 600;
+  padding: 3px 8px;
+  border-radius: 12px;
+  white-space: nowrap;
+  letter-spacing: 0.04em;
+}
+
+.phase-AWAITING_FILL { background: #2d2006; color: #e3b341; border: 1px solid #9e6a03; }
+.phase-MONITORING    { background: #0d2d12; color: #3fb950; border: 1px solid #196c2e; }
+.phase-CLOSING       { background: #2d1500; color: #f0883e; border: 1px solid #9e4318; }
+.phase-CLOSED        { background: #1c2128; color: #8b949e; border: 1px solid #30363d; }
+.phase-FAILED        { background: #2d0d0a; color: #f85149; border: 1px solid #8e1a14; }
+
+/* Widen summary cards row to fit 5 */
+.cards { grid-template-columns: repeat(5, 1fr); }
+
+@media (max-width: 1100px) {
+  .cards { grid-template-columns: repeat(3, 1fr); }
+}
+
 @media (max-width: 900px) {
   .cards { grid-template-columns: repeat(2, 1fr); }
+  .agent-stats { grid-template-columns: repeat(2, 1fr); }
 }
 
 @media (max-width: 600px) {

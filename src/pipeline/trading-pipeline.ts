@@ -3,15 +3,12 @@ import { OptionAgent } from '../agents/option-agent.js';
 import { AnalysisAgent } from '../agents/analysis-agent.js';
 import { DecisionOrchestrator } from '../agents/decision-orchestrator.js';
 import { ExecutionAgent } from '../agents/execution-agent.js';
-import { EvaluationAgent } from '../agents/evaluation-agent.js';
+import { OrderAgentRegistry } from '../agents/order-agent-registry.js';
 import { buildContext } from './context-builder.js';
 import { checkMarketOpen } from './safety-gates.js';
 import { getOrCreateSession } from '../db/repositories/sessions.js';
 import { insertSignalSnapshot } from '../db/repositories/signals.js';
 import { insertDecision } from '../db/repositories/decisions.js';
-import { insertPosition, closePosition, getActivePositions } from '../db/repositories/positions.js';
-import { insertOrder } from '../db/repositories/orders.js';
-import { insertEvaluation } from '../db/repositories/evaluations.js';
 import { v4 as uuidv4 } from 'uuid';
 import { config } from '../config.js';
 import type { TradingProfile } from '../types/market.js';
@@ -56,8 +53,8 @@ function deterministicWait(
 
 /** True when AI orchestration is required */
 function needsAIOrchestration(analysis: AnalysisResult, context: PositionContext): boolean {
-  const hasOpenPositions  = context.openPositions.length > 0;
-  const hasActiveStreak   = context.confirmationStreaks.length > 0;
+  const hasOpenPositions = context.openPositions.length > 0;
+  const hasActiveStreak  = context.confirmationStreaks.length > 0;
   return analysis.meetsEntryThreshold || hasOpenPositions || hasActiveStreak;
 }
 
@@ -83,16 +80,25 @@ export interface PipelineResult {
   error?: string;
 }
 
-const signalAgent = new SignalAgent();
-const optionAgent = new OptionAgent();
-const analysisAgent = new AnalysisAgent();
+const signalAgent          = new SignalAgent();
+const optionAgent          = new OptionAgent();
+const analysisAgent        = new AnalysisAgent();
 const decisionOrchestrator = new DecisionOrchestrator();
-const executionAgent = new ExecutionAgent();
-const evaluationAgent = new EvaluationAgent();
+const executionAgent       = new ExecutionAgent();
 
 /**
  * The main trading pipeline — runs end-to-end for one ticker + profile.
  * Returns a structured result suitable for Telegram notification.
+ *
+ * NEW_ENTRY / ADD_POSITION:
+ *   ExecutionAgent.prepareEntry() checks safety gates using the orchestrator's
+ *   DecisionResult as primary input.  On pass, the pipeline creates a dedicated
+ *   OrderAgent via OrderAgentRegistry.  The agent owns the full lifecycle from
+ *   that point (fill monitoring, stop/TP, expiry, evaluation).
+ *
+ * EXIT / REDUCE_EXPOSURE / REVERSE:
+ *   Pipeline delegates to OrderAgentRegistry which dispatches to the correct
+ *   per-position agents.  No direct Alpaca calls from the pipeline.
  */
 export async function runPipeline(
   ticker: string,
@@ -103,8 +109,7 @@ export async function runPipeline(
 
   try {
     // ── Phase 1: Session ───────────────────────────────────────────────────
-    const intervals = ['S', 'M', 'L'].indexOf(profile) === 0
-      ? '2m,3m,5m' : profile === 'M' ? '1m,5m,15m' : '5m,1h,1d';
+    const intervals = profile === 'S' ? '2m,3m,5m' : profile === 'M' ? '1m,5m,15m' : '5m,1h,1d';
     const sessionId = await getOrCreateSession(ticker, profile, intervals);
 
     // ── Phase 2: Signal Generation ─────────────────────────────────────────
@@ -121,7 +126,7 @@ export async function runPipeline(
 
     // ── Phase 5: Persist Signal Snapshot ──────────────────────────────────
     const snapshotId = await insertSignalSnapshot(signal, optionEval, analysis, sessionId);
-    signal.id = snapshotId; // Use DB ID as signal ID for downstream references
+    signal.id = snapshotId;
 
     // ── Phase 6: Check Market Hours ────────────────────────────────────────
     const timeGateOk = await checkMarketOpen();
@@ -130,174 +135,148 @@ export async function runPipeline(
     const context = await buildContext(ticker);
 
     // ── Phase 8: Decision Orchestrator (or deterministic bypass) ──────────
-    // Skip gpt-4o when: confidence below threshold + no open positions + no active streak.
-    // This covers the vast majority of 5-min AUTO ticks on calm markets.
     const useAI = needsAIOrchestration(analysis, context);
     const decision = useAI
       ? await decisionOrchestrator.run({ signal, option: optionEval, analysis, context, timeGateOk })
       : deterministicWait(signal, analysis, ticker, profile);
     console.log(`[Pipeline] Decision: ${decision.decisionType} (execute=${decision.shouldExecute}${useAI ? '' : ', deterministic'})`);
 
-    // Persist decision
     await insertDecision(decision);
 
-    // ── Phase 9: Execute ────────────────────────────────────────────────────
+    // ── Phase 9: Execute via OrderAgentRegistry ────────────────────────────
     const result: PipelineResult = {
       ticker,
       profile,
-      direction: signal.direction,
-      alignment: signal.alignment,
-      confidence: analysis.confidence,
-      decision: decision.decisionType,
-      reasoning: decision.reasoning,
+      direction:   signal.direction,
+      alignment:   signal.alignment,
+      confidence:  analysis.confidence,
+      decision:    decision.decisionType,
+      reasoning:   decision.reasoning,
       orderSubmitted: false,
-      // Full context for rich notifications
       signal,
-      option: optionEval,
+      option:      optionEval,
       analysis,
       decisionResult: decision,
     };
 
+    const registry = OrderAgentRegistry.getInstance();
+
     switch (decision.decisionType) {
+
+      // ── NEW ENTRY / ADD ────────────────────────────────────────────────
       case 'NEW_ENTRY':
       case 'ADD_POSITION': {
         if (!decision.shouldExecute) break;
 
-        const { order, sizing, failedGates } = await executionAgent.executeEntry({
+        // ExecutionAgent receives the orchestrator's DecisionResult as its
+        // primary input and computes sizing + runs 8 safety gates.
+        // No Alpaca calls here — only gate validation.
+        const { sizing, passed, failedGates } = executionAgent.prepareEntry({
           decision,
           signal,
-          option: optionEval,
+          option:             optionEval,
           analysis,
-          accountEquity: context.accountEquity,
+          accountEquity:      context.accountEquity,
           accountBuyingPower: context.accountBuyingPower,
           timeGateOk,
         });
 
-        if (order) {
-          // Persist position and order
-          const positionId = await insertPosition({
-            sessionId,
-            decisionId: decision.id,
-            ticker,
-            candidate: optionEval.winnerCandidate!,
-            sizing: sizing!,
-          });
-          order.positionId = positionId;
-          await insertOrder(order);
-
-          result.orderSubmitted = true;
-          result.orderSymbol = optionEval.winnerCandidate?.contract.symbol;
-          result.orderQty = sizing?.qty;
-          result.orderPrice = sizing?.limitPrice;
-          result.sizing = sizing ?? undefined;
-        } else {
+        if (!passed || !sizing || !optionEval.winnerCandidate) {
           result.failedGates = failedGates;
+          break;
         }
+
+        // Spawn a dedicated OrderAgent.  Primary input is `decision` (the
+        // orchestrator AI output).  The agent submits the Alpaca entry order,
+        // persists position + order records, and manages the full lifecycle.
+        const positionId = await registry.createAndStart({
+          decision,                               // orchestrator AI output
+          candidate:       optionEval.winnerCandidate,
+          sizing,
+          sessionId,
+          entryConfidence: analysis.confidence,   // AnalysisAgent deterministic score
+          entryAlignment:  signal.alignment,
+          entryDirection:  signal.direction,
+        });
+
+        result.orderSubmitted = !!positionId;
+        result.orderSymbol    = optionEval.winnerCandidate.contract.symbol;
+        result.orderQty       = sizing.qty;
+        result.orderPrice     = sizing.limitPrice;
+        result.sizing         = sizing;
         break;
       }
 
+      // ── CONFIRM HOLD ──────────────────────────────────────────────────
       case 'CONFIRM_HOLD': {
-        // Record a confirmation for existing open decision
-        const latestOpenDecision = context.recentDecisions.find(d =>
-          d.decisionType === 'NEW_ENTRY' || d.decisionType === 'ADD_POSITION'
+        // Active agents continue monitoring; no new order needed.
+        const activeAgents = registry.getByTicker(ticker);
+        console.log(
+          `[Pipeline] CONFIRM_HOLD — ${activeAgents.length} active agent(s) continuing for ${ticker}`,
         );
-        if (latestOpenDecision) {
-          // We can't easily get the decision ID from summary — skip for now
-          // In a full impl we'd store the decision ID in context
-        }
         break;
       }
 
+      // ── EXIT ──────────────────────────────────────────────────────────
       case 'EXIT': {
-        // Close all open positions for this ticker
-        const openPositions = await getActivePositions(ticker);
-        for (const pos of openPositions) {
-          const order = await executionAgent.executeExit({
-            decision,
-            optionSymbol: pos.option_symbol,
-          });
-
-          order.positionId = pos.id;
-          await insertOrder(order);
-
-          // Only mark DB position as closed if Alpaca accepted the order
-          if (order.alpacaStatus !== 'error') {
-            const exitPrice  = order.fillPrice ?? optionEval.winnerCandidate?.contract.mid ?? 0;
-            const closeReason = `EXIT: ${decision.reasoning.slice(0, 100)}`;
-            await closePosition({ positionId: pos.id, exitPrice, closeReason });
-            await triggerEvaluation(pos, decision.id, analysis.confidence, signal, exitPrice, closeReason);
-          } else {
-            console.warn(`[Pipeline] EXIT order failed for ${pos.option_symbol} — position left OPEN in DB`);
-          }
-        }
-        result.orderSubmitted = openPositions.length > 0;
+        // Forward to agents as a suggestion — each agent evaluates through
+        // its own position-management rules (may override if not immediate).
+        await registry.notifyExit(
+          ticker,
+          decision.reasoning.slice(0, 150),
+          decision.urgency,
+        );
+        result.orderSubmitted = true;
         break;
       }
 
+      // ── REDUCE EXPOSURE ───────────────────────────────────────────────
       case 'REDUCE_EXPOSURE': {
-        const openPositions = await getActivePositions(ticker);
-        for (const pos of openPositions) {
-          const reduceQty = Math.max(1, Math.floor(pos.qty / 2));
-          const order = await executionAgent.executeReduce({
-            decision,
-            optionSymbol: pos.option_symbol,
-            qty: reduceQty,
-          });
-          await insertOrder(order);
-        }
-        result.orderSubmitted = openPositions.length > 0;
+        await registry.notifyReduce(
+          ticker,
+          decision.reasoning.slice(0, 150),
+          decision.urgency,
+        );
+        result.orderSubmitted = true;
         break;
       }
 
+      // ── REVERSE ───────────────────────────────────────────────────────
       case 'REVERSE': {
-        // Close existing + re-enter opposite side
-        const openPositions = await getActivePositions(ticker);
-        for (const pos of openPositions) {
-          const exitOrder = await executionAgent.executeExit({
+        // Step 1 — close existing positions via their agents (immediate — non-negotiable reversal).
+        await registry.notifyExit(ticker, 'REVERSE: position direction change', 'immediate');
+
+        // Step 2 — open new position in opposite direction.
+        if (!decision.shouldExecute || !optionEval.winnerCandidate) break;
+
+        const { sizing, passed } = executionAgent.prepareEntry({
+          decision,
+          signal,
+          option:             optionEval,
+          analysis,
+          accountEquity:      context.accountEquity,
+          accountBuyingPower: context.accountBuyingPower,
+          timeGateOk,
+        });
+
+        if (passed && sizing) {
+          const positionId = await registry.createAndStart({
             decision,
-            optionSymbol: pos.option_symbol,
+            candidate:       optionEval.winnerCandidate,
+            sizing,
+            sessionId,
+            entryConfidence: analysis.confidence,
+            entryAlignment:  signal.alignment,
+            entryDirection:  signal.direction,
           });
-          exitOrder.positionId = pos.id;
-          await insertOrder(exitOrder);
-          if (exitOrder.alpacaStatus !== 'error') {
-            const reverseExitPrice = exitOrder.fillPrice ?? 0;
-            await closePosition({ positionId: pos.id, exitPrice: reverseExitPrice, closeReason: 'REVERSE' });
-            await triggerEvaluation(pos, decision.id, analysis.confidence, signal, reverseExitPrice, 'REVERSE');
-          } else {
-            console.warn(`[Pipeline] REVERSE exit failed for ${pos.option_symbol} — skipping re-entry`);
-            break;
-          }
-        }
-        // Re-enter in opposite direction (opposite is handled by optionEval.winner already flipped)
-        if (optionEval.winnerCandidate) {
-          const { order, sizing } = await executionAgent.executeEntry({
-            decision,
-            signal,
-            option: optionEval,
-            analysis,
-            accountEquity: context.accountEquity,
-            accountBuyingPower: context.accountBuyingPower,
-            timeGateOk,
-          });
-          if (order && sizing) {
-            const positionId = await insertPosition({
-              sessionId,
-              decisionId: decision.id,
-              ticker,
-              candidate: optionEval.winnerCandidate,
-              sizing,
-            });
-            order.positionId = positionId;
-            await insertOrder(order);
-            result.orderSubmitted = true;
-          }
+          result.orderSubmitted = !!positionId;
+          result.sizing         = sizing;
         }
         break;
       }
 
       case 'WAIT':
       default:
-        // Nothing to execute
         break;
     }
 
@@ -318,47 +297,5 @@ export async function runPipeline(
       orderSubmitted: false,
       error: message,
     };
-  }
-}
-
-/** Trigger post-trade evaluation after a position is closed */
-async function triggerEvaluation(
-  pos: Record<string, unknown>,
-  decisionId: string,
-  entryConfidence: number,
-  signal: { direction: string; alignment: string },
-  exitPrice: number,       // passed directly — pos.exit_price is null at call time
-  closeReason: string,
-): Promise<void> {
-  try {
-    const entryPrice = parseFloat(String(pos['entry_price'] ?? 0));
-    const closedAt   = new Date().toISOString();
-
-    if (exitPrice === 0) return;
-
-    const evaluation = await evaluationAgent.evaluate({
-      ticker: String(pos['ticker']),
-      optionSymbol: String(pos['option_symbol']),
-      side: pos['option_right'] as 'call' | 'put',
-      strike: parseFloat(String(pos['strike'] ?? 0)),
-      expiration: String(pos['expiration'] ?? ''),
-      entryPrice,
-      exitPrice,
-      qty: parseInt(String(pos['qty'] ?? 1)),
-      openedAt: String(pos['opened_at'] ?? new Date().toISOString()),
-      closedAt,
-      closeReason,
-      entryConfidence,
-      entryAlignment: signal.alignment,
-      entryDirection: signal.direction,
-      entryReasoning: String(pos['entry_reasoning'] ?? ''),
-      positionId: String(pos['id']),
-      decisionId,
-    });
-
-    await insertEvaluation(evaluation);
-    console.log(`[Pipeline] Evaluation: ${evaluation.grade} (${evaluation.score}) — ${evaluation.lessonsLearned}`);
-  } catch (err) {
-    console.error('[Pipeline] Evaluation error:', err);
   }
 }

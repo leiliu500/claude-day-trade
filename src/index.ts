@@ -4,7 +4,7 @@ import { runMigrations } from './db/migrate.js';
 import { getPool, closePool } from './db/client.js';
 import { createTelegramBot } from './telegram/bot.js';
 import { startScheduler } from './scheduler.js';
-import { startPositionMonitor } from './pipeline/position-monitor.js';
+import { OrderAgentRegistry } from './agents/order-agent-registry.js';
 import { notifyStartup } from './telegram/notifier.js';
 import { startDashboard } from './dashboard/server.js';
 
@@ -28,8 +28,10 @@ async function main(): Promise<void> {
   // ── AUTO Scheduler ──────────────────────────────────────────────────────
   startScheduler();
 
-  // ── Position Monitor (every 30 s: fill sync + stop/TP + expiry) ─────────
-  startPositionMonitor();
+  // ── OrderAgent Registry — restore agents for any open positions ──────────
+  // Each OrderAgent runs its own 30 s tick (fill sync + stop/TP + expiry).
+  await OrderAgentRegistry.getInstance().restoreFromDB();
+  console.log(`[Boot] OrderAgentRegistry ready (${OrderAgentRegistry.getInstance().getCount()} agent(s) restored)`);
 
   // ── Startup notification ────────────────────────────────────────────────
   await notifyStartup();

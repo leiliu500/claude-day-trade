@@ -34,6 +34,10 @@
         <h3>Last Grade</h3>
         <div class="card-value" id="val-grade">—</div>
       </div>
+      <div class="card" id="card-agents">
+        <h3>Live Agents</h3>
+        <div class="card-value" id="val-agents">—</div>
+      </div>
     </section>
 
     <!-- Tab navigation -->
@@ -43,6 +47,7 @@
       <button class="tab" data-tab="decisions">Decisions</button>
       <button class="tab" data-tab="evaluations">Evaluations</button>
       <button class="tab" data-tab="orders">Orders</button>
+      <button class="tab" data-tab="agents">Agent Team</button>
     </nav>
 
     <!-- Tab content -->
@@ -106,6 +111,10 @@
         </thead>
         <tbody></tbody>
       </table>
+    </section>
+
+    <section id="tab-agents" class="tab-content">
+      <div id="agent-cards" class="agent-cards"></div>
     </section>
   </main>
 

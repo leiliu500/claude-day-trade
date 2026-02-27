@@ -38,10 +38,16 @@ export interface PositionContext {
   }>;
   recentEvaluations: Array<{
     ticker: string;
+    optionRight: string | null;
     grade: string;
     score: number;
-    lessonsLearned: string;
     outcome: string;
+    pnlTotal: number | null;
+    holdDurationMin: number | null;
+    signalQuality: string | null;
+    timingQuality: string | null;
+    riskManagementQuality: string | null;
+    lessonsLearned: string;
     evaluatedAt: string;
   }>;
   accountBuyingPower: number;

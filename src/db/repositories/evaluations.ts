@@ -51,3 +51,62 @@ export async function getEvaluationFeedback(ticker: string, limit = 5) {
   );
   return rows;
 }
+
+export interface TickerEvaluation {
+  outcome: string;
+  grade: string;
+  score: number;
+  pnlTotal: number | null;
+  holdDurationMin: number | null;
+  signalQuality: string | null;
+  timingQuality: string | null;
+  riskManagementQuality: string | null;
+  lessonsLearned: string;
+  evaluatedAt: string;
+}
+
+/**
+ * Recent closed-trade evaluations for the same ticker + option side.
+ * Used by OrderAgent to give its AI context about how similar past
+ * positions on this ticker performed.
+ */
+export async function getTickerEvaluations(
+  ticker: string,
+  optionRight: 'call' | 'put',
+  limit = 3,
+): Promise<TickerEvaluation[]> {
+  const pool = getPool();
+  const { rows } = await pool.query<{
+    outcome: string;
+    evaluation_grade: string;
+    evaluation_score: number;
+    pnl_total: string | null;
+    hold_duration_min: number | null;
+    signal_quality: string | null;
+    timing_quality: string | null;
+    risk_management_quality: string | null;
+    lessons_learned: string | null;
+    evaluated_at: string;
+  }>(
+    `SELECT outcome, evaluation_grade, evaluation_score,
+            pnl_total::text, hold_duration_min,
+            signal_quality, timing_quality, risk_management_quality,
+            lessons_learned, evaluated_at::text
+     FROM trading.v_evaluation_feedback
+     WHERE ticker = $1 AND option_right = $2
+     LIMIT $3`,
+    [ticker, optionRight, limit],
+  );
+  return rows.map(r => ({
+    outcome:               r.outcome,
+    grade:                 r.evaluation_grade,
+    score:                 r.evaluation_score,
+    pnlTotal:              r.pnl_total != null ? parseFloat(r.pnl_total) : null,
+    holdDurationMin:       r.hold_duration_min ?? null,
+    signalQuality:         r.signal_quality ?? null,
+    timingQuality:         r.timing_quality ?? null,
+    riskManagementQuality: r.risk_management_quality ?? null,
+    lessonsLearned:        r.lessons_learned ?? '',
+    evaluatedAt:           r.evaluated_at,
+  }));
+}

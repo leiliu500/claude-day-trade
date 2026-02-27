@@ -102,8 +102,9 @@ export async function buildContext(ticker: string): Promise<PositionContext> {
       [ticker]
     ),
     pool.query(
-      `SELECT ticker, outcome, evaluation_grade, evaluation_score,
-              lessons_learned, evaluated_at
+      `SELECT ticker, option_right, outcome, evaluation_grade, evaluation_score,
+              signal_quality, timing_quality, risk_management_quality,
+              lessons_learned, pnl_total::text, hold_duration_min, evaluated_at
        FROM trading.v_evaluation_feedback WHERE ticker = $1 LIMIT 5`,
       [ticker]
     ),
@@ -137,12 +138,18 @@ export async function buildContext(ticker: string): Promise<PositionContext> {
       totalCount: r.total_count,
     })),
     recentEvaluations: recentEvals.rows.map(r => ({
-      ticker: r.ticker,
-      grade: r.evaluation_grade,
-      score: r.evaluation_score,
-      lessonsLearned: r.lessons_learned ?? '',
-      outcome: r.outcome,
-      evaluatedAt: r.evaluated_at,
+      ticker:                r.ticker,
+      optionRight:           r.option_right ?? null,
+      grade:                 r.evaluation_grade,
+      score:                 r.evaluation_score,
+      outcome:               r.outcome,
+      pnlTotal:              r.pnl_total != null ? parseFloat(r.pnl_total) : null,
+      holdDurationMin:       r.hold_duration_min ?? null,
+      signalQuality:         r.signal_quality ?? null,
+      timingQuality:         r.timing_quality ?? null,
+      riskManagementQuality: r.risk_management_quality ?? null,
+      lessonsLearned:        r.lessons_learned ?? '',
+      evaluatedAt:           r.evaluated_at,
     })),
     accountBuyingPower: account.buyingPower,
     accountEquity: account.equity,

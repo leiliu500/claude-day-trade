@@ -2,6 +2,7 @@ import express from 'express';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
 import { getPool } from '../db/client.js';
+import { OrderAgentRegistry } from '../agents/order-agent-registry.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -35,7 +36,7 @@ export function startDashboard(port: number): void {
                 confidence_meets_threshold, selected_right, selected_symbol,
                 entry_premium, risk_reward, option_liquidity_ok, triggered_by, created_at
          FROM trading.signal_snapshots
-         WHERE trade_date = CURRENT_DATE
+         WHERE trade_date >= CURRENT_DATE - INTERVAL '7 days'
          ORDER BY created_at DESC
          LIMIT $1`,
         [limit]
@@ -54,7 +55,7 @@ export function startDashboard(port: number): void {
         `SELECT id, ticker, profile, decision_type, confirmation_count,
                 orchestration_confidence, should_execute, reasoning, created_at
          FROM trading.trading_decisions
-         WHERE trade_date = CURRENT_DATE
+         WHERE trade_date >= CURRENT_DATE - INTERVAL '7 days'
          ORDER BY created_at DESC
          LIMIT 100`
       );
@@ -112,10 +113,20 @@ export function startDashboard(port: number): void {
       const pool = getPool();
       const { rows } = await pool.query(
         `SELECT * FROM trading.v_recent_executions
-         WHERE submitted_at::date = CURRENT_DATE
+         WHERE submitted_at >= NOW() - INTERVAL '7 days'
          LIMIT 50`
       );
       res.json({ orders: rows });
+    } catch (err) {
+      res.status(500).json({ error: (err as Error).message });
+    }
+  });
+
+  // Live agent team (in-memory registry snapshot)
+  app.get('/api/agents', (_req, res) => {
+    try {
+      const agents = OrderAgentRegistry.getInstance().getAll().map(a => a.getStatus());
+      res.json({ agents });
     } catch (err) {
       res.status(500).json({ error: (err as Error).message });
     }

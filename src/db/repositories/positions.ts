@@ -41,16 +41,17 @@ export async function insertPosition(params: {
 export async function closePosition(params: {
   positionId: string;
   exitPrice: number;
+  entryPrice: number;
   closeReason: string;
 }): Promise<void> {
   const pool = getPool();
   await pool.query(
     `UPDATE trading.position_journal
-     SET status = 'CLOSED', exit_price = $2,
-         realized_pnl = (($2 - entry_price) * qty * 100),
-         close_reason = $3, closed_at = NOW()
+     SET status = 'CLOSED', exit_price = $2, entry_price = $3,
+         realized_pnl = (($2 - $3) * qty * 100),
+         close_reason = $4, closed_at = NOW()
      WHERE id = $1`,
-    [params.positionId, params.exitPrice, params.closeReason]
+    [params.positionId, params.exitPrice, params.entryPrice, params.closeReason]
   );
 }
 

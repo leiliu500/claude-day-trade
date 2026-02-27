@@ -498,7 +498,37 @@ export async function notifyAlert(text: string): Promise<void> {
   await sendMessage(`⚠️ <b>Alert</b>\n${text}`);
 }
 
+/** Daily DB cleanup notification */
+export async function notifyDailyCleanup(
+  success: boolean,
+  deletedRows: Record<string, number>,
+  agentsStopped: number,
+  error?: string,
+): Promise<void> {
+  if (success) {
+    const total = Object.values(deletedRows).reduce((s, n) => s + n, 0);
+    const lines = Object.entries(deletedRows)
+      .map(([label, n]) => `  • ${label}: <b>${n}</b>`)
+      .join('\n');
+    const agentLine = agentsStopped > 0
+      ? `\n⚠️ Force-stopped <b>${agentsStopped}</b> lingering agent(s)`
+      : '';
+    await sendMessage(
+      `🗑 <b>Daily DB Cleanup Complete</b>\n` +
+      `${new Date().toUTCString()}\n\n` +
+      `${lines}\n\n` +
+      `Total rows removed: <b>${total}</b>${agentLine}`,
+    );
+  } else {
+    await sendMessage(
+      `❌ <b>Daily DB Cleanup FAILED</b>\n` +
+      `${new Date().toUTCString()}\n\n` +
+      `Error: ${error ?? 'unknown'}`,
+    );
+  }
+}
+
 /** System startup notification */
 export async function notifyStartup(): Promise<void> {
-  await sendMessage(`🚀 <b>Day Trade System Started</b>\nAuto mode: every 5 min during market hours (12:00–21:00 UTC)\nCommands: <code>SPY S</code>, <code>QQQ M</code>, <code>/status</code>, <code>/positions</code>`);
+  await sendMessage(`🚀 <b>Day Trade System Started</b>\nAuto mode: every 3 min during market hours (12:00–21:00 UTC)\nCommands: <code>SPY S</code>, <code>QQQ S</code>, <code>/status</code>, <code>/positions</code>`);
 }

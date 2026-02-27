@@ -1,5 +1,6 @@
 import cron from 'node-cron';
 import { runPipeline } from './pipeline/trading-pipeline.js';
+import { runDailyCleanup } from './pipeline/daily-cleanup.js';
 import { notifySignalAnalysis, notifyAlert } from './telegram/notifier.js';
 import { config } from './config.js';
 
@@ -39,25 +40,28 @@ async function runAutoMode(): Promise<void> {
 
 /**
  * Start the cron scheduler.
- * Runs every 5 minutes, Monday-Friday, 12:00-21:00 UTC
- * (covers ~7:00 AM - 4:00 PM ET, which is pre-market through market close)
+ *
+ * Trading: every 3 minutes, Monday-Friday, 12:00-21:00 UTC
+ *   (covers ~7:00 AM - 4:00 PM ET, pre-market through market close)
+ *
+ * Daily cleanup: 07:00 UTC Mon-Fri — truncates all trading tables so each
+ *   day starts with an empty database (runs ~7:30 hours before market open).
  */
 export function startScheduler(): void {
-  // */5 — every 5 minutes
-  // * — every hour (filtered by time check)
-  // 12-21 — hours 12-21 UTC
-  // * — every day of month
-  // * — every month
-  // 1-5 — Monday-Friday
-  const cronExpression = '*/5 12-21 * * 1-5';
+  const tradingCron = '*/3 12-21 * * 1-5';
+  const cleanupCron = '0 7 * * 1-5';
 
-  cron.schedule(cronExpression, async () => {
+  cron.schedule(tradingCron, async () => {
     await runAutoMode();
-  }, {
-    timezone: 'UTC',
-  });
+  }, { timezone: 'UTC' });
 
-  console.log(`[Scheduler] Started — cron: "${cronExpression}" (Mon-Fri 12:00-21:00 UTC)`);
+  cron.schedule(cleanupCron, async () => {
+    console.log('[Scheduler] Daily cleanup triggered');
+    await runDailyCleanup();
+  }, { timezone: 'UTC' });
+
+  console.log(`[Scheduler] Trading cron: "${tradingCron}" (Mon-Fri 12:00-21:00 UTC)`);
+  console.log(`[Scheduler] Cleanup cron: "${cleanupCron}" (Mon-Fri 07:00 UTC)`);
   console.log(`[Scheduler] AUTO tickers: ${AUTO_TICKERS.map(t => `${t.ticker}(${t.profile})`).join(', ')}`);
 }
 
