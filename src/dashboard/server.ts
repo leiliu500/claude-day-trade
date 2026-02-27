@@ -26,12 +26,14 @@ export function startDashboard(port: number): void {
     }
   });
 
-  // Recent signals (last 50 today)
+  // Recent signals (paginated)
   app.get('/api/signals', async (req, res) => {
     try {
       const pool = getPool();
-      const limit = Math.min(parseInt(String(req.query['limit'] ?? '50')), 200);
-      const [{ rows }, { rows: countRows }] = await Promise.all([
+      const limit = Math.min(parseInt(String(req.query['limit'] ?? '50')), 500);
+      const page  = Math.max(parseInt(String(req.query['page']  ?? '1')), 1);
+      const offset = (page - 1) * limit;
+      const [{ rows }, { rows: countRows }, { rows: todayRows }] = await Promise.all([
         pool.query(
           `SELECT id, ticker, profile, direction, alignment, confidence,
                   confidence_meets_threshold, selected_right, selected_symbol,
@@ -40,51 +42,72 @@ export function startDashboard(port: number): void {
            FROM trading.signal_snapshots
            WHERE trade_date >= CURRENT_DATE - INTERVAL '7 days'
            ORDER BY created_at DESC
-           LIMIT $1`,
-          [limit]
+           LIMIT $1 OFFSET $2`,
+          [limit, offset]
+        ),
+        pool.query(
+          `SELECT COUNT(*)::int AS total FROM trading.signal_snapshots WHERE trade_date >= CURRENT_DATE - INTERVAL '7 days'`
         ),
         pool.query(
           `SELECT COUNT(*)::int AS total FROM trading.signal_snapshots WHERE trade_date = CURRENT_DATE`
         ),
       ]);
-      res.json({ signals: rows, total_today: countRows[0]?.total ?? 0 });
+      res.json({ signals: rows, total: countRows[0]?.total ?? 0, total_today: todayRows[0]?.total ?? 0, page, limit });
     } catch (err) {
       res.status(500).json({ error: (err as Error).message });
     }
   });
 
-  // Trading decisions (today)
-  app.get('/api/decisions', async (_req, res) => {
+  // Trading decisions (paginated)
+  app.get('/api/decisions', async (req, res) => {
     try {
       const pool = getPool();
-      const { rows } = await pool.query(
-        `SELECT id, ticker, profile, direction, decision_type, confirmation_count,
-                orchestration_confidence, urgency, should_execute, reasoning, created_at
-         FROM trading.trading_decisions
-         WHERE trade_date >= CURRENT_DATE - INTERVAL '7 days'
-         ORDER BY created_at DESC
-         LIMIT 100`
-      );
-      res.json({ decisions: rows });
+      const limit = Math.min(parseInt(String(req.query['limit'] ?? '50')), 500);
+      const page  = Math.max(parseInt(String(req.query['page']  ?? '1')), 1);
+      const offset = (page - 1) * limit;
+      const [{ rows }, { rows: countRows }] = await Promise.all([
+        pool.query(
+          `SELECT id, ticker, profile, direction, decision_type, confirmation_count,
+                  orchestration_confidence, urgency, should_execute, reasoning, created_at
+           FROM trading.trading_decisions
+           WHERE trade_date >= CURRENT_DATE - INTERVAL '7 days'
+           ORDER BY created_at DESC
+           LIMIT $1 OFFSET $2`,
+          [limit, offset]
+        ),
+        pool.query(
+          `SELECT COUNT(*)::int AS total FROM trading.trading_decisions WHERE trade_date >= CURRENT_DATE - INTERVAL '7 days'`
+        ),
+      ]);
+      res.json({ decisions: rows, total: countRows[0]?.total ?? 0, page, limit });
     } catch (err) {
       res.status(500).json({ error: (err as Error).message });
     }
   });
 
-  // Trade evaluations (last 30 days)
-  app.get('/api/evaluations', async (_req, res) => {
+  // Trade evaluations (paginated)
+  app.get('/api/evaluations', async (req, res) => {
     try {
       const pool = getPool();
-      const { rows } = await pool.query(
-        `SELECT id, ticker, option_symbol, outcome, evaluation_grade, evaluation_score,
-                pnl_total, pnl_pct, hold_duration_min, lessons_learned,
-                signal_quality, timing_quality, risk_management_quality, evaluated_at
-         FROM trading.trade_evaluations
-         WHERE evaluated_at > NOW() - INTERVAL '30 days'
-         ORDER BY evaluated_at DESC
-         LIMIT 100`
-      );
-      res.json({ evaluations: rows });
+      const limit = Math.min(parseInt(String(req.query['limit'] ?? '50')), 500);
+      const page  = Math.max(parseInt(String(req.query['page']  ?? '1')), 1);
+      const offset = (page - 1) * limit;
+      const [{ rows }, { rows: countRows }] = await Promise.all([
+        pool.query(
+          `SELECT id, ticker, option_symbol, outcome, evaluation_grade, evaluation_score,
+                  pnl_total, pnl_pct, hold_duration_min, lessons_learned,
+                  signal_quality, timing_quality, risk_management_quality, evaluated_at
+           FROM trading.trade_evaluations
+           WHERE evaluated_at > NOW() - INTERVAL '30 days'
+           ORDER BY evaluated_at DESC
+           LIMIT $1 OFFSET $2`,
+          [limit, offset]
+        ),
+        pool.query(
+          `SELECT COUNT(*)::int AS total FROM trading.trade_evaluations WHERE evaluated_at > NOW() - INTERVAL '30 days'`
+        ),
+      ]);
+      res.json({ evaluations: rows, total: countRows[0]?.total ?? 0, page, limit });
     } catch (err) {
       res.status(500).json({ error: (err as Error).message });
     }
@@ -113,16 +136,53 @@ export function startDashboard(port: number): void {
     }
   });
 
-  // Order executions (today)
-  app.get('/api/orders', async (_req, res) => {
+  // Order executions (paginated)
+  app.get('/api/orders', async (req, res) => {
     try {
       const pool = getPool();
-      const { rows } = await pool.query(
-        `SELECT * FROM trading.v_recent_executions
-         WHERE submitted_at >= NOW() - INTERVAL '7 days'
-         LIMIT 50`
-      );
-      res.json({ orders: rows });
+      const limit = Math.min(parseInt(String(req.query['limit'] ?? '50')), 500);
+      const page  = Math.max(parseInt(String(req.query['page']  ?? '1')), 1);
+      const offset = (page - 1) * limit;
+      const [{ rows }, { rows: countRows }] = await Promise.all([
+        pool.query(
+          `SELECT * FROM trading.v_recent_executions
+           WHERE submitted_at >= NOW() - INTERVAL '7 days'
+           ORDER BY submitted_at DESC
+           LIMIT $1 OFFSET $2`,
+          [limit, offset]
+        ),
+        pool.query(
+          `SELECT COUNT(*)::int AS total FROM trading.v_recent_executions WHERE submitted_at >= NOW() - INTERVAL '7 days'`
+        ),
+      ]);
+      res.json({ orders: rows, total: countRows[0]?.total ?? 0, page, limit });
+    } catch (err) {
+      res.status(500).json({ error: (err as Error).message });
+    }
+  });
+
+  // Scheduler runs (paginated)
+  app.get('/api/scheduler-runs', async (req, res) => {
+    try {
+      const pool = getPool();
+      const limit = Math.min(parseInt(String(req.query['limit'] ?? '50')), 500);
+      const page  = Math.max(parseInt(String(req.query['page']  ?? '1')), 1);
+      const offset = (page - 1) * limit;
+      const [{ rows }, { rows: countRows }] = await Promise.all([
+        pool.query(
+          `SELECT id, run_at, trigger_type, status, skipped_reason,
+                  ticker_runs, total_duration_ms, created_at
+           FROM trading.scheduler_runs
+           WHERE run_at >= NOW() - INTERVAL '7 days'
+           ORDER BY run_at DESC
+           LIMIT $1 OFFSET $2`,
+          [limit, offset]
+        ),
+        pool.query(
+          `SELECT COUNT(*)::int AS total FROM trading.scheduler_runs WHERE run_at >= NOW() - INTERVAL '7 days'`
+        ),
+      ]);
+      res.json({ runs: rows, total: countRows[0]?.total ?? 0, page, limit });
     } catch (err) {
       res.status(500).json({ error: (err as Error).message });
     }

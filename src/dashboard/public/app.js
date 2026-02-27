@@ -4,6 +4,15 @@ const API = '';
 let currentTab = 'positions';
 let refreshInterval = null;
 
+// ── Pagination state ──────────────────────────────────────────────────────────
+const paging = {
+  signals:     { page: 1, limit: 50, total: 0 },
+  decisions:   { page: 1, limit: 50, total: 0 },
+  evaluations: { page: 1, limit: 50, total: 0 },
+  orders:      { page: 1, limit: 50, total: 0 },
+  scheduler:   { page: 1, limit: 50, total: 0 },
+};
+
 // ── Tab switching ──────────────────────────────────────────────────────────────
 document.querySelectorAll('.tab').forEach(btn => {
   btn.addEventListener('click', () => {
@@ -54,6 +63,44 @@ function setRows(tableId, rows) {
     : rows.join('');
 }
 
+// ── Pagination UI ─────────────────────────────────────────────────────────────
+function renderPagination(key, loadFn) {
+  const s = paging[key];
+  const totalPages = Math.ceil(s.total / s.limit) || 1;
+  const start = s.total === 0 ? 0 : (s.page - 1) * s.limit + 1;
+  const end   = Math.min(s.page * s.limit, s.total);
+
+  const el = document.getElementById(`pagination-${key}`);
+  if (!el) return;
+
+  el.innerHTML = `
+    <div class="pagination">
+      <span class="pagination-info">Showing ${start}–${end} of ${s.total}</span>
+      <div class="pagination-controls">
+        <button class="pg-btn" ${s.page <= 1 ? 'disabled' : ''} onclick="goPage('${key}', 1, ${JSON.stringify(loadFn.name)})">«</button>
+        <button class="pg-btn" ${s.page <= 1 ? 'disabled' : ''} onclick="goPage('${key}', ${s.page - 1}, '${loadFn.name}')">‹</button>
+        <span class="pg-current">Page ${s.page} / ${totalPages}</span>
+        <button class="pg-btn" ${s.page >= totalPages ? 'disabled' : ''} onclick="goPage('${key}', ${s.page + 1}, '${loadFn.name}')">›</button>
+        <button class="pg-btn" ${s.page >= totalPages ? 'disabled' : ''} onclick="goPage('${key}', ${totalPages}, '${loadFn.name}')">»</button>
+        <select class="pg-limit" onchange="changeLimit('${key}', this.value, '${loadFn.name}')">
+          ${[25, 50, 100, 200].map(n => `<option value="${n}" ${s.limit === n ? 'selected' : ''}>${n} / page</option>`).join('')}
+        </select>
+      </div>
+    </div>
+  `;
+}
+
+const loaderMap = {};
+window.goPage = function(key, page, fnName) {
+  paging[key].page = page;
+  loaderMap[fnName]();
+};
+window.changeLimit = function(key, val, fnName) {
+  paging[key].limit = parseInt(val);
+  paging[key].page  = 1;
+  loaderMap[fnName]();
+};
+
 // ── Loaders ───────────────────────────────────────────────────────────────────
 async function loadPositions() {
   const data = await fetch(`${API}/api/positions`).then(r => r.json()).catch(() => ({ positions: [] }));
@@ -79,35 +126,42 @@ async function loadPositions() {
   setRows('tbl-positions', rows);
   document.getElementById('val-positions').textContent = data.positions?.length ?? 0;
 }
+loaderMap['loadPositions'] = loadPositions;
 
 async function loadSignals() {
-  const data = await fetch(`${API}/api/signals?limit=50`).then(r => r.json()).catch(() => ({ signals: [] }));
-  const rows = (data.signals || []).map(s => `
+  const s = paging.signals;
+  const data = await fetch(`${API}/api/signals?limit=${s.limit}&page=${s.page}`).then(r => r.json()).catch(() => ({ signals: [] }));
+  s.total = data.total ?? 0;
+  const rows = (data.signals || []).map(sig => `
     <tr>
-      <td>${fmtTime(s.created_at)}</td>
-      <td><b>${s.ticker}</b></td>
-      <td>${s.profile}</td>
-      <td class="${s.direction}">${s.direction}</td>
-      <td>${s.alignment}</td>
-      <td>${(parseFloat(s.confidence) * 100).toFixed(0)}%</td>
-      <td>${s.confidence_meets_threshold ? '✅' : '—'}</td>
-      <td>${s.triggered_by}</td>
-      <td class="${s.selected_right ?? ''}">${s.selected_right?.toUpperCase() ?? '—'}</td>
-      <td><code>${s.selected_symbol ?? '—'}</code></td>
-      <td>${s.entry_premium ? '$' + fmt(s.entry_premium) : '—'}</td>
-      <td>${s.stop_premium ? '$' + fmt(s.stop_premium) : '—'}</td>
-      <td>${s.tp_premium ? '$' + fmt(s.tp_premium) : '—'}</td>
-      <td>${s.risk_reward ? fmt(s.risk_reward) : '—'}</td>
-      <td>${s.spread_pct ? fmt(s.spread_pct, 1) + '%' : '—'}</td>
-      <td>${s.option_liquidity_ok ? '✅' : '—'}</td>
+      <td>${fmtTime(sig.created_at)}</td>
+      <td><b>${sig.ticker}</b></td>
+      <td>${sig.profile}</td>
+      <td class="${sig.direction}">${sig.direction}</td>
+      <td>${sig.alignment}</td>
+      <td>${(parseFloat(sig.confidence) * 100).toFixed(0)}%</td>
+      <td>${sig.confidence_meets_threshold ? '✅' : '—'}</td>
+      <td>${sig.triggered_by}</td>
+      <td class="${sig.selected_right ?? ''}">${sig.selected_right?.toUpperCase() ?? '—'}</td>
+      <td><code>${sig.selected_symbol ?? '—'}</code></td>
+      <td>${sig.entry_premium ? '$' + fmt(sig.entry_premium) : '—'}</td>
+      <td>${sig.stop_premium ? '$' + fmt(sig.stop_premium) : '—'}</td>
+      <td>${sig.tp_premium ? '$' + fmt(sig.tp_premium) : '—'}</td>
+      <td>${sig.risk_reward ? fmt(sig.risk_reward) : '—'}</td>
+      <td>${sig.spread_pct ? fmt(sig.spread_pct, 1) + '%' : '—'}</td>
+      <td>${sig.option_liquidity_ok ? '✅' : '—'}</td>
     </tr>
   `);
   setRows('tbl-signals', rows);
   document.getElementById('val-signals').textContent = data.total_today ?? 0;
+  renderPagination('signals', loadSignals);
 }
+loaderMap['loadSignals'] = loadSignals;
 
 async function loadDecisions() {
-  const data = await fetch(`${API}/api/decisions`).then(r => r.json()).catch(() => ({ decisions: [] }));
+  const s = paging.decisions;
+  const data = await fetch(`${API}/api/decisions?limit=${s.limit}&page=${s.page}`).then(r => r.json()).catch(() => ({ decisions: [] }));
+  s.total = data.total ?? 0;
   const rows = (data.decisions || []).map(d => `
     <tr>
       <td>${fmtTime(d.created_at)}</td>
@@ -123,10 +177,14 @@ async function loadDecisions() {
     </tr>
   `);
   setRows('tbl-decisions', rows);
+  renderPagination('decisions', loadDecisions);
 }
+loaderMap['loadDecisions'] = loadDecisions;
 
 async function loadEvaluations() {
-  const data = await fetch(`${API}/api/evaluations`).then(r => r.json()).catch(() => ({ evaluations: [] }));
+  const s = paging.evaluations;
+  const data = await fetch(`${API}/api/evaluations?limit=${s.limit}&page=${s.page}`).then(r => r.json()).catch(() => ({ evaluations: [] }));
+  s.total = data.total ?? 0;
   const rows = (data.evaluations || []).map(e => `
     <tr>
       <td>${fmtDate(e.evaluated_at)}</td>
@@ -147,6 +205,7 @@ async function loadEvaluations() {
     </tr>
   `);
   setRows('tbl-evaluations', rows);
+  renderPagination('evaluations', loadEvaluations);
 
   // Last grade card
   const last = data.evaluations?.[0];
@@ -156,9 +215,12 @@ async function loadEvaluations() {
     el.className = `card-value grade-${last.evaluation_grade}`;
   }
 }
+loaderMap['loadEvaluations'] = loadEvaluations;
 
 async function loadOrders() {
-  const data = await fetch(`${API}/api/orders`).then(r => r.json()).catch(() => ({ orders: [] }));
+  const s = paging.orders;
+  const data = await fetch(`${API}/api/orders?limit=${s.limit}&page=${s.page}`).then(r => r.json()).catch(() => ({ orders: [] }));
+  s.total = data.total ?? 0;
   const rows = (data.orders || []).map(o => `
     <tr>
       <td>${fmtTime(o.submitted_at)}</td>
@@ -176,7 +238,41 @@ async function loadOrders() {
     </tr>
   `);
   setRows('tbl-orders', rows);
+  renderPagination('orders', loadOrders);
 }
+loaderMap['loadOrders'] = loadOrders;
+
+async function loadScheduler() {
+  const s = paging.scheduler;
+  const data = await fetch(`${API}/api/scheduler-runs?limit=${s.limit}&page=${s.page}`).then(r => r.json()).catch(() => ({ runs: [] }));
+  s.total = data.total ?? 0;
+  const rows = (data.runs || []).map(r => {
+    const tickerRuns = Array.isArray(r.ticker_runs) ? r.ticker_runs : [];
+    const tickers = tickerRuns.map(t => t.ticker + ' ' + t.profile).join(', ') || '—';
+    const results = tickerRuns.map(t => {
+      const cls = t.status === 'ok' ? 'bullish' : 'bearish';
+      const dec = t.decision ? ` → ${t.decision}` : '';
+      const err = t.error ? ` ⚠ ${t.error.slice(0, 30)}` : '';
+      return `<span class="${cls}">${t.ticker}${dec}${err} (${t.duration_ms}ms)</span>`;
+    }).join('<br>') || '—';
+    const statusCls = r.status === 'COMPLETED' ? 'bullish' : r.status === 'RUNNING' ? 'neutral' : 'bearish';
+    const dur = r.total_duration_ms != null ? (r.total_duration_ms / 1000).toFixed(1) + 's' : '—';
+    return `
+      <tr>
+        <td>${fmtTime(r.run_at)}&nbsp;<small style="color:#8b949e">${fmtDate(r.run_at)}</small></td>
+        <td>${r.trigger_type}</td>
+        <td class="${statusCls}">${r.status}</td>
+        <td>${r.skipped_reason ?? '—'}</td>
+        <td style="white-space:nowrap">${tickers}</td>
+        <td>${results}</td>
+        <td>${dur}</td>
+      </tr>
+    `;
+  });
+  setRows('tbl-scheduler', rows);
+  renderPagination('scheduler', loadScheduler);
+}
+loaderMap['loadScheduler'] = loadScheduler;
 
 async function loadAgents() {
   const data = await fetch(`${API}/api/agents`).then(r => r.json()).catch(() => ({ agents: [] }));
@@ -196,10 +292,7 @@ async function loadAgents() {
     const dirCls   = a.direction === 'BULLISH' ? 'bullish' : a.direction === 'BEARISH' ? 'bearish' : 'neutral';
     const sideCls  = a.optionRight === 'call' ? 'bullish' : 'bearish';
     const pnlEl    = a.fillPrice
-      ? (() => {
-          const pnl = ((a.fillPrice - a.limitPrice) / a.limitPrice * 100);
-          return `<span class="${pnl >= 0 ? 'bullish' : 'bearish'}">${pnl >= 0 ? '+' : ''}${pnl.toFixed(1)}%</span>`;
-        })()
+      ? `<span class="${((a.fillPrice - a.limitPrice) / a.limitPrice) >= 0 ? 'bullish' : 'bearish'}">${((a.fillPrice - a.limitPrice) / a.limitPrice) >= 0 ? '+' : ''}${(((a.fillPrice - a.limitPrice) / a.limitPrice) * 100).toFixed(1)}%</span>`
       : '—';
 
     return `
@@ -255,6 +348,7 @@ function loadTab(tab) {
     case 'evaluations': loadEvaluations(); break;
     case 'orders':      loadOrders();      break;
     case 'agents':      loadAgents();      break;
+    case 'scheduler':   loadScheduler();   break;
   }
 }
 

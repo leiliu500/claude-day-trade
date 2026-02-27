@@ -252,3 +252,48 @@ tr:hover td { background: #1c2128; }
   table { font-size: 12px; }
   td, th { padding: 8px; }
 }
+
+/* ── Pagination ─────────────────────────────────────────────────────────────── */
+.pagination {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 4px;
+  color: #8b949e;
+  font-size: 13px;
+}
+
+.pagination-controls {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.pg-btn {
+  background: #21262d;
+  border: 1px solid #30363d;
+  color: #e6edf3;
+  padding: 4px 10px;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 14px;
+  line-height: 1;
+}
+.pg-btn:hover:not(:disabled) { background: #30363d; }
+.pg-btn:disabled { opacity: 0.35; cursor: default; }
+
+.pg-current {
+  color: #e6edf3;
+  padding: 0 6px;
+  font-size: 13px;
+}
+
+.pg-limit {
+  background: #21262d;
+  border: 1px solid #30363d;
+  color: #e6edf3;
+  padding: 4px 6px;
+  border-radius: 6px;
+  font-size: 13px;
+  cursor: pointer;
+}

@@ -48,6 +48,7 @@
       <button class="tab" data-tab="evaluations">Evaluations</button>
       <button class="tab" data-tab="orders">Orders</button>
       <button class="tab" data-tab="agents">Agent Team</button>
+      <button class="tab" data-tab="scheduler">Scheduler</button>
     </nav>
 
     <!-- Tab content -->
@@ -77,6 +78,7 @@
         </thead>
         <tbody></tbody>
       </table>
+      <div id="pagination-signals"></div>
     </section>
 
     <section id="tab-decisions" class="tab-content">
@@ -90,6 +92,7 @@
         </thead>
         <tbody></tbody>
       </table>
+      <div id="pagination-decisions"></div>
     </section>
 
     <section id="tab-evaluations" class="tab-content">
@@ -104,6 +107,7 @@
         </thead>
         <tbody></tbody>
       </table>
+      <div id="pagination-evaluations"></div>
     </section>
 
     <section id="tab-orders" class="tab-content">
@@ -117,10 +121,24 @@
         </thead>
         <tbody></tbody>
       </table>
+      <div id="pagination-orders"></div>
     </section>
 
     <section id="tab-agents" class="tab-content">
       <div id="agent-cards" class="agent-cards"></div>
+    </section>
+
+    <section id="tab-scheduler" class="tab-content">
+      <table id="tbl-scheduler">
+        <thead>
+          <tr>
+            <th>Run At</th><th>Trigger</th><th>Status</th><th>Skipped Reason</th>
+            <th>Tickers</th><th>Results</th><th>Duration</th>
+          </tr>
+        </thead>
+        <tbody></tbody>
+      </table>
+      <div id="pagination-scheduler"></div>
     </section>
   </main>
 
