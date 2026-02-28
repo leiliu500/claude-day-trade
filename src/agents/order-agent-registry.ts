@@ -61,6 +61,18 @@ export class OrderAgentRegistry {
     entryAlignment: string;
     entryDirection: string;
   }): Promise<string> {
+    // Registry-level cap: never allow more than 2 concurrent positions per ticker.
+    // ADD_POSITION is intentional scaling but must stay bounded.
+    const MAX_POSITIONS_PER_TICKER = 2;
+    const existingCount = this.getByTicker(params.decision.ticker).length;
+    if (existingCount >= MAX_POSITIONS_PER_TICKER) {
+      console.warn(
+        `[Registry] createAndStart blocked — max ${MAX_POSITIONS_PER_TICKER} concurrent ` +
+        `position(s) per ticker reached for ${params.decision.ticker} (current: ${existingCount})`,
+      );
+      return '';
+    }
+
     const config: OrderAgentConfig = {
       decision:         params.decision,
       candidate:        params.candidate,

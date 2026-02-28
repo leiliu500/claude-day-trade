@@ -168,6 +168,17 @@ export async function runPipeline(
       case 'ADD_POSITION': {
         if (!decision.shouldExecute) break;
 
+        // Code-level guard: NEW_ENTRY is only valid when no positions are open
+        // for this ticker. If the AI returns NEW_ENTRY with open positions it is
+        // an error — use ADD_POSITION to intentionally scale, or CONFIRM_HOLD to hold.
+        if (decision.decisionType === 'NEW_ENTRY' && context.openPositions.length > 0) {
+          console.warn(
+            `[Pipeline] NEW_ENTRY blocked — ${context.openPositions.length} open position(s) ` +
+            `already exist for ${ticker}. AI should use ADD_POSITION to scale or CONFIRM_HOLD to hold.`,
+          );
+          break;
+        }
+
         // ExecutionAgent receives the orchestrator's DecisionResult as its
         // primary input and computes sizing + runs 8 safety gates.
         // No Alpaca calls here — only gate validation.

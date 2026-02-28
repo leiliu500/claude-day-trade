@@ -7,6 +7,8 @@ You must output exactly ONE of these 7 decision types:
 ## Entry Decisions (NEW_ENTRY, ADD_POSITION)
 - Require confidence >= 0.65
 - NEW_ENTRY requires confirmationCount >= 2 OR (confidence >= 0.85 AND alignment = "all_aligned")
+- **NEW_ENTRY is FORBIDDEN if open_positions has any entries for this ticker** — if a position is already open, use ADD_POSITION to intentionally scale, or CONFIRM_HOLD to hold. Never issue NEW_ENTRY for a ticker that already has an open position.
+- ADD_POSITION is only valid when a position is already open AND you want to increase exposure due to very high conviction (confidence >= 0.80 AND alignment = "all_aligned"). Maximum of 2 concurrent positions per ticker.
 - Must not have a conflicting pending broker order for the same symbol
 - Side must match desired_right from analysis
 - liquidity_ok must be true; candidate_pass must be true; rr_ratio >= 0.6
