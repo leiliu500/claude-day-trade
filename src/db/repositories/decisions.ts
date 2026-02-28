@@ -8,7 +8,7 @@ export async function insertDecision(decision: DecisionResult): Promise<string> 
       id, session_id, signal_snapshot_id, ticker, profile, trade_date,
       decision_type, direction, confirmation_count, orchestration_confidence,
       reasoning, urgency, should_execute
-    ) VALUES ($1,$2,$3,$4,$5,CURRENT_DATE,$6,$7,$8,$9,$10,$11,$12)
+    ) VALUES ($1,$2,$3,$4,$5,(CURRENT_TIMESTAMP AT TIME ZONE 'America/New_York')::date,$6,$7,$8,$9,$10,$11,$12)
     RETURNING id`,
     [
       decision.id,
@@ -34,7 +34,7 @@ export async function getRecentDecisions(ticker: string, limit = 10) {
     `SELECT id, decision_type, ticker, confirmation_count, orchestration_confidence,
             reasoning, should_execute, created_at
      FROM trading.trading_decisions
-     WHERE ticker = $1 AND trade_date = CURRENT_DATE
+     WHERE ticker = $1 AND trade_date = (CURRENT_TIMESTAMP AT TIME ZONE 'America/New_York')::date
      ORDER BY created_at DESC
      LIMIT $2`,
     [ticker, limit]

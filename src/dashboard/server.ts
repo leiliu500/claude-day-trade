@@ -49,7 +49,7 @@ export function startDashboard(port: number): void {
           `SELECT COUNT(*)::int AS total FROM trading.signal_snapshots WHERE trade_date >= CURRENT_DATE - INTERVAL '7 days'`
         ),
         pool.query(
-          `SELECT COUNT(*)::int AS total FROM trading.signal_snapshots WHERE trade_date = CURRENT_DATE`
+          `SELECT COUNT(*)::int AS total FROM trading.signal_snapshots WHERE trade_date = (CURRENT_TIMESTAMP AT TIME ZONE 'America/New_York')::date`
         ),
       ]);
       res.json({ signals: rows, total: countRows[0]?.total ?? 0, total_today: todayRows[0]?.total ?? 0, page, limit });

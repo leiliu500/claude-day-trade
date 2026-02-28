@@ -355,6 +355,7 @@ function loadTab(tab) {
 async function refreshAll() {
   loadPositions();
   loadPnl();
+  loadSignals();
   loadEvaluations();
   loadAgents();
   loadTab(currentTab);

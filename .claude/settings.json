@@ -15,7 +15,11 @@
       "Bash(docker-compose exec -T postgres psql -U postgres -d trading -c \"SELECT filename, applied_at FROM trading._migrations ORDER BY filename;\")",
       "Bash(docker compose exec -T postgres psql -U postgres -d trading -c \"SELECT filename, applied_at FROM trading._migrations ORDER BY filename;\")",
       "Bash(docker compose exec -T postgres psql -U trader -d day_trade -c \"SELECT filename, applied_at FROM trading._migrations ORDER BY filename;\")",
-      "Bash(docker compose exec -T postgres psql -U trader -d day_trade -c \"\\\\d trading.scheduler_runs\")"
+      "Bash(docker compose exec -T postgres psql -U trader -d day_trade -c \"\\\\d trading.scheduler_runs\")",
+      "Bash(wc -l /Users/leiliu/projects/claude-day-trade/src/**/*.ts)",
+      "Bash(docker exec day-trade-postgres psql -U trader -d day_trade -c \"SELECT COUNT\\(*\\) FROM trading.signal_snapshots WHERE trade_date = CURRENT_DATE;\")",
+      "Bash(docker exec day-trade-postgres psql -U trader -d day_trade -c \"SELECT trade_date, COUNT\\(*\\) FROM trading.signal_snapshots GROUP BY trade_date ORDER BY trade_date DESC LIMIT 5;\")",
+      "Bash(docker exec day-trade-postgres psql -U trader -d day_trade -c \"SELECT CURRENT_DATE, NOW\\(\\), CURRENT_TIMESTAMP AT TIME ZONE ''UTC'';\")"
     ],
     "additionalDirectories": [
       "/tmp"

@@ -21,7 +21,7 @@ export async function insertSignalSnapshot(
       option_liquidity_ok, spread_pct,
       signal_payload, option_payload, analysis_payload
     ) VALUES (
-      $1,$2,$3,CURRENT_DATE,$4,
+      $1,$2,$3,(CURRENT_TIMESTAMP AT TIME ZONE 'America/New_York')::date,$4,
       $5,$6,$7,$8,
       $9,$10,$11,
       $12,$13,$14,$15,
@@ -62,7 +62,7 @@ export async function getRecentSignals(ticker: string, limit = 10) {
             confidence_meets_threshold, selected_right, selected_symbol,
             entry_premium, risk_reward, option_liquidity_ok, created_at
      FROM trading.signal_snapshots
-     WHERE ticker = $1 AND trade_date = CURRENT_DATE
+     WHERE ticker = $1 AND trade_date = (CURRENT_TIMESTAMP AT TIME ZONE 'America/New_York')::date
      ORDER BY created_at DESC
      LIMIT $2`,
     [ticker, limit]
