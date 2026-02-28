@@ -289,11 +289,44 @@ async function loadAgents() {
 
   container.innerHTML = agents.map(a => {
     const phaseCls = `phase-${a.phase}`;
-    const dirCls   = a.direction === 'BULLISH' ? 'bullish' : a.direction === 'BEARISH' ? 'bearish' : 'neutral';
+    const dir      = (a.direction || '').toLowerCase();
+    const dirCls   = dir === 'bullish' ? 'bullish' : dir === 'bearish' ? 'bearish' : 'neutral';
     const sideCls  = a.optionRight === 'call' ? 'bullish' : 'bearish';
-    const pnlEl    = a.fillPrice
-      ? `<span class="${((a.fillPrice - a.limitPrice) / a.limitPrice) >= 0 ? 'bullish' : 'bearish'}">${((a.fillPrice - a.limitPrice) / a.limitPrice) >= 0 ? '+' : ''}${(((a.fillPrice - a.limitPrice) / a.limitPrice) * 100).toFixed(1)}%</span>`
-      : '—';
+
+    // Use the most-recent AI tick's pnl_pct as the live unrealized P&L estimate
+    const latestTick = (a.recentTicks || [])[0];
+    const pnlPct     = latestTick?.pnl_pct != null ? parseFloat(latestTick.pnl_pct) : null;
+    const pnlStr     = pnlPct != null
+      ? `<span class="${pnlPct >= 0 ? 'bullish' : 'bearish'}">${pnlPct >= 0 ? '+' : ''}${pnlPct.toFixed(1)}%</span>`
+      : (a.fillPrice ? '<span class="neutral">—</span>' : '<span class="neutral">Unfilled</span>');
+
+    const tierBadge = a.convictionTier
+      ? `<span class="meta-sep">·</span><span class="tier-${a.convictionTier}">${a.convictionTier.replace('_', ' ')}</span>`
+      : '';
+
+    const posIdShort = a.positionId ? a.positionId.slice(-8) : '—';
+
+    // Recent AI tick rows (newest first)
+    const ticksHtml = (a.recentTicks || []).length > 0
+      ? `<div class="agent-ticks">
+          <div class="ticks-label">Recent AI Decisions</div>
+          ${a.recentTicks.map(t => {
+            const overrideTag = t.overriding_orchestrator
+              ? ' <span class="tick-override">OVERRIDE</span>' : '';
+            const price    = t.current_price ? ` @ $${parseFloat(t.current_price).toFixed(2)}` : '';
+            const pnl      = t.pnl_pct != null
+              ? ` · ${parseFloat(t.pnl_pct) >= 0 ? '+' : ''}${parseFloat(t.pnl_pct).toFixed(1)}%` : '';
+            const newStopStr = t.new_stop
+              ? ` → stop $${parseFloat(t.new_stop).toFixed(2)}` : '';
+            const reason   = (t.reasoning || '').slice(0, 90);
+            return `
+              <div class="agent-tick">
+                <div><span class="tick-action tick-${t.action}">${t.action}${overrideTag}</span><span class="tick-meta">${price}${pnl}${newStopStr}</span></div>
+                <div class="tick-reason">${reason}</div>
+              </div>`;
+          }).join('')}
+        </div>`
+      : '';
 
     return `
       <div class="agent-card">
@@ -303,26 +336,37 @@ async function loadAgents() {
             <span class="${sideCls}">${a.optionRight?.toUpperCase()}</span>
             <code class="agent-symbol">${a.optionSymbol}</code>
           </div>
-          <span class="phase-badge ${phaseCls}">${a.phase.replace('_', ' ')}</span>
+          <span class="phase-badge ${phaseCls}">${a.phase.replace(/_/g, ' ')}</span>
         </div>
         <div class="agent-meta">
-          <span class="${dirCls}">${a.direction}</span>
+          <span class="${dirCls}">${a.direction || '—'}</span>
           <span class="meta-sep">·</span>
           <span>${a.profile}</span>
           <span class="meta-sep">·</span>
           <span>${(a.confidence * 100).toFixed(0)}% conf</span>
           <span class="meta-sep">·</span>
-          <span>${a.alignment}</span>
+          <span>${a.alignment || '—'}</span>
+          ${tierBadge}
         </div>
         <div class="agent-stats">
           <div class="agent-stat"><span class="stat-label">Qty</span><span>${a.qty}</span></div>
           <div class="agent-stat"><span class="stat-label">Entry</span><span>$${fmt(a.limitPrice)}</span></div>
           <div class="agent-stat"><span class="stat-label">Fill</span><span>${a.fillPrice ? '$' + fmt(a.fillPrice) : '—'}</span></div>
-          <div class="agent-stat"><span class="stat-label">Ticks</span><span>${a.tickCount}</span></div>
-          <div class="agent-stat"><span class="stat-label">Opened</span><span>${fmtTime(a.openedAt)}</span></div>
-          <div class="agent-stat"><span class="stat-label">Decision</span><span class="decision-${a.decisionType}">${a.decisionType}</span></div>
+          <div class="agent-stat"><span class="stat-label">Stop</span><span>${a.currentStop ? '$' + fmt(a.currentStop) : '—'}</span></div>
+          <div class="agent-stat"><span class="stat-label">TP</span><span>${a.currentTp ? '$' + fmt(a.currentTp) : '—'}</span></div>
+          <div class="agent-stat"><span class="stat-label">P&amp;L</span><span>${pnlStr}</span></div>
         </div>
-        <div class="agent-reasoning" title="${a.decisionReasoning || ''}">${a.decisionReasoning || '—'}</div>
+        <div class="agent-footer">
+          <span class="decision-${a.decisionType}">${a.decisionType}</span>
+          <span class="meta-sep">·</span>
+          <span>${fmtTime(a.openedAt)}</span>
+          <span class="meta-sep">·</span>
+          <span class="tick-count-badge">${a.tickCount} ticks</span>
+          <span class="meta-sep">·</span>
+          <span class="pos-id" title="${a.positionId}">…${posIdShort}</span>
+        </div>
+        <div class="agent-reasoning" title="${a.decisionReasoning || ''}">${(a.decisionReasoning || '—').slice(0, 200)}</div>
+        ${ticksHtml}
       </div>
     `;
   }).join('');

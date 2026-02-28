@@ -188,11 +188,64 @@ export function startDashboard(port: number): void {
     }
   });
 
-  // Live agent team (in-memory registry snapshot)
-  app.get('/api/agents', (_req, res) => {
+  // Live agent team — in-memory registry snapshot enriched with DB stop/tp + recent AI ticks
+  app.get('/api/agents', async (_req, res) => {
     try {
       const agents = OrderAgentRegistry.getInstance().getAll().map(a => a.getStatus());
-      res.json({ agents });
+
+      if (agents.length === 0) {
+        return void res.json({ agents: [] });
+      }
+
+      const pool = getPool();
+      const positionIds = agents.map(a => a.positionId).filter(Boolean);
+
+      const [{ rows: positions }, { rows: ticks }] = await Promise.all([
+        pool.query<{ id: string; current_stop: string | null; current_tp: string | null }>(
+          `SELECT id, current_stop::text, current_tp::text
+             FROM trading.position_journal
+            WHERE id = ANY($1::uuid[])`,
+          [positionIds],
+        ),
+        pool.query<{
+          position_id: string;
+          tick_count: number;
+          action: string;
+          pnl_pct: string | null;
+          current_price: string | null;
+          new_stop: string | null;
+          reasoning: string | null;
+          overriding_orchestrator: boolean;
+          orchestrator_suggestion: string | null;
+        }>(
+          `SELECT position_id, tick_count, action, pnl_pct::text, current_price::text,
+                  new_stop::text, reasoning, overriding_orchestrator, orchestrator_suggestion
+             FROM trading.order_agent_ticks
+            WHERE position_id = ANY($1::uuid[])
+            ORDER BY position_id, tick_count DESC`,
+          [positionIds],
+        ),
+      ]);
+
+      const stopTpMap = new Map(
+        positions.map(p => [p.id, { currentStop: p.current_stop, currentTp: p.current_tp }]),
+      );
+
+      // Keep the 3 most-recent ticks per position (already ordered DESC by tick_count)
+      const tickMap = new Map<string, typeof ticks>();
+      for (const tick of ticks) {
+        if (!tickMap.has(tick.position_id)) tickMap.set(tick.position_id, []);
+        const arr = tickMap.get(tick.position_id)!;
+        if (arr.length < 3) arr.push(tick);
+      }
+
+      const enriched = agents.map(a => ({
+        ...a,
+        ...(stopTpMap.get(a.positionId) ?? { currentStop: null, currentTp: null }),
+        recentTicks: tickMap.get(a.positionId) ?? [],
+      }));
+
+      res.json({ agents: enriched });
     } catch (err) {
       res.status(500).json({ error: (err as Error).message });
     }

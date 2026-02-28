@@ -267,6 +267,7 @@ export class OrderAgent {
       confidence:        entryConfidence,
       alignment:         entryAlignment,
       qty:               sizing.qty,
+      convictionTier:    sizing.convictionTier,
       limitPrice:        sizing.limitPrice,
       fillPrice:         this.fillPrice,
       openedAt:          this.openedAt,
@@ -677,9 +678,20 @@ export class OrderAgent {
     const symbol = candidate.contract.symbol;
     const ticker = decision.ticker;
 
-    console.log(`[OrderAgent ${ticker} ${symbol}] Exiting — ${reason}`);
+    // Read current qty from DB — may be less than sizing.qty if a REDUCE was executed earlier
+    let currentQty = sizing.qty;
+    if (this.positionId) {
+      const pool = getPool();
+      const { rows } = await pool.query<{ qty: number }>(
+        `SELECT qty FROM trading.position_journal WHERE id=$1 AND status='OPEN'`,
+        [this.positionId],
+      );
+      if (rows[0]?.qty) currentQty = rows[0].qty;
+    }
 
-    const { alpacaOrderId, fillPrice: immediateExitFill, error } = await submitMarketSellOrder(symbol, sizing.qty);
+    console.log(`[OrderAgent ${ticker} ${symbol}] Exiting qty=${currentQty} — ${reason}`);
+
+    const { alpacaOrderId, fillPrice: immediateExitFill, error } = await submitMarketSellOrder(symbol, currentQty);
 
     // Paper-trading options fill asynchronously — poll if not immediately filled
     let exitFill = immediateExitFill;
@@ -707,8 +719,8 @@ export class OrderAgent {
       orderSide:     'sell',
       orderType:     'market',
       positionIntent: 'sell_to_close',
-      submittedQty:  sizing.qty,
-      filledQty:     exitFill ? sizing.qty : 0,
+      submittedQty:  currentQty,
+      filledQty:     exitFill ? currentQty : 0,
       fillPrice:     exitFill,
       errorMessage:  error,
       submittedAt:   new Date().toISOString(),
@@ -716,7 +728,7 @@ export class OrderAgent {
 
     await closePosition({ positionId: this.positionId, exitPrice, entryPrice, closeReason: reason });
 
-    const pnl = (exitPrice - entryPrice) * sizing.qty * 100;
+    const pnl = (exitPrice - entryPrice) * currentQty * 100;
     const pnlStr     = pnl >= 0 ? `+$${pnl.toFixed(2)}` : `-$${Math.abs(pnl).toFixed(2)}`;
     const emoji      = reason.startsWith('STOP')    ? '🛑'
                      : reason.startsWith('TP')      ? '🎯'
@@ -728,7 +740,7 @@ export class OrderAgent {
       `<code>${symbol}</code>\n` +
       `${reason.slice(0, 120)}\n` +
       `Entry: $${entryPrice.toFixed(2)} → Exit: $${exitPrice.toFixed(2)}\n` +
-      `P&L: <b>${pnlStr}</b> | Qty: ${sizing.qty}`,
+      `P&L: <b>${pnlStr}</b> | Qty: ${currentQty}`,
     );
 
     await this._triggerEvaluation(exitPrice, reason);
@@ -777,7 +789,20 @@ export class OrderAgent {
       submittedAt:   new Date().toISOString(),
     });
 
-    if (error) console.error(`[OrderAgent ${decision.ticker}] Reduce error: ${error}`);
+    if (error) {
+      console.error(`[OrderAgent ${decision.ticker}] Reduce error: ${error}`);
+      return;
+    }
+
+    // Decrement qty in DB so subsequent monitor ticks and exits use the correct remaining qty
+    const pool = getPool();
+    await pool.query(
+      `UPDATE trading.position_journal
+          SET qty = GREATEST(qty - $1, 0)
+        WHERE id = $2 AND status = 'OPEN'`,
+      [reduceQty, this.positionId],
+    );
+    console.log(`[OrderAgent ${decision.ticker}] position_journal.qty decremented by ${reduceQty}`);
   }
 
   private async _triggerEvaluation(exitPrice: number, closeReason: string): Promise<void> {
