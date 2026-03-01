@@ -512,3 +512,29 @@ tr:hover td { background: #1c2128; }
   font-size: 13px;
   cursor: pointer;
 }
+
+/* ── Human Activity tab ───────────────────────────────────────────────────── */
+.activity-panel { padding: 0; }
+
+.activity-section-title {
+  font-size: 14px;
+  font-weight: 600;
+  color: #8b949e;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  margin: 0 0 12px 0;
+  padding-bottom: 8px;
+  border-bottom: 1px solid #30363d;
+}
+.activity-section-title small {
+  font-size: 12px;
+  text-transform: none;
+  letter-spacing: 0;
+  color: #6e7681;
+}
+
+/* Approval status badges */
+.approval-pending  { color: #d29922; font-weight: 600; }
+.approval-approved { color: #3fb950; font-weight: 600; }
+.approval-denied   { color: #f85149; font-weight: 600; }
+.approval-timeout  { color: #6e7681; font-weight: 600; }

@@ -287,6 +287,64 @@ export function startDashboard(port: number): void {
     }
   });
 
+  // Human approval requests (paginated)
+  app.get('/api/approvals', async (req, res) => {
+    try {
+      const pool = getPool();
+      const limit = Math.min(parseInt(String(req.query['limit'] ?? '50')), 500);
+      const page  = Math.max(parseInt(String(req.query['page']  ?? '1')), 1);
+      const offset = (page - 1) * limit;
+      const [{ rows }, { rows: countRows }, { rows: pendingRows }] = await Promise.all([
+        pool.query(
+          `SELECT id, ticker, profile, decision_type, option_symbol, option_side,
+                  qty, limit_price, confidence, status,
+                  responded_by_name, responded_at, created_at, expires_at
+           FROM trading.human_approvals
+           WHERE created_at >= NOW() - INTERVAL '7 days'
+           ORDER BY created_at DESC
+           LIMIT $1 OFFSET $2`,
+          [limit, offset]
+        ),
+        pool.query(
+          `SELECT COUNT(*)::int AS total FROM trading.human_approvals WHERE created_at >= NOW() - INTERVAL '7 days'`
+        ),
+        pool.query(
+          `SELECT COUNT(*)::int AS pending FROM trading.human_approvals WHERE status = 'PENDING' AND expires_at > NOW()`
+        ),
+      ]);
+      res.json({ approvals: rows, total: countRows[0]?.total ?? 0, pending: pendingRows[0]?.pending ?? 0, page, limit });
+    } catch (err) {
+      res.status(500).json({ error: (err as Error).message });
+    }
+  });
+
+  // Telegram interactions log (paginated)
+  app.get('/api/interactions', async (req, res) => {
+    try {
+      const pool = getPool();
+      const limit = Math.min(parseInt(String(req.query['limit'] ?? '50')), 500);
+      const page  = Math.max(parseInt(String(req.query['page']  ?? '1')), 1);
+      const offset = (page - 1) * limit;
+      const [{ rows }, { rows: countRows }] = await Promise.all([
+        pool.query(
+          `SELECT id, command, raw_text, user_id, user_name, chat_id,
+                  params, outcome, error_message, created_at
+           FROM trading.telegram_interactions
+           WHERE created_at >= NOW() - INTERVAL '7 days'
+           ORDER BY created_at DESC
+           LIMIT $1 OFFSET $2`,
+          [limit, offset]
+        ),
+        pool.query(
+          `SELECT COUNT(*)::int AS total FROM trading.telegram_interactions WHERE created_at >= NOW() - INTERVAL '7 days'`
+        ),
+      ]);
+      res.json({ interactions: rows, total: countRows[0]?.total ?? 0, page, limit });
+    } catch (err) {
+      res.status(500).json({ error: (err as Error).message });
+    }
+  });
+
   // SPA fallback
   app.get('*', (_req, res) => {
     res.sendFile(join(__dirname, 'public/index.html'));

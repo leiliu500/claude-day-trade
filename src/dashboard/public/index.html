@@ -38,6 +38,10 @@
         <h3>Live Agents</h3>
         <div class="card-value" id="val-agents">—</div>
       </div>
+      <div class="card" id="card-pending-approvals">
+        <h3>Pending Approvals</h3>
+        <div class="card-value" id="val-pending-approvals">—</div>
+      </div>
     </section>
 
     <!-- Tab navigation -->
@@ -49,6 +53,7 @@
       <button class="tab" data-tab="orders">Orders</button>
       <button class="tab" data-tab="agents">Agent Team</button>
       <button class="tab" data-tab="scheduler">Scheduler</button>
+      <button class="tab" data-tab="activity">Human Activity</button>
       <button class="tab" data-tab="database">Database</button>
     </nav>
 
@@ -144,6 +149,37 @@
       </table>
       <div id="pagination-scheduler"></div>
     </section>
+    <section id="tab-activity" class="tab-content">
+      <div class="activity-panel">
+
+        <h2 class="activity-section-title">Trade Approvals <small>(Approve / Deny from Telegram)</small></h2>
+        <table id="tbl-approvals">
+          <thead>
+            <tr>
+              <th>Time</th><th>Ticker</th><th>Profile</th><th>Decision</th>
+              <th>Symbol</th><th>Side</th><th>Qty</th><th>Limit $</th>
+              <th>Confidence</th><th>Status</th><th>Responded By</th><th>Responded At</th><th>Expires At</th>
+            </tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+        <div id="pagination-approvals"></div>
+
+        <h2 class="activity-section-title" style="margin-top:2rem">All Telegram Interactions</h2>
+        <table id="tbl-interactions">
+          <thead>
+            <tr>
+              <th>Time</th><th>Command</th><th>User</th><th>Raw Text</th>
+              <th>Params</th><th>Outcome</th><th>Error</th>
+            </tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+        <div id="pagination-interactions"></div>
+
+      </div>
+    </section>
+
     <section id="tab-database" class="tab-content">
       <div class="db-cleanup-panel">
         <h2 class="db-panel-title">Database Cleanup</h2>
@@ -160,7 +196,7 @@
         <div class="db-cleanup-card db-cleanup-danger">
           <div class="db-cleanup-info">
             <h3>Full Database Reset</h3>
-            <p>Truncates <strong>all 11 tables</strong> in the trading schema — signal_snapshots, trading_decisions, position_journal, order_executions, trade_evaluations, and more.</p>
+            <p>Truncates <strong>all 13 tables</strong> in the trading schema — signal_snapshots, trading_decisions, position_journal, order_executions, trade_evaluations, telegram_interactions, human_approvals, and more.</p>
             <p class="db-danger-note">⚠️ All history is permanently deleted. This cannot be undone.</p>
           </div>
           <button class="btn-cleanup-all" id="btn-cleanup-all" onclick="cleanupDb('all')">💣 Full Reset</button>

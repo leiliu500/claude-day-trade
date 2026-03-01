@@ -3,9 +3,16 @@ import { config } from '../config.js';
 import { runPipeline } from '../pipeline/trading-pipeline.js';
 import { getActivePositions } from '../db/repositories/positions.js';
 import { notifySignalAnalysis } from './notifier.js';
+import { ApprovalService } from './approval-service.js';
 import { OrderAgentRegistry } from '../agents/order-agent-registry.js';
 import { cleanupSignalHistory, cleanupAllData } from '../db/repositories/cleanup.js';
+import { insertTelegramInteraction } from '../db/repositories/telegram-interactions.js';
 import type { TradingProfile } from '../types/market.js';
+
+// ── Interaction tracker (fire-and-forget, never blocks bot handlers) ──────────
+function track(params: Parameters<typeof insertTelegramInteraction>[0]): void {
+  insertTelegramInteraction(params).catch(() => {});
+}
 
 // Pending close-all confirmations: chatId → expiry timestamp
 const pendingCloseAll = new Map<number, number>();
@@ -36,6 +43,14 @@ export function createTelegramBot(): Telegraf {
 
   // ── /start ────────────────────────────────────────────────────────────────
   bot.start(async (ctx) => {
+    track({
+      command: '/start',
+      rawText: ctx.message.text,
+      userId: String(ctx.from.id),
+      userName: ctx.from.username ?? ctx.from.first_name,
+      chatId: String(ctx.chat.id),
+      outcome: 'ok',
+    });
     await ctx.reply(
       `🤖 Day Trade Bot\n\n` +
       `Send <TICKER> <PROFILE> to analyze:\n` +
@@ -54,6 +69,14 @@ export function createTelegramBot(): Telegraf {
 
   // ── /help ─────────────────────────────────────────────────────────────────
   bot.help(async (ctx) => {
+    track({
+      command: '/help',
+      rawText: ctx.message.text,
+      userId: String(ctx.from.id),
+      userName: ctx.from.username ?? ctx.from.first_name,
+      chatId: String(ctx.chat.id),
+      outcome: 'ok',
+    });
     await ctx.reply(
       `Commands:\n` +
       `/status — system status\n` +
@@ -69,6 +92,15 @@ export function createTelegramBot(): Telegraf {
   // ── /status ───────────────────────────────────────────────────────────────
   bot.command('status', async (ctx) => {
     const positions = await getActivePositions();
+    track({
+      command: '/status',
+      rawText: ctx.message.text,
+      userId: String(ctx.from.id),
+      userName: ctx.from.username ?? ctx.from.first_name,
+      chatId: String(ctx.chat.id),
+      params: { positions_count: positions.length },
+      outcome: 'ok',
+    });
     const msg = `✅ System running\n📍 Open positions: ${positions.length}\n🕐 ${new Date().toUTCString()}`;
     await ctx.reply(msg);
   });
@@ -76,6 +108,15 @@ export function createTelegramBot(): Telegraf {
   // ── /positions ────────────────────────────────────────────────────────────
   bot.command('positions', async (ctx) => {
     const positions = await getActivePositions();
+    track({
+      command: '/positions',
+      rawText: ctx.message.text,
+      userId: String(ctx.from.id),
+      userName: ctx.from.username ?? ctx.from.first_name,
+      chatId: String(ctx.chat.id),
+      params: { positions_count: positions.length },
+      outcome: 'ok',
+    });
     if (positions.length === 0) {
       await ctx.reply('No open positions.');
       return;
@@ -115,6 +156,15 @@ export function createTelegramBot(): Telegraf {
         : allPositions;
 
       pendingCloseAll.set(chatId, now + CONFIRM_TTL_MS);
+      track({
+        command: '/closeall',
+        rawText: ctx.message.text,
+        userId: String(ctx.from.id),
+        userName: ctx.from.username ?? ctx.from.first_name,
+        chatId: String(chatId),
+        params: { ticker: ticker ?? null, positions_count: positions.length },
+        outcome: 'confirm_requested',
+      });
       const scope = ticker ? `<b>${ticker}</b>` : '<b>ALL symbols</b>';
       await ctx.reply(
         `⚠️ <b>Close Positions: ${ticker ?? 'ALL'}</b>\n\n` +
@@ -138,6 +188,22 @@ export function createTelegramBot(): Telegraf {
         ticker,
       );
 
+      track({
+        command: '/closeall',
+        rawText: ctx.message.text,
+        userId: String(ctx.from.id),
+        userName: ctx.from.username ?? ctx.from.first_name,
+        chatId: String(chatId),
+        params: {
+          ticker: ticker ?? null,
+          agents_notified: result.agentsNotified,
+          db_fallback_closed: result.dbFallbackClosed,
+          orders_cancelled: result.ordersCancelled,
+          errors: result.errors.length,
+        },
+        outcome: 'executed',
+      });
+
       const lines: string[] = [`✅ <b>Close Complete (${scopeLabel})</b>\n`];
       if (result.agentsNotified > 0)   lines.push(`• ${result.agentsNotified} position agent(s) notified`);
       if (result.dbFallbackClosed > 0) lines.push(`• ${result.dbFallbackClosed} DB position(s) force-closed`);
@@ -149,6 +215,16 @@ export function createTelegramBot(): Telegraf {
 
       await ctx.reply(lines.join('\n'), { parse_mode: 'HTML' });
     } catch (err) {
+      track({
+        command: '/closeall',
+        rawText: ctx.message.text,
+        userId: String(ctx.from.id),
+        userName: ctx.from.username ?? ctx.from.first_name,
+        chatId: String(chatId),
+        params: { ticker: ticker ?? null },
+        outcome: 'error',
+        errorMessage: (err as Error).message,
+      });
       await ctx.reply(`❌ Close failed: ${(err as Error).message}`);
     }
   });
@@ -168,15 +244,25 @@ export function createTelegramBot(): Telegraf {
     if (!expiry || now > expiry) {
       // First call — request confirmation
       pendingCleanup.set(confirmKey, now + CONFIRM_TTL_MS);
+      track({
+        command: '/cleanup',
+        rawText: ctx.message.text,
+        userId: String(ctx.from.id),
+        userName: ctx.from.username ?? ctx.from.first_name,
+        chatId: String(chatId),
+        params: { scope },
+        outcome: 'confirm_requested',
+      });
 
       if (scope === 'all') {
         await ctx.reply(
           `⚠️ <b>FULL DATABASE RESET</b>\n\n` +
-          `This will <b>TRUNCATE all 11 tables</b> in the trading schema:\n` +
+          `This will <b>TRUNCATE all 13 tables</b> in the trading schema:\n` +
           `• signal_snapshots, trading_decisions, decision_confirmations\n` +
           `• position_journal, order_executions, trade_evaluations\n` +
           `• trading_sessions, order_agent_ticks, scheduler_runs\n` +
-          `• broker_positions, broker_open_orders\n\n` +
+          `• broker_positions, broker_open_orders\n` +
+          `• telegram_interactions, human_approvals\n\n` +
           `All history will be permanently deleted.\n\n` +
           `Send <code>/cleanup all</code> again within 30 seconds to confirm.`,
           { parse_mode: 'HTML' },
@@ -204,6 +290,20 @@ export function createTelegramBot(): Telegraf {
         ? await cleanupAllData()
         : await cleanupSignalHistory();
 
+      track({
+        command: '/cleanup',
+        rawText: ctx.message.text,
+        userId: String(ctx.from.id),
+        userName: ctx.from.username ?? ctx.from.first_name,
+        chatId: String(chatId),
+        params: {
+          scope,
+          rows_deleted: result.rowsDeleted,
+          tables_affected: result.tablesAffected,
+        },
+        outcome: 'executed',
+      });
+
       if (scope === 'all') {
         await ctx.reply(
           `✅ <b>Full Reset Complete</b>\n\n` +
@@ -221,7 +321,82 @@ export function createTelegramBot(): Telegraf {
         await ctx.reply(lines.join('\n'), { parse_mode: 'HTML' });
       }
     } catch (err) {
+      track({
+        command: '/cleanup',
+        rawText: ctx.message.text,
+        userId: String(ctx.from.id),
+        userName: ctx.from.username ?? ctx.from.first_name,
+        chatId: String(chatId),
+        params: { scope },
+        outcome: 'error',
+        errorMessage: (err as Error).message,
+      });
       await ctx.reply(`❌ Cleanup failed: ${(err as Error).message}`);
+    }
+  });
+
+  // ── Human approval callbacks ──────────────────────────────────────────────
+  bot.action(/^approve_(.+)$/, async (ctx) => {
+    const approvalId = ctx.match[1]!;
+    const from = ctx.from!;
+
+    // Answer immediately to dismiss Telegram's loading indicator on the button
+    await ctx.answerCbQuery('✅ Approving...').catch(() => {});
+
+    const handled = await ApprovalService.getInstance().handleCallback(approvalId, 'approved', from);
+
+    track({
+      command: 'approve',
+      rawText: `approve_${approvalId}`,
+      userId: String(from.id),
+      userName: from.username ?? from.first_name,
+      chatId: String(ctx.chat?.id ?? from.id),
+      params: { approval_id: approvalId },
+      outcome: handled ? 'approved' : 'expired',
+    });
+
+    // Remove inline keyboard from the original message
+    await ctx.editMessageReplyMarkup({ inline_keyboard: [] }).catch(() => {});
+
+    const name = from.first_name ?? from.username ?? `User ${from.id}`;
+    if (handled) {
+      await ctx.reply(
+        `✅ <b>Trade APPROVED</b> by ${name}\nOrder submission proceeding...`,
+        { parse_mode: 'HTML' },
+      );
+    } else {
+      await ctx.reply('⏰ This approval request has already expired (timed out).', { parse_mode: 'HTML' });
+    }
+  });
+
+  bot.action(/^deny_(.+)$/, async (ctx) => {
+    const approvalId = ctx.match[1]!;
+    const from = ctx.from!;
+
+    await ctx.answerCbQuery('❌ Denied.').catch(() => {});
+
+    const handled = await ApprovalService.getInstance().handleCallback(approvalId, 'denied', from);
+
+    track({
+      command: 'deny',
+      rawText: `deny_${approvalId}`,
+      userId: String(from.id),
+      userName: from.username ?? from.first_name,
+      chatId: String(ctx.chat?.id ?? from.id),
+      params: { approval_id: approvalId },
+      outcome: handled ? 'denied' : 'expired',
+    });
+
+    await ctx.editMessageReplyMarkup({ inline_keyboard: [] }).catch(() => {});
+
+    const name = from.first_name ?? from.username ?? `User ${from.id}`;
+    if (handled) {
+      await ctx.reply(
+        `❌ <b>Trade DENIED</b> by ${name}\nNo order will be submitted.`,
+        { parse_mode: 'HTML' },
+      );
+    } else {
+      await ctx.reply('⏰ This approval request has already expired (timed out).', { parse_mode: 'HTML' });
     }
   });
 
@@ -234,16 +409,59 @@ export function createTelegramBot(): Telegraf {
 
     const parsed = parseTradeRequest(text);
     if (!parsed) {
+      track({
+        command: 'unknown_text',
+        rawText: text.slice(0, 200),
+        userId: String(ctx.from.id),
+        userName: ctx.from.username ?? ctx.from.first_name,
+        chatId: String(ctx.chat.id),
+        outcome: 'error',
+        errorMessage: 'unrecognized format',
+      });
       await ctx.reply('Format: <code>SPY S</code> (ticker + profile S/M/L)', { parse_mode: 'HTML' });
       return;
     }
+
+    track({
+      command: 'trade_trigger',
+      rawText: text,
+      userId: String(ctx.from.id),
+      userName: ctx.from.username ?? ctx.from.first_name,
+      chatId: String(ctx.chat.id),
+      params: { ticker: parsed.ticker, profile: parsed.profile },
+      outcome: 'running',
+    });
 
     await ctx.reply(`🔍 Analyzing ${parsed.ticker} (${parsed.profile} profile)...`);
 
     try {
       const result = await runPipeline(parsed.ticker, parsed.profile, 'MANUAL');
+      track({
+        command: 'trade_trigger',
+        rawText: text,
+        userId: String(ctx.from.id),
+        userName: ctx.from.username ?? ctx.from.first_name,
+        chatId: String(ctx.chat.id),
+        params: {
+          ticker: parsed.ticker,
+          profile: parsed.profile,
+          decision: result.decision,
+          confidence: result.confidence,
+        },
+        outcome: result.decision,
+      });
       await notifySignalAnalysis(result);
     } catch (err) {
+      track({
+        command: 'trade_trigger',
+        rawText: text,
+        userId: String(ctx.from.id),
+        userName: ctx.from.username ?? ctx.from.first_name,
+        chatId: String(ctx.chat.id),
+        params: { ticker: parsed.ticker, profile: parsed.profile },
+        outcome: 'error',
+        errorMessage: (err as Error).message,
+      });
       await ctx.reply(`❌ Pipeline error: ${(err as Error).message}`);
     }
   });

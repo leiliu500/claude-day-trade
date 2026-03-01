@@ -40,6 +40,14 @@ export async function cleanupSignalHistory(): Promise<CleanupResult> {
       name: 'order_agent_ticks',
       sql: `DELETE FROM trading.order_agent_ticks WHERE created_at::date < CURRENT_DATE`,
     },
+    {
+      name: 'telegram_interactions',
+      sql: `DELETE FROM trading.telegram_interactions WHERE created_at::date < CURRENT_DATE`,
+    },
+    {
+      name: 'human_approvals',
+      sql: `DELETE FROM trading.human_approvals WHERE created_at::date < CURRENT_DATE`,
+    },
   ];
 
   for (const { sql, name } of steps) {
@@ -73,7 +81,9 @@ export async function cleanupAllData(): Promise<CleanupResult> {
       trading.trading_decisions,
       trading.signal_snapshots,
       trading.trading_sessions,
-      trading.scheduler_runs
+      trading.scheduler_runs,
+      trading.telegram_interactions,
+      trading.human_approvals
     CASCADE
   `);
 

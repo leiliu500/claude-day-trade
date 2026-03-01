@@ -4,6 +4,7 @@ import { AnalysisAgent } from '../agents/analysis-agent.js';
 import { DecisionOrchestrator } from '../agents/decision-orchestrator.js';
 import { ExecutionAgent } from '../agents/execution-agent.js';
 import { OrderAgentRegistry } from '../agents/order-agent-registry.js';
+import { ApprovalService } from '../telegram/approval-service.js';
 import { buildContext } from './context-builder.js';
 import { checkMarketOpen } from './safety-gates.js';
 import { getOrCreateSession } from '../db/repositories/sessions.js';
@@ -17,6 +18,7 @@ import type { SignalPayload } from '../types/signal.js';
 import type { OptionEvaluation } from '../types/options.js';
 import type { AnalysisResult } from '../types/analysis.js';
 import type { SizeResult } from '../types/trade.js';
+import type { ApprovalOutcome } from '../telegram/approval-service.js';
 
 /**
  * Returns a fully-formed WAIT without calling any AI.
@@ -71,6 +73,8 @@ export interface PipelineResult {
   orderQty?: number;
   orderPrice?: number;
   failedGates?: string[];
+  // Human approval (only set when decision was NEW_ENTRY and human gate triggered)
+  humanApprovalOutcome?: ApprovalOutcome;
   // Full context for rich notifications
   signal?: SignalPayload;
   option?: OptionEvaluation;
@@ -195,6 +199,22 @@ export async function runPipeline(
 
         if (!passed || !sizing || !optionEval.winnerCandidate) {
           result.failedGates = failedGates;
+          break;
+        }
+
+        // ── Human Approval Gate ────────────────────────────────────────────
+        // Send a Telegram message with Approve / Deny buttons and wait for
+        // human confirmation before submitting any Alpaca order.
+        const approvalOutcome = await ApprovalService.getInstance().requestApproval({
+          decision,
+          candidate: optionEval.winnerCandidate,
+          sizing,
+          confidence: analysis.confidence,
+        });
+        result.humanApprovalOutcome = approvalOutcome;
+
+        if (approvalOutcome !== 'approved') {
+          console.log(`[Pipeline] NEW_ENTRY blocked by human (${approvalOutcome}) for ${ticker}`);
           break;
         }
 

@@ -404,6 +404,15 @@ export async function notifySignalAnalysis(result: PipelineResult): Promise<void
     msg += `\n\nNOTE: AI suggested ${option.winner ? `BUY_${option.winner.toUpperCase()}` : 'n/a'}, but overridden to WAIT: ${result.failedGates.join('; ')}.`;
   }
 
+  if (result.humanApprovalOutcome) {
+    const icon  = result.humanApprovalOutcome === 'approved' ? '✅'
+      : result.humanApprovalOutcome === 'denied' ? '❌' : '⏰';
+    const label = result.humanApprovalOutcome === 'approved' ? 'Approved — order submitted'
+      : result.humanApprovalOutcome === 'denied'  ? 'Denied by user — order cancelled'
+      : 'Timed out — order cancelled';
+    msg += `\n\n${icon} <b>Human Approval:</b> ${label}`;
+  }
+
   if (result.error) {
     msg += `\n\n❌ Error: ${result.error}`;
   }

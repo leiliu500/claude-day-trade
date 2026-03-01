@@ -6,11 +6,13 @@ let refreshInterval = null;
 
 // ── Pagination state ──────────────────────────────────────────────────────────
 const paging = {
-  signals:     { page: 1, limit: 50, total: 0 },
-  decisions:   { page: 1, limit: 50, total: 0 },
-  evaluations: { page: 1, limit: 50, total: 0 },
-  orders:      { page: 1, limit: 50, total: 0 },
-  scheduler:   { page: 1, limit: 50, total: 0 },
+  signals:      { page: 1, limit: 50, total: 0 },
+  decisions:    { page: 1, limit: 50, total: 0 },
+  evaluations:  { page: 1, limit: 50, total: 0 },
+  orders:       { page: 1, limit: 50, total: 0 },
+  scheduler:    { page: 1, limit: 50, total: 0 },
+  approvals:    { page: 1, limit: 50, total: 0 },
+  interactions: { page: 1, limit: 50, total: 0 },
 };
 
 // ── Tab switching ──────────────────────────────────────────────────────────────
@@ -430,6 +432,84 @@ async function loadPnl() {
   }
 }
 
+// ── Approval status badge helper ──────────────────────────────────────────────
+function approvalStatusBadge(status) {
+  const map = {
+    PENDING:  '<span class="approval-pending">PENDING</span>',
+    APPROVED: '<span class="approval-approved">APPROVED</span>',
+    DENIED:   '<span class="approval-denied">DENIED</span>',
+    TIMEOUT:  '<span class="approval-timeout">TIMEOUT</span>',
+  };
+  return map[status] ?? status;
+}
+
+// ── Outcome badge helper ───────────────────────────────────────────────────────
+function outcomeBadge(outcome) {
+  if (!outcome) return '—';
+  const cls = outcome === 'ok' || outcome === 'executed' || outcome === 'approved'
+    ? 'bullish'
+    : outcome === 'error' || outcome === 'denied'
+    ? 'bearish'
+    : outcome === 'confirm_requested' || outcome === 'running'
+    ? 'neutral'
+    : '';
+  return `<span class="${cls}">${outcome}</span>`;
+}
+
+async function loadApprovals() {
+  const s = paging.approvals;
+  const data = await fetch(`${API}/api/approvals?limit=${s.limit}&page=${s.page}`).then(r => r.json()).catch(() => ({ approvals: [] }));
+  s.total = data.total ?? 0;
+
+  // Update summary card
+  const pendingEl = document.getElementById('val-pending-approvals');
+  if (pendingEl) pendingEl.textContent = data.pending ?? 0;
+
+  const rows = (data.approvals || []).map(a => `
+    <tr>
+      <td>${fmtTime(a.created_at)}&nbsp;<small style="color:#8b949e">${fmtDate(a.created_at)}</small></td>
+      <td><b>${a.ticker}</b></td>
+      <td>${a.profile}</td>
+      <td class="decision-${a.decision_type}">${a.decision_type}</td>
+      <td><code>${a.option_symbol ?? '—'}</code></td>
+      <td class="${a.option_side ?? ''}">${a.option_side?.toUpperCase() ?? '—'}</td>
+      <td>${a.qty ?? '—'}</td>
+      <td>${a.limit_price ? '$' + fmt(a.limit_price) : '—'}</td>
+      <td>${a.confidence ? (parseFloat(a.confidence) * 100).toFixed(0) + '%' : '—'}</td>
+      <td>${approvalStatusBadge(a.status)}</td>
+      <td>${a.responded_by_name ?? '—'}</td>
+      <td>${a.responded_at ? fmtTime(a.responded_at) : '—'}</td>
+      <td>${a.expires_at ? fmtTime(a.expires_at) : '—'}</td>
+    </tr>
+  `);
+  setRows('tbl-approvals', rows);
+  renderPagination('approvals', loadApprovals);
+}
+loaderMap['loadApprovals'] = loadApprovals;
+
+async function loadInteractions() {
+  const s = paging.interactions;
+  const data = await fetch(`${API}/api/interactions?limit=${s.limit}&page=${s.page}`).then(r => r.json()).catch(() => ({ interactions: [] }));
+  s.total = data.total ?? 0;
+  const rows = (data.interactions || []).map(i => {
+    const paramsStr = i.params ? JSON.stringify(i.params) : '—';
+    return `
+      <tr>
+        <td>${fmtTime(i.created_at)}&nbsp;<small style="color:#8b949e">${fmtDate(i.created_at)}</small></td>
+        <td><code>${i.command}</code></td>
+        <td>${i.user_name ?? i.user_id}</td>
+        <td class="reasoning" title="${i.raw_text || ''}">${i.raw_text ?? '—'}</td>
+        <td class="reasoning" title="${paramsStr}">${paramsStr}</td>
+        <td>${outcomeBadge(i.outcome)}</td>
+        <td class="${i.error_message ? 'bearish' : ''}" title="${i.error_message || ''}">${i.error_message ? i.error_message.slice(0, 40) : '—'}</td>
+      </tr>
+    `;
+  });
+  setRows('tbl-interactions', rows);
+  renderPagination('interactions', loadInteractions);
+}
+loaderMap['loadInteractions'] = loadInteractions;
+
 // ── Database cleanup ──────────────────────────────────────────────────────────
 let _cleanupPending = null; // { scope, expiresAt }
 
@@ -503,6 +583,7 @@ function loadTab(tab) {
     case 'orders':      loadOrders();      break;
     case 'agents':      loadAgents();      break;
     case 'scheduler':   loadScheduler();   break;
+    case 'activity':    loadApprovals(); loadInteractions(); break;
     case 'database':    /* static panel, nothing to load */ break;
   }
 }
@@ -513,6 +594,7 @@ async function refreshAll() {
   loadSignals();
   loadEvaluations();
   loadAgents();
+  loadApprovals();   // keeps the pending-approvals card updated
   loadTab(currentTab);
   document.getElementById('last-updated').textContent =
     `Last updated: ${new Date().toLocaleTimeString()}`;
