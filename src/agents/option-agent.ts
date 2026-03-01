@@ -101,7 +101,7 @@ export class OptionAgent {
     const putCandidate = this.selectBestCandidate(putEnriched, signal, desiredSide);
 
     // Compare candidates — pick winner by total score
-    const winner = this.pickWinner(callCandidate, putCandidate, desiredSide);
+    const winner = this.pickWinner(callCandidate, putCandidate);
 
     return {
       signalId: signal.id,
@@ -201,14 +201,15 @@ export class OptionAgent {
     const liquidityOk = contract.spreadPct <= config.MAX_SPREAD_PCT * 100;
     const sideMatchOk = contract.side === desiredSide;
 
-    // R:R computation using ATR
-    const atr = signal.atr;
+    // R:R computation using ATR scaled to option-premium units via delta.
+    // Underlying ATR × |delta| converts the underlying move to an expected premium move.
+    // Fallback delta = 0.5 (ATM assumption) when Greeks are unavailable.
+    const optionAtr = signal.atr * Math.abs(contract.delta ?? 0.5);
     let rrRatio = 0;
-    if (atr > 0 && contract.mid > 0) {
-      const stopDist = 0.8 * atr;
-      const tpDist = 1.6 * atr;
-      rrRatio = tpDist / stopDist; // = 2.0 (fixed ratio, but sanity check vs premium)
-      // Adjust: if stop would go below 0, penalize
+    if (optionAtr > 0 && contract.mid > 0) {
+      const stopDist = 0.8 * optionAtr;
+      const tpDist   = 1.6 * optionAtr;
+      rrRatio = tpDist / stopDist; // = 2.0 (fixed ratio, sanity check vs premium)
       if (contract.mid - stopDist <= 0) rrRatio = 0;
     }
 
@@ -236,18 +237,12 @@ export class OptionAgent {
   }
 
   private buildCandidate(contract: OptionContract, score: OptionScore, signal: SignalPayload): OptionCandidate {
-    const atr = signal.atr;
     const entry = contract.mid;
 
-    let stop: number;
-    let tp: number;
-    if (contract.side === 'call') {
-      stop = Math.max(0.01, entry - 0.8 * atr);
-      tp = entry + 1.6 * atr;
-    } else {
-      stop = Math.max(0.01, entry - 0.8 * atr);
-      tp = entry + 1.6 * atr;
-    }
+    // Scale underlying ATR to option-premium units via |delta| (fallback 0.5 for ATM).
+    const optionAtr = signal.atr * Math.abs(contract.delta ?? 0.5);
+    const stop = Math.max(0.01, entry - 0.8 * optionAtr);
+    const tp   = entry + 1.6 * optionAtr;
 
     const rrRatio = entry - stop > 0 ? (tp - entry) / (entry - stop) : 0;
 
@@ -275,7 +270,6 @@ export class OptionAgent {
   private pickWinner(
     call: OptionCandidate | null,
     put: OptionCandidate | null,
-    desiredSide: OptionSide
   ): OptionCandidate | null {
     if (!call && !put) return null;
     if (!call) return put;

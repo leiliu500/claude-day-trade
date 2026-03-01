@@ -102,6 +102,52 @@ window.changeLimit = function(key, val, fnName) {
 };
 
 // ── Loaders ───────────────────────────────────────────────────────────────────
+// ── Close positions (ticker = specific symbol, undefined = all) ───────────────
+let _closePending = null; // { ticker, expiresAt }
+
+async function closePositions(ticker) {
+  const label = ticker ?? 'ALL';
+  const now = Date.now();
+
+  // Two-tap confirmation
+  if (!_closePending || _closePending.ticker !== label || now > _closePending.expiresAt) {
+    _closePending = { ticker: label, expiresAt: now + 10_000 };
+    const msg = ticker
+      ? `Click again within 10s to confirm closing ALL ${ticker} positions.`
+      : 'Click again within 10s to confirm closing ALL positions.';
+    if (!confirm(`⚠️ ${msg}`)) { _closePending = null; return; }
+  }
+
+  _closePending = null;
+
+  const btnAll = document.getElementById('btn-closeall-all');
+  if (btnAll) { btnAll.disabled = true; btnAll.textContent = 'Closing…'; }
+
+  try {
+    const body = ticker ? JSON.stringify({ ticker }) : '{}';
+    const res = await fetch(`${API}/api/closeall`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body,
+    });
+    const result = await res.json();
+    if (result.ok) {
+      const parts = [];
+      if (result.agentsNotified)   parts.push(`${result.agentsNotified} agent(s) notified`);
+      if (result.dbFallbackClosed) parts.push(`${result.dbFallbackClosed} DB position(s) closed`);
+      if (result.ordersCancelled)  parts.push(`${result.ordersCancelled} order(s) cancelled`);
+      alert(`✅ Close complete (${label})\n${parts.join(', ') || 'Nothing to close.'}`);
+    } else {
+      alert(`❌ Close failed: ${result.error}`);
+    }
+  } catch (e) {
+    alert(`❌ Error: ${e.message}`);
+  } finally {
+    if (btnAll) { btnAll.disabled = false; btnAll.textContent = '🔴 Close All'; }
+    loadPositions();
+  }
+}
+
 async function loadPositions() {
   const data = await fetch(`${API}/api/positions`).then(r => r.json()).catch(() => ({ positions: [] }));
   const rows = (data.positions || []).map(p => `
@@ -121,6 +167,7 @@ async function loadPositions() {
       <td>${p.confirmation_count ?? '—'}</td>
       <td>${fmtTime(p.opened_at)}</td>
       <td class="reasoning" title="${p.entry_reasoning || ''}">${p.entry_reasoning || '—'}</td>
+      <td><button class="btn-close-ticker" onclick="closePositions('${p.ticker}')">Close ${p.ticker}</button></td>
     </tr>
   `);
   setRows('tbl-positions', rows);
@@ -383,6 +430,69 @@ async function loadPnl() {
   }
 }
 
+// ── Database cleanup ──────────────────────────────────────────────────────────
+let _cleanupPending = null; // { scope, expiresAt }
+
+async function cleanupDb(scope) {
+  const now = Date.now();
+  const label = scope === 'all' ? 'FULL RESET' : 'Signal History Cleanup';
+
+  if (!_cleanupPending || _cleanupPending.scope !== scope || now > _cleanupPending.expiresAt) {
+    _cleanupPending = { scope, expiresAt: now + 15_000 };
+    const msg = scope === 'all'
+      ? '⚠️ FULL RESET: This will truncate ALL trading tables permanently.\n\nClick OK to arm — then click the button again within 15s to execute.'
+      : '🗑️ Delete signal/decision history older than today?\n\nClick OK to arm — then click the button again within 15s to execute.';
+    if (!confirm(msg)) { _cleanupPending = null; }
+    return; // always return; second button click executes
+  }
+
+  // Second click within TTL — confirmed
+  _cleanupPending = null;
+
+  const btnSignals = document.getElementById('btn-cleanup-signals');
+  const btnAll     = document.getElementById('btn-cleanup-all');
+  const resultEl   = document.getElementById('db-cleanup-result');
+  if (btnSignals) btnSignals.disabled = true;
+  if (btnAll)     btnAll.disabled = true;
+  if (resultEl)   { resultEl.style.display = 'none'; resultEl.textContent = ''; }
+
+  try {
+    const res = await fetch(`${API}/api/cleanup`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ scope }),
+    });
+    const data = await res.json();
+    if (resultEl) {
+      resultEl.style.display = 'block';
+      if (data.ok) {
+        if (scope === 'all') {
+          resultEl.textContent = `✅ ${label}: All tables truncated.`;
+          resultEl.className = 'db-cleanup-result db-result-ok';
+        } else {
+          const detail = data.tablesAffected?.length
+            ? `Deleted ${data.rowsDeleted} row(s) from: ${data.tablesAffected.join(', ')}`
+            : 'Nothing to clean — no data older than today.';
+          resultEl.textContent = `✅ ${label}: ${detail}`;
+          resultEl.className = 'db-cleanup-result db-result-ok';
+        }
+      } else {
+        resultEl.textContent = `❌ Cleanup failed: ${data.error}`;
+        resultEl.className = 'db-cleanup-result db-result-err';
+      }
+    }
+  } catch (e) {
+    if (resultEl) {
+      resultEl.style.display = 'block';
+      resultEl.textContent = `❌ Error: ${e.message}`;
+      resultEl.className = 'db-cleanup-result db-result-err';
+    }
+  } finally {
+    if (btnSignals) btnSignals.disabled = false;
+    if (btnAll)     btnAll.disabled = false;
+  }
+}
+
 // ── Main refresh ──────────────────────────────────────────────────────────────
 function loadTab(tab) {
   switch (tab) {
@@ -393,6 +503,7 @@ function loadTab(tab) {
     case 'orders':      loadOrders();      break;
     case 'agents':      loadAgents();      break;
     case 'scheduler':   loadScheduler();   break;
+    case 'database':    /* static panel, nothing to load */ break;
   }
 }
 

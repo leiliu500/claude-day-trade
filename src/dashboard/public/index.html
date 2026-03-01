@@ -49,17 +49,21 @@
       <button class="tab" data-tab="orders">Orders</button>
       <button class="tab" data-tab="agents">Agent Team</button>
       <button class="tab" data-tab="scheduler">Scheduler</button>
+      <button class="tab" data-tab="database">Database</button>
     </nav>
 
     <!-- Tab content -->
     <section id="tab-positions" class="tab-content active">
+      <div class="positions-toolbar">
+        <button class="btn-close-all" id="btn-closeall-all" onclick="closePositions()">🔴 Close All</button>
+      </div>
       <table id="tbl-positions">
         <thead>
           <tr>
             <th>Symbol</th><th>Side</th><th>Strike</th><th>Expiry</th>
             <th>Qty</th><th>Entry</th><th>Stop</th><th>TP</th>
             <th>Conv</th><th>Tier</th><th>Direction</th><th>Decision</th>
-            <th>Confirms</th><th>Opened</th><th>Reasoning</th>
+            <th>Confirms</th><th>Opened</th><th>Reasoning</th><th>Action</th>
           </tr>
         </thead>
         <tbody></tbody>
@@ -139,6 +143,31 @@
         <tbody></tbody>
       </table>
       <div id="pagination-scheduler"></div>
+    </section>
+    <section id="tab-database" class="tab-content">
+      <div class="db-cleanup-panel">
+        <h2 class="db-panel-title">Database Cleanup</h2>
+
+        <div class="db-cleanup-card">
+          <div class="db-cleanup-info">
+            <h3>Cleanup Signal History</h3>
+            <p>Deletes rows <strong>older than today</strong> from: signal_snapshots, trading_decisions, decision_confirmations, trading_sessions (CLOSED), scheduler_runs, order_agent_ticks.</p>
+            <p class="db-safe-note">✅ Position journal and trade evaluations are <strong>not</strong> affected.</p>
+          </div>
+          <button class="btn-cleanup-signals" id="btn-cleanup-signals" onclick="cleanupDb('signals')">🗑️ Cleanup Signals</button>
+        </div>
+
+        <div class="db-cleanup-card db-cleanup-danger">
+          <div class="db-cleanup-info">
+            <h3>Full Database Reset</h3>
+            <p>Truncates <strong>all 11 tables</strong> in the trading schema — signal_snapshots, trading_decisions, position_journal, order_executions, trade_evaluations, and more.</p>
+            <p class="db-danger-note">⚠️ All history is permanently deleted. This cannot be undone.</p>
+          </div>
+          <button class="btn-cleanup-all" id="btn-cleanup-all" onclick="cleanupDb('all')">💣 Full Reset</button>
+        </div>
+
+        <div id="db-cleanup-result" class="db-cleanup-result" style="display:none"></div>
+      </div>
     </section>
   </main>
 

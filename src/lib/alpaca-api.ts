@@ -169,6 +169,40 @@ export async function getAlpacaOrder(orderId: string): Promise<AlpacaOrder | nul
   }
 }
 
+/** Cancel ALL open orders across all symbols (used by emergency close-all). */
+export async function cancelAllOpenOrders(): Promise<{ cancelled: number; errors: string[] }> {
+  const errors: string[] = [];
+  let cancelled = 0;
+
+  try {
+    // Fetch all open orders
+    const res = await fetch(
+      `${config.ALPACA_BASE_URL}/v2/orders?status=open&limit=500`,
+      { headers: authHeaders(), signal: AbortSignal.timeout(10_000) },
+    );
+    if (!res.ok) return { cancelled: 0, errors: [`Fetch open orders failed: ${await res.text()}`] };
+
+    const orders = (await res.json()) as Array<{ id: string; symbol: string }>;
+
+    for (const order of orders) {
+      try {
+        const del = await fetch(`${config.ALPACA_BASE_URL}/v2/orders/${order.id}`, {
+          method: 'DELETE',
+          headers: authHeaders(),
+          signal: AbortSignal.timeout(10_000),
+        });
+        if (del.ok || del.status === 422) cancelled++; // 422 = already filled/cancelled
+      } catch (err) {
+        errors.push(`Cancel ${order.symbol}/${order.id}: ${(err as Error).message}`);
+      }
+    }
+  } catch (err) {
+    errors.push(`cancelAllOpenOrders: ${(err as Error).message}`);
+  }
+
+  return { cancelled, errors };
+}
+
 /** Fetch all open Alpaca positions and return a symbol → currentPrice map. */
 export async function getAlpacaPositionPrices(): Promise<Map<string, number>> {
   try {

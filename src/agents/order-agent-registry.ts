@@ -19,6 +19,7 @@ import type { OrderAgentConfig, RestoredOrderAgentConfig, OrchestratorSuggestion
 import type { DecisionResult } from '../types/decision.js';
 import type { OptionCandidate } from '../types/options.js';
 import type { SizeResult } from '../types/trade.js';
+import { cancelAllOpenOrders } from '../lib/alpaca-api.js';
 
 // ── Registry ──────────────────────────────────────────────────────────────────
 
@@ -171,6 +172,94 @@ export class OrderAgentRegistry {
         ` (active: ${this.agents.size})`,
       );
     }
+  }
+
+  /**
+   * Close positions immediately, bypassing AI evaluation.
+   *
+   * @param ticker  Optional symbol filter (e.g. 'SPY').
+   *                When provided, only that ticker's positions/orders are closed.
+   *                When omitted, ALL positions and ALL open orders are closed.
+   *
+   * Flow:
+   *   1. notifyExit (immediate urgency) for each live agent.
+   *   2. DB fallback for any OPEN positions with no live agent.
+   *   3. Cancel open Alpaca orders (per-symbol or all).
+   */
+  async closeAllPositions(
+    reason: string = 'User-initiated emergency close-all',
+    ticker?: string,
+  ): Promise<{
+    agentsNotified: number;
+    dbFallbackClosed: number;
+    ordersCancelled: number;
+    errors: string[];
+  }> {
+    const errors: string[] = [];
+    let agentsNotified = 0;
+    let dbFallbackClosed = 0;
+
+    // Step 1: notify live agents (immediate urgency bypasses AI)
+    const targetTickers = ticker
+      ? [ticker]
+      : [...new Set(this.getAll().map(a => a.getTicker()))];
+
+    for (const t of targetTickers) {
+      try {
+        await this.notifyExit(t, reason, 'immediate');
+        agentsNotified += this.getByTicker(t).length;
+      } catch (err) {
+        errors.push(`notifyExit(${t}): ${(err as Error).message}`);
+      }
+    }
+
+    // Step 2: DB fallback for OPEN positions with no live agent
+    const pool = getPool();
+    const { rows: openRows } = await pool.query<{ id: string; ticker: string; option_symbol: string; qty: number }>(
+      ticker
+        ? `SELECT id, ticker, option_symbol, qty FROM trading.position_journal WHERE status='OPEN' AND ticker=$1`
+        : `SELECT id, ticker, option_symbol, qty FROM trading.position_journal WHERE status='OPEN'`,
+      ticker ? [ticker] : [],
+    );
+
+    const managedPositionIds = new Set(
+      this.getAll().map(a => a.getPositionId()).filter(Boolean) as string[],
+    );
+
+    for (const pos of openRows.filter(r => !managedPositionIds.has(r.id))) {
+      try {
+        await this._directDbFallbackExit(pos.ticker, reason);
+        dbFallbackClosed++;
+      } catch (err) {
+        errors.push(`fallbackExit(${pos.option_symbol}): ${(err as Error).message}`);
+      }
+    }
+
+    // Step 3: cancel open Alpaca orders (per-symbol or all)
+    let ordersCancelled = 0;
+    if (ticker) {
+      // Cancel orders only for the target symbol — use per-symbol cancel
+      const { cancelOpenOrdersForSymbol } = await import('../lib/alpaca-api.js');
+      try {
+        await cancelOpenOrdersForSymbol(ticker);
+        ordersCancelled = 1; // per-symbol cancel doesn't return a count
+      } catch (err) {
+        errors.push(`cancelOrders(${ticker}): ${(err as Error).message}`);
+      }
+    } else {
+      const { cancelled, errors: cancelErrors } = await cancelAllOpenOrders();
+      ordersCancelled = cancelled;
+      errors.push(...cancelErrors);
+    }
+
+    const scope = ticker ?? 'ALL';
+    console.log(
+      `[Registry] closeAllPositions(${scope}) — agents notified: ${agentsNotified}, ` +
+      `DB fallback closed: ${dbFallbackClosed}, orders cancelled: ${ordersCancelled}` +
+      (errors.length ? `, errors: ${errors.length}` : ''),
+    );
+
+    return { agentsNotified, dbFallbackClosed, ordersCancelled, errors };
   }
 
   /**

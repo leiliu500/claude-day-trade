@@ -189,6 +189,7 @@ export async function runPipeline(
           analysis,
           accountEquity:      context.accountEquity,
           accountBuyingPower: context.accountBuyingPower,
+          dailyRealizedPnl:   context.dailyRealizedPnl,
           timeGateOk,
         });
 
@@ -267,6 +268,7 @@ export async function runPipeline(
           analysis,
           accountEquity:      context.accountEquity,
           accountBuyingPower: context.accountBuyingPower,
+          dailyRealizedPnl:   context.dailyRealizedPnl,
           timeGateOk,
         });
 

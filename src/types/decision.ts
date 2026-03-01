@@ -52,6 +52,7 @@ export interface PositionContext {
   }>;
   accountBuyingPower: number;
   accountEquity: number;
+  dailyRealizedPnl: number;
 }
 
 export interface EntryStrategy {

@@ -80,7 +80,7 @@ export async function buildContext(ticker: string): Promise<PositionContext> {
     fetchAndSyncBrokerState(ticker),
   ]);
 
-  const [activePos, recentDecisions, streaks, recentEvals] = await Promise.all([
+  const [activePos, recentDecisions, streaks, recentEvals, dailyPnl] = await Promise.all([
     pool.query(
       `SELECT id, option_symbol, option_right, qty, entry_price, current_stop, current_tp,
               opened_at, confirmation_count
@@ -107,6 +107,11 @@ export async function buildContext(ticker: string): Promise<PositionContext> {
               lessons_learned, pnl_total::text, hold_duration_min, evaluated_at
        FROM trading.v_evaluation_feedback WHERE ticker = $1 LIMIT 5`,
       [ticker]
+    ),
+    pool.query<{ total: string }>(
+      `SELECT COALESCE(SUM(realized_pnl), 0)::text AS total
+         FROM trading.position_journal
+        WHERE trade_date = CURRENT_DATE AND status = 'CLOSED' AND realized_pnl IS NOT NULL`
     ),
   ]);
 
@@ -153,5 +158,6 @@ export async function buildContext(ticker: string): Promise<PositionContext> {
     })),
     accountBuyingPower: account.buyingPower,
     accountEquity: account.equity,
+    dailyRealizedPnl: parseFloat(dailyPnl.rows[0]?.total ?? '0'),
   };
 }

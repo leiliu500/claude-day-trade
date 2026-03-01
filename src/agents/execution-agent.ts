@@ -51,7 +51,7 @@ function computeSizing(
     convictionScore >= 4 ? 'SIZABLE' :
     'REGULAR';
 
-  const multiplier      = tier === 'MAX_CONVICTION' ? 3 : tier === 'SIZABLE' ? 2 : 1;
+  const multiplier      = tier === 'MAX_CONVICTION' ? 1.5 : tier === 'SIZABLE' ? 1.25 : 1;
   const baseRisk        = accountEquity * config.MAX_RISK_PCT;
   const effectiveRisk   = baseRisk * multiplier;
   const riskPerContract = (entryPremium - stopPremium) * 100;
@@ -90,9 +90,10 @@ export class ExecutionAgent {
     analysis: AnalysisResult;
     accountEquity: number;
     accountBuyingPower: number;
+    dailyRealizedPnl: number;
     timeGateOk: boolean;
   }): { sizing: SizeResult | null; passed: boolean; failedGates: string[] } {
-    const { decision, signal, option, analysis, accountEquity, accountBuyingPower, timeGateOk } = params;
+    const { decision, signal, option, analysis, accountEquity, accountBuyingPower, dailyRealizedPnl, timeGateOk } = params;
     const candidate = option.winnerCandidate;
 
     if (!candidate) {
@@ -114,6 +115,8 @@ export class ExecutionAgent {
       option,
       decision,
       accountBuyingPower,
+      accountEquity,
+      dailyRealizedPnl,
       proposedQty:  sizing.qty,
       proposedCost: sizing.qty * candidate.entryPremium * 100,
     });

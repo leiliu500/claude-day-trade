@@ -18,10 +18,12 @@ export function checkSafetyGates(params: {
   option: OptionEvaluation;
   decision: DecisionResult;
   accountBuyingPower: number;
+  accountEquity: number;
+  dailyRealizedPnl: number;
   proposedQty: number;
   proposedCost: number;
 }): GateCheckResult {
-  const { timeGateOk, analysis, option, decision, accountBuyingPower, proposedQty, proposedCost } = params;
+  const { timeGateOk, analysis, option, decision, accountBuyingPower, accountEquity, dailyRealizedPnl, proposedQty, proposedCost } = params;
   const failed: string[] = [];
 
   // 1. Time gate — market must be open
@@ -62,6 +64,17 @@ export function checkSafetyGates(params: {
   // 8. Quantity cap gate
   if (proposedQty > config.MAX_CONTRACTS) {
     failed.push(`QTY_CAP_GATE: qty ${proposedQty} > max ${config.MAX_CONTRACTS}`);
+  }
+
+  // 9. Daily loss limit gate — halt new entries once today's realized losses exceed threshold
+  if (accountEquity > 0 && dailyRealizedPnl < 0) {
+    const limitUsd = accountEquity * config.DAILY_LOSS_LIMIT_PCT;
+    if (-dailyRealizedPnl > limitUsd) {
+      failed.push(
+        `DAILY_LOSS_GATE: today's realized P&L $${dailyRealizedPnl.toFixed(0)} exceeds ` +
+        `-${(config.DAILY_LOSS_LIMIT_PCT * 100).toFixed(0)}% limit ($-${limitUsd.toFixed(0)})`,
+      );
+    }
   }
 
   return { passed: failed.length === 0, failedGates: failed };

@@ -3,6 +3,7 @@ import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
 import { getPool } from '../db/client.js';
 import { OrderAgentRegistry } from '../agents/order-agent-registry.js';
+import { cleanupSignalHistory, cleanupAllData } from '../db/repositories/cleanup.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -248,6 +249,41 @@ export function startDashboard(port: number): void {
       res.json({ agents: enriched });
     } catch (err) {
       res.status(500).json({ error: (err as Error).message });
+    }
+  });
+
+  // ── POST /api/closeall — close positions for a symbol or all ─────────────
+  // Body (optional): { ticker: "SPY" }  — omit to close all symbols
+  app.post('/api/closeall', async (req, res) => {
+    try {
+      const rawTicker = req.body?.ticker;
+      const ticker: string | undefined =
+        typeof rawTicker === 'string' && /^[A-Z]{1,5}$/.test(rawTicker.toUpperCase())
+          ? rawTicker.toUpperCase()
+          : undefined;
+
+      const registry = OrderAgentRegistry.getInstance();
+      const result = await registry.closeAllPositions(
+        `User-initiated via dashboard /api/closeall${ticker ? ` ${ticker}` : ''}`,
+        ticker,
+      );
+      res.json({ ok: true, ticker: ticker ?? 'ALL', ...result });
+    } catch (err) {
+      res.status(500).json({ ok: false, error: (err as Error).message });
+    }
+  });
+
+  // ── POST /api/cleanup — delete old data or full reset ────────────────────
+  // Body: { scope: 'signals' | 'all' }
+  app.post('/api/cleanup', async (req, res) => {
+    try {
+      const scope = req.body?.scope === 'all' ? 'all' : 'signals';
+      const result = scope === 'all'
+        ? await cleanupAllData()
+        : await cleanupSignalHistory();
+      res.json({ ok: true, ...result });
+    } catch (err) {
+      res.status(500).json({ ok: false, error: (err as Error).message });
     }
   });
 
