@@ -253,6 +253,131 @@ export function startDashboard(port: number): void {
     }
   });
 
+  // Today's closed/partial positions — for position history section
+  app.get('/api/positions/history', async (_req, res) => {
+    try {
+      const pool = getPool();
+      const { rows } = await pool.query(`
+        SELECT
+          pj.id,
+          pj.ticker,
+          pj.option_symbol,
+          pj.option_right,
+          pj.strike,
+          pj.expiration,
+          pj.status,
+          pj.qty,
+          pj.entry_price,
+          pj.exit_price,
+          pj.realized_pnl,
+          pj.conviction_score,
+          pj.conviction_tier,
+          pj.close_reason,
+          pj.opened_at,
+          pj.closed_at,
+          pj.hold_duration_min,
+          td.decision_type,
+          td.direction,
+          td.confirmation_count,
+          td.reasoning AS entry_reasoning,
+          te.evaluation_grade,
+          te.evaluation_score,
+          te.outcome,
+          te.pnl_pct
+        FROM trading.position_journal pj
+        LEFT JOIN trading.trading_decisions td ON pj.decision_id = td.id
+        LEFT JOIN trading.trade_evaluations te ON te.position_id = pj.id
+        WHERE pj.trade_date = (CURRENT_TIMESTAMP AT TIME ZONE 'America/New_York')::date
+          AND pj.status IN ('CLOSED', 'PARTIALLY_CLOSED')
+        ORDER BY pj.closed_at DESC NULLS LAST
+      `);
+      res.json({ positions: rows });
+    } catch (err) {
+      res.status(500).json({ error: (err as Error).message });
+    }
+  });
+
+  // Today's agent history — all positions opened today (DB) with full tick history
+  app.get('/api/agents/history', async (_req, res) => {
+    try {
+      const pool = getPool();
+      const { rows: positions } = await pool.query(`
+        SELECT
+          pj.id,
+          pj.ticker,
+          pj.option_symbol,
+          pj.option_right,
+          pj.strike::text,
+          pj.expiration,
+          pj.status,
+          pj.qty,
+          pj.entry_price::text,
+          pj.current_stop::text,
+          pj.current_tp::text,
+          pj.exit_price::text,
+          pj.realized_pnl::text,
+          pj.conviction_score,
+          pj.conviction_tier,
+          pj.close_reason,
+          pj.opened_at,
+          pj.closed_at,
+          pj.hold_duration_min,
+          td.direction,
+          td.profile,
+          td.decision_type,
+          td.reasoning AS entry_reasoning,
+          td.orchestration_confidence::text AS confidence,
+          te.evaluation_grade,
+          te.evaluation_score,
+          te.outcome,
+          te.signal_quality,
+          te.timing_quality,
+          te.risk_management_quality,
+          te.lessons_learned
+        FROM trading.position_journal pj
+        LEFT JOIN trading.trading_decisions td ON td.id = pj.decision_id
+        LEFT JOIN trading.trade_evaluations te ON te.position_id = pj.id
+        WHERE pj.trade_date = (CURRENT_TIMESTAMP AT TIME ZONE 'America/New_York')::date
+        ORDER BY pj.opened_at DESC
+      `);
+
+      if (positions.length === 0) {
+        return void res.json({ positions: [] });
+      }
+
+      const positionIds = positions.map(p => p.id);
+      const { rows: ticks } = await pool.query<{
+        position_id: string;
+        tick_count: number;
+        action: string;
+        pnl_pct: string | null;
+        current_price: string | null;
+        new_stop: string | null;
+        reasoning: string | null;
+        overriding_orchestrator: boolean;
+        orchestrator_suggestion: string | null;
+      }>(
+        `SELECT position_id, tick_count, action, pnl_pct::text, current_price::text,
+                new_stop::text, reasoning, overriding_orchestrator, orchestrator_suggestion
+           FROM trading.order_agent_ticks
+          WHERE position_id = ANY($1::uuid[])
+          ORDER BY position_id, tick_count DESC`,
+        [positionIds],
+      );
+
+      const tickMap = new Map<string, typeof ticks>();
+      for (const tick of ticks) {
+        if (!tickMap.has(tick.position_id)) tickMap.set(tick.position_id, []);
+        tickMap.get(tick.position_id)!.push(tick);
+      }
+
+      const enriched = positions.map(p => ({ ...p, ticks: tickMap.get(p.id) ?? [] }));
+      res.json({ positions: enriched });
+    } catch (err) {
+      res.status(500).json({ error: (err as Error).message });
+    }
+  });
+
   // ── POST /api/closeall — close positions for a symbol or all ─────────────
   // Body (optional): { ticker: "SPY" }  — omit to close all symbols
   app.post('/api/closeall', async (req, res) => {
@@ -341,6 +466,36 @@ export function startDashboard(port: number): void {
         ),
       ]);
       res.json({ interactions: rows, total: countRows[0]?.total ?? 0, page, limit });
+    } catch (err) {
+      res.status(500).json({ error: (err as Error).message });
+    }
+  });
+
+  // Analysis Agent output — signal snapshots with full analysis_payload + signal_payload
+  app.get('/api/analysis', async (req, res) => {
+    try {
+      const pool = getPool();
+      const limit = Math.min(parseInt(String(req.query['limit'] ?? '30')), 200);
+      const page  = Math.max(parseInt(String(req.query['page']  ?? '1')), 1);
+      const offset = (page - 1) * limit;
+      const [{ rows }, { rows: countRows }] = await Promise.all([
+        pool.query(
+          `SELECT id, ticker, profile, direction, alignment, confidence,
+                  confidence_meets_threshold, selected_right, selected_symbol,
+                  entry_premium, stop_premium, tp_premium, risk_reward,
+                  option_liquidity_ok, spread_pct, triggered_by, created_at,
+                  analysis_payload, signal_payload
+           FROM trading.signal_snapshots
+           WHERE trade_date >= CURRENT_DATE - INTERVAL '7 days'
+           ORDER BY created_at DESC
+           LIMIT $1 OFFSET $2`,
+          [limit, offset]
+        ),
+        pool.query(
+          `SELECT COUNT(*)::int AS total FROM trading.signal_snapshots WHERE trade_date >= CURRENT_DATE - INTERVAL '7 days'`
+        ),
+      ]);
+      res.json({ signals: rows, total: countRows[0]?.total ?? 0, page, limit });
     } catch (err) {
       res.status(500).json({ error: (err as Error).message });
     }

@@ -52,6 +52,7 @@
       <button class="tab" data-tab="evaluations">Evaluations</button>
       <button class="tab" data-tab="orders">Orders</button>
       <button class="tab" data-tab="agents">Agent Team</button>
+      <button class="tab" data-tab="analysis">Analysis</button>
       <button class="tab" data-tab="scheduler">Scheduler</button>
       <button class="tab" data-tab="activity">Human Activity</button>
       <button class="tab" data-tab="database">Database</button>
@@ -59,8 +60,11 @@
 
     <!-- Tab content -->
     <section id="tab-positions" class="tab-content active">
-      <div class="positions-toolbar">
-        <button class="btn-close-all" id="btn-closeall-all" onclick="closePositions()">🔴 Close All</button>
+      <div class="agents-section-header">
+        Active Positions <small id="positions-active-count"></small>
+        <span style="float:right">
+          <button class="btn-close-all" id="btn-closeall-all" onclick="closePositions()">🔴 Close All</button>
+        </span>
       </div>
       <table id="tbl-positions">
         <thead>
@@ -73,6 +77,24 @@
         </thead>
         <tbody></tbody>
       </table>
+
+      <div class="agents-history-section">
+        <div class="agents-section-header">
+          Today's Position History <small id="positions-history-count"></small>
+        </div>
+        <table id="tbl-positions-history">
+          <thead>
+            <tr>
+              <th>Symbol</th><th>Side</th><th>Strike</th><th>Expiry</th>
+              <th>Status</th><th>Qty</th><th>Entry</th><th>Exit</th>
+              <th>P&amp;L</th><th>P&amp;L%</th><th>Duration</th>
+              <th>Direction</th><th>Decision</th><th>Grade</th>
+              <th>Opened</th><th>Closed</th><th>Close Reason</th>
+            </tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </div>
     </section>
 
     <section id="tab-signals" class="tab-content">
@@ -134,7 +156,23 @@
     </section>
 
     <section id="tab-agents" class="tab-content">
+      <div class="agents-section-header">Live Agents</div>
       <div id="agent-cards" class="agent-cards"></div>
+      <div class="agents-history-section">
+        <div class="agents-section-header">
+          Today's Agent History <small id="agent-history-count"></small>
+        </div>
+        <div id="agent-history-cards" class="agent-cards"></div>
+      </div>
+    </section>
+
+    <section id="tab-analysis" class="tab-content">
+      <div class="agents-section-header">
+        Analysis Agent Output <small id="analysis-count"></small>
+        <small style="float:right;color:#8b949e;font-weight:normal">Confidence breakdown · AI explanation · Indicators · Key factors · Risks</small>
+      </div>
+      <div id="analysis-cards" class="agent-cards"></div>
+      <div id="pagination-analysis"></div>
     </section>
 
     <section id="tab-scheduler" class="tab-content">

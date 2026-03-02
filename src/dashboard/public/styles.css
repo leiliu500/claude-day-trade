@@ -412,6 +412,7 @@ tr:hover td { background: #1c2128; }
 .btn-close-all:hover { background: #8b1a1a; }
 .btn-close-all:disabled { opacity: 0.4; cursor: default; }
 
+/* position toolbar kept for legacy — now the close-all button lives in section header */
 .positions-toolbar {
   display: flex;
   align-items: center;
@@ -523,6 +524,64 @@ tr:hover td { background: #1c2128; }
   cursor: pointer;
 }
 
+/* ── Agent Team — section headers & history cards ───────────────────────────── */
+.agents-section-header {
+  font-size: 14px;
+  font-weight: 600;
+  color: #8b949e;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  margin: 0 0 12px 0;
+  padding-bottom: 8px;
+  border-bottom: 1px solid #30363d;
+}
+
+.agents-section-header small {
+  font-size: 12px;
+  text-transform: none;
+  letter-spacing: 0;
+  color: #6e7681;
+  font-weight: 400;
+}
+
+.agents-history-section { margin-top: 28px; }
+
+/* History cards — slightly muted */
+.agent-card-history { opacity: 0.9; }
+.agent-card-closed  { border-color: #21262d; }
+
+/* Grade badge shown in card header */
+.agent-grade-badge {
+  font-size: 20px;
+  font-weight: 800;
+  line-height: 1;
+}
+
+/* Close reason pill */
+.agent-close-reason {
+  font-size: 12px;
+  color: #8b949e;
+  background: #1c2128;
+  border: 1px solid #30363d;
+  border-radius: 4px;
+  padding: 4px 8px;
+  font-style: italic;
+}
+
+/* Status badges for position_journal.status (OPEN / CLOSED / PARTIALLY_CLOSED) */
+.status-badge {
+  font-size: 11px;
+  font-weight: 600;
+  padding: 3px 8px;
+  border-radius: 12px;
+  white-space: nowrap;
+  letter-spacing: 0.04em;
+}
+
+.status-OPEN             { background: #0d2d12; color: #3fb950; border: 1px solid #196c2e; }
+.status-CLOSED           { background: #1c2128; color: #8b949e; border: 1px solid #30363d; }
+.status-PARTIALLY_CLOSED { background: #2d2006; color: #e3b341; border: 1px solid #9e6a03; }
+
 /* ── Human Activity tab ───────────────────────────────────────────────────── */
 .activity-panel { padding: 0; }
 
@@ -548,3 +607,138 @@ tr:hover td { background: #1c2128; }
 .approval-approved { color: #3fb950; font-weight: 600; }
 .approval-denied   { color: #f85149; font-weight: 600; }
 .approval-timeout  { color: #6e7681; font-weight: 600; }
+
+/* ── Analysis Agent styles ───────────────────────────────────────────────── */
+
+/* Confidence breakdown bar chart */
+.conf-breakdown {
+  margin-bottom: 12px;
+}
+.conf-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 4px;
+  font-size: 0.78rem;
+}
+.conf-label {
+  width: 72px;
+  flex-shrink: 0;
+  color: #8b949e;
+  font-size: 0.75rem;
+}
+.conf-bar-wrap {
+  flex: 1;
+  height: 8px;
+  background: #21262d;
+  border-radius: 4px;
+  overflow: hidden;
+  position: relative;
+}
+.conf-bar {
+  height: 100%;
+  border-radius: 4px;
+  transition: width 0.3s ease;
+}
+.conf-bar-base  { background: #388bfd; }
+.conf-bar-bonus { background: #3fb950; }
+.conf-bar-neg   { background: #f85149; }
+.conf-value {
+  width: 44px;
+  text-align: right;
+  font-size: 0.75rem;
+  font-variant-numeric: tabular-nums;
+}
+.conf-total-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding-top: 4px;
+  margin-top: 2px;
+  border-top: 1px solid #30363d;
+  font-size: 0.78rem;
+}
+
+/* Per-timeframe indicator table */
+.analysis-tf-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.78rem;
+  margin-bottom: 10px;
+  background: #0d1117;
+  border-radius: 6px;
+  overflow: hidden;
+}
+.analysis-tf-table th {
+  background: #161b22;
+  color: #8b949e;
+  padding: 5px 8px;
+  text-align: left;
+  font-weight: 600;
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.analysis-tf-table td {
+  padding: 5px 8px;
+  border-top: 1px solid #21262d;
+  font-variant-numeric: tabular-nums;
+}
+.analysis-tf-table tr:hover td { background: #161b22; }
+
+/* AI explanation text */
+.analysis-explanation {
+  background: #161b22;
+  border: 1px solid #30363d;
+  border-left: 3px solid #388bfd;
+  border-radius: 6px;
+  padding: 10px 12px;
+  font-size: 0.82rem;
+  line-height: 1.55;
+  color: #c9d1d9;
+  margin-bottom: 10px;
+}
+
+/* Key factors & risks side-by-side */
+.analysis-lists {
+  display: flex;
+  gap: 16px;
+  margin-bottom: 10px;
+}
+.analysis-list-col {
+  flex: 1;
+  min-width: 0;
+}
+.analysis-list-title {
+  font-size: 0.72rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  margin-bottom: 4px;
+}
+.analysis-list {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+}
+.analysis-list li {
+  font-size: 0.78rem;
+  color: #c9d1d9;
+  padding: 2px 0 2px 12px;
+  position: relative;
+  line-height: 1.4;
+}
+.analysis-list li::before {
+  content: '·';
+  position: absolute;
+  left: 2px;
+  color: #8b949e;
+}
+
+/* Skipped label */
+.analysis-skipped {
+  font-size: 0.78rem;
+  color: #6e7681;
+  font-style: italic;
+  padding: 6px 0;
+}
