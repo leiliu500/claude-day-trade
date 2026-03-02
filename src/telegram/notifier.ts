@@ -248,7 +248,7 @@ function buildOptionTradePlan(option: OptionEvaluation): string {
     `\n🧾 <b>Option Trade Plan</b>`,
     `Decision: ${sideIcon} BUY_${side} @ <code>${c.symbol}</code>`,
     `Quote: Right: ${c.side} | Bid: ${fmt(c.bid)} | Ask: ${fmt(c.ask)} | Mid: ${fmt(c.mid, 3)} | Spread%: ${fmtPct(c.spreadPct, 2)}`,
-    `Entry: ${fmt(cand.entryPremium)} | Stop: ${fmt(cand.stopPremium)} | TP: ${fmt(cand.tpPremium)} | R:R ${fmt(cand.rrRatio)}`,
+    `<i>Suggested:</i> Entry: ${fmt(cand.entryPremium)} | Stop: ${fmt(cand.stopPremium)} | TP: ${fmt(cand.tpPremium)} | R:R ${fmt(cand.rrRatio)}`,
   ].join('\n');
 }
 
@@ -264,7 +264,7 @@ function buildUnderlyingTradePlan(signal: SignalPayload): string {
   return [
     `\n🧾 <b>Trade Plan (Underlying)</b>`,
     `Decision: 🟡 WAIT @ ${trigger}`,
-    `Entry: ${trigger} | Stop: ${stop} | TP: ${tp} | R:R ${rr}`,
+    `<i>Suggested:</i> Entry: ${trigger} | Stop: ${stop} | TP: ${tp} | R:R ${rr}`,
   ].join('\n');
 }
 
