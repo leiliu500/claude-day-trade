@@ -81,7 +81,7 @@ export interface RestoredOrderAgentConfig extends OrderAgentConfig {
 
 /** Orchestrator suggestion forwarded by the pipeline. */
 export interface OrchestratorSuggestion {
-  decisionType: 'EXIT' | 'REDUCE_EXPOSURE';
+  decisionType: 'EXIT' | 'REDUCE_EXPOSURE' | 'CONFIRM_HOLD' | 'WAIT' | 'ADD_POSITION' | 'REVERSE';
   reason: string;
   urgency: 'immediate' | 'standard' | 'low';
 }
@@ -229,19 +229,24 @@ export class OrderAgent {
     const ticker = this.cfg.decision.ticker;
     const symbol = this.cfg.candidate.contract.symbol;
 
+    // CONFIRM_HOLD / WAIT — fall through to AI evaluation.
+    // These are suggestions just like EXIT / REDUCE; the agent makes the final call.
+    // (No special-case handling — _runAIDecision at the bottom covers them.)
+
     // Immediate urgency (EOD liquidation, hard P&L stop) — no AI override allowed
     if (suggestion.urgency === 'immediate') {
       console.log(
         `[OrderAgent ${ticker} ${symbol}] Immediate ${suggestion.decisionType}` +
         ` — executing without AI override`,
       );
-      if (suggestion.decisionType === 'EXIT') {
+      if (suggestion.decisionType === 'EXIT' || suggestion.decisionType === 'REVERSE') {
         await this._executeExit(suggestion.reason);
         return { action: 'EXIT', reasoning: suggestion.reason, overridingOrchestrator: false, optionSymbol: symbol };
-      } else {
+      } else if (suggestion.decisionType === 'REDUCE_EXPOSURE') {
         await this._executeReduce(suggestion.reason);
         return { action: 'REDUCE', reasoning: suggestion.reason, overridingOrchestrator: false, optionSymbol: symbol };
       }
+      // ADD_POSITION with immediate urgency — not actionable on existing position, fall through to AI
     }
 
     // Standard / low urgency — let AI evaluate and potentially override
@@ -674,8 +679,19 @@ export class OrderAgent {
 
       case 'HOLD':
       default:
-        // Only notify when holding against an orchestrator suggestion (override case)
-        if (suggestion) {
+        // Notify when the agent's HOLD is meaningful:
+        //   EXIT / REDUCE_EXPOSURE  → agent overrides an exit/reduce directive
+        //   REVERSE                 → agent refuses direction flip (meaningful override)
+        //   ADD_POSITION            → agent agrees position is healthy for scale-in
+        // CONFIRM_HOLD / WAIT / periodic ticks: HOLD is expected — no notification.
+        if (
+          suggestion && (
+            suggestion.decisionType === 'EXIT' ||
+            suggestion.decisionType === 'REDUCE_EXPOSURE' ||
+            suggestion.decisionType === 'REVERSE' ||
+            suggestion.decisionType === 'ADD_POSITION'
+          )
+        ) {
           notifyOrderAgentDecision({
             action:                 'HOLD',
             ticker:                 this.cfg.decision.ticker,

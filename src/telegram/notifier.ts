@@ -537,7 +537,7 @@ export async function notifyOrderAgentDecision(params: {
   optionSide: 'call' | 'put';
   reasoning: string;
   overridingOrchestrator: boolean;
-  orchestratorSuggestion: 'EXIT' | 'REDUCE_EXPOSURE' | null;
+  orchestratorSuggestion: 'EXIT' | 'REDUCE_EXPOSURE' | 'CONFIRM_HOLD' | 'WAIT' | 'ADD_POSITION' | 'REVERSE' | null;
   pnlPct: number;
   currentPrice: number;
   entryPrice: number;
@@ -560,7 +560,13 @@ export async function notifyOrderAgentDecision(params: {
     const icon = overridingOrchestrator ? '🛡' : '✋';
     msg += `${icon} <b>OrderAgent: HOLD${overrideTag}</b>\n`;
     msg += `${ticker} | <code>${optionSymbol}</code> (${sideLabel})\n`;
-    if (orchestratorSuggestion) {
+    if (orchestratorSuggestion === 'CONFIRM_HOLD') {
+      msg += `Orchestrator: CONFIRM_HOLD → Agent acknowledges, continuing to hold\n`;
+    } else if (orchestratorSuggestion === 'ADD_POSITION') {
+      msg += `Orchestrator suggested: ADD_POSITION → Agent agrees, position healthy for scale-in\n`;
+    } else if (orchestratorSuggestion === 'REVERSE') {
+      msg += `Orchestrator suggested: REVERSE → Agent refuses, staying in current position\n`;
+    } else if (orchestratorSuggestion) {
       msg += `Orchestrator suggested: ${orchestratorSuggestion} → Agent overrides to HOLD\n`;
     }
     msg += `P&L: <b>${pnlSign}${pnlPct.toFixed(1)}%</b> | Price: $${currentPrice.toFixed(2)} (Entry: $${entryPrice.toFixed(2)})\n`;

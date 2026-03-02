@@ -171,15 +171,12 @@ export async function runPipeline(
 
     switch (decision.decisionType) {
 
-      // ── NEW ENTRY / ADD ────────────────────────────────────────────────
-      case 'NEW_ENTRY':
-      case 'ADD_POSITION': {
+      // ── NEW ENTRY ─────────────────────────────────────────────────────
+      case 'NEW_ENTRY': {
         if (!decision.shouldExecute) break;
 
-        // Code-level guard: NEW_ENTRY is only valid when no positions are open
-        // for this ticker. If the AI returns NEW_ENTRY with open positions it is
-        // an error — use ADD_POSITION to intentionally scale, or CONFIRM_HOLD to hold.
-        if (decision.decisionType === 'NEW_ENTRY' && context.openPositions.length > 0) {
+        // Guard: NEW_ENTRY is only valid when no positions are open for this ticker.
+        if (context.openPositions.length > 0) {
           console.warn(
             `[Pipeline] NEW_ENTRY blocked — ${context.openPositions.length} open position(s) ` +
             `already exist for ${ticker}. AI should use ADD_POSITION to scale or CONFIRM_HOLD to hold.`,
@@ -187,68 +184,95 @@ export async function runPipeline(
           break;
         }
 
-        // ExecutionAgent receives the orchestrator's DecisionResult as its
-        // primary input and computes sizing + runs 8 safety gates.
-        // No Alpaca calls here — only gate validation.
-        const { sizing, passed, failedGates } = executionAgent.prepareEntry({
-          decision,
-          signal,
-          option:             optionEval,
-          analysis,
-          accountEquity:      context.accountEquity,
-          accountBuyingPower: context.accountBuyingPower,
-          dailyRealizedPnl:   context.dailyRealizedPnl,
-          timeGateOk,
+        const { sizing: newSizing, passed: newPassed, failedGates: newFailed } = executionAgent.prepareEntry({
+          decision, signal, option: optionEval, analysis,
+          accountEquity: context.accountEquity, accountBuyingPower: context.accountBuyingPower,
+          dailyRealizedPnl: context.dailyRealizedPnl, timeGateOk,
         });
-
-        if (!passed || !sizing || !optionEval.winnerCandidate) {
-          result.failedGates = failedGates;
-          break;
+        if (!newPassed || !newSizing || !optionEval.winnerCandidate) {
+          result.failedGates = newFailed; break;
         }
 
-        // ── Human Approval Gate ────────────────────────────────────────────
-        // Send a Telegram message with Approve / Deny buttons and wait for
-        // human confirmation before submitting any Alpaca order.
-        const approvalOutcome = await ApprovalService.getInstance().requestApproval({
-          decision,
-          candidate: optionEval.winnerCandidate,
-          sizing,
-          confidence: analysis.confidence,
+        const newApproval = await ApprovalService.getInstance().requestApproval({
+          decision, candidate: optionEval.winnerCandidate, sizing: newSizing, confidence: analysis.confidence,
         });
-        result.humanApprovalOutcome = approvalOutcome;
-
-        if (approvalOutcome !== 'approved') {
-          console.log(`[Pipeline] NEW_ENTRY blocked by human (${approvalOutcome}) for ${ticker}`);
-          break;
+        result.humanApprovalOutcome = newApproval;
+        if (newApproval !== 'approved') {
+          console.log(`[Pipeline] NEW_ENTRY blocked by human (${newApproval}) for ${ticker}`); break;
         }
 
-        // Spawn a dedicated OrderAgent.  Primary input is `decision` (the
-        // orchestrator AI output).  The agent submits the Alpaca entry order,
-        // persists position + order records, and manages the full lifecycle.
-        const positionId = await registry.createAndStart({
-          decision,                               // orchestrator AI output
-          candidate:       optionEval.winnerCandidate,
-          sizing,
-          sessionId,
-          entryConfidence: analysis.confidence,   // AnalysisAgent deterministic score
-          entryAlignment:  signal.alignment,
-          entryDirection:  signal.direction,
+        const newPositionId = await registry.createAndStart({
+          decision, candidate: optionEval.winnerCandidate, sizing: newSizing, sessionId,
+          entryConfidence: analysis.confidence, entryAlignment: signal.alignment, entryDirection: signal.direction,
         });
-
-        result.orderSubmitted = !!positionId;
+        result.orderSubmitted = !!newPositionId;
         result.orderSymbol    = optionEval.winnerCandidate.contract.symbol;
-        result.orderQty       = sizing.qty;
-        result.orderPrice     = sizing.limitPrice;
-        result.sizing         = sizing;
+        result.orderQty       = newSizing.qty;
+        result.orderPrice     = newSizing.limitPrice;
+        result.sizing         = newSizing;
+        break;
+      }
+
+      // ── ADD POSITION ──────────────────────────────────────────────────
+      // Orchestrator suggests scaling in.  Existing agents evaluate first —
+      // if any agent vetoes (EXIT/REDUCE = position struggling), the add is blocked.
+      // Only if agents agree (HOLD = position healthy) does the pipeline create a new agent.
+      case 'ADD_POSITION': {
+        if (!decision.shouldExecute) break;
+
+        const { sizing: addSizing, passed: addPassed, failedGates: addFailed } = executionAgent.prepareEntry({
+          decision, signal, option: optionEval, analysis,
+          accountEquity: context.accountEquity, accountBuyingPower: context.accountBuyingPower,
+          dailyRealizedPnl: context.dailyRealizedPnl, timeGateOk,
+        });
+        if (!addPassed || !addSizing || !optionEval.winnerCandidate) {
+          result.failedGates = addFailed; break;
+        }
+
+        // Consult existing agents — they make the final scale-in decision.
+        const addOutcomes = await registry.notifyAddPosition(
+          ticker,
+          decision.reasoning.slice(0, 150),
+        );
+        if (addOutcomes.length) result.orderAgentOutcomes = addOutcomes;
+
+        const vetoed = addOutcomes.some(o => o.action === 'EXIT' || o.action === 'REDUCE');
+        if (vetoed) {
+          console.log(`[Pipeline] ADD_POSITION blocked — existing agent vetoed scale-in for ${ticker}`);
+          break;
+        }
+
+        const addApproval = await ApprovalService.getInstance().requestApproval({
+          decision, candidate: optionEval.winnerCandidate, sizing: addSizing, confidence: analysis.confidence,
+        });
+        result.humanApprovalOutcome = addApproval;
+        if (addApproval !== 'approved') {
+          console.log(`[Pipeline] ADD_POSITION blocked by human (${addApproval}) for ${ticker}`); break;
+        }
+
+        const addPositionId = await registry.createAndStart({
+          decision, candidate: optionEval.winnerCandidate, sizing: addSizing, sessionId,
+          entryConfidence: analysis.confidence, entryAlignment: signal.alignment, entryDirection: signal.direction,
+        });
+        result.orderSubmitted = !!addPositionId;
+        result.orderSymbol    = optionEval.winnerCandidate.contract.symbol;
+        result.orderQty       = addSizing.qty;
+        result.orderPrice     = addSizing.limitPrice;
+        result.sizing         = addSizing;
         break;
       }
 
       // ── CONFIRM HOLD ──────────────────────────────────────────────────
       case 'CONFIRM_HOLD': {
-        // Active agents continue monitoring; no new order needed.
-        const activeAgents = registry.getByTicker(ticker);
+        // Forward to active agents as a suggestion — each agent acknowledges
+        // and sends its own Telegram notification.  No AI evaluation triggered.
+        const confirmOutcomes = await registry.notifyConfirmHold(
+          ticker,
+          decision.reasoning.slice(0, 150),
+        );
+        if (confirmOutcomes.length) result.orderAgentOutcomes = confirmOutcomes;
         console.log(
-          `[Pipeline] CONFIRM_HOLD — ${activeAgents.length} active agent(s) continuing for ${ticker}`,
+          `[Pipeline] CONFIRM_HOLD — forwarded to ${confirmOutcomes.length} agent(s) for ${ticker}`,
         );
         break;
       }
@@ -280,43 +304,66 @@ export async function runPipeline(
       }
 
       // ── REVERSE ───────────────────────────────────────────────────────
+      // Orchestrator suggests reversing direction.  Forward to existing agents as a
+      // suggestion — each agent makes its own AI decision (EXIT = agree to reverse,
+      // HOLD = refuse reversal because position is running well).
+      // A new opposite-direction position is created only if at least one agent exited
+      // (or there were no active agents).
       case 'REVERSE': {
-        // Step 1 — close existing positions via their agents (immediate — non-negotiable reversal).
-        await registry.notifyExit(ticker, 'REVERSE: position direction change', 'immediate');
+        const reverseOutcomes = await registry.notifyReverse(
+          ticker,
+          decision.reasoning.slice(0, 150),
+          decision.urgency,
+        );
+        if (reverseOutcomes.length) result.orderAgentOutcomes = reverseOutcomes;
 
-        // Step 2 — open new position in opposite direction.
-        if (!decision.shouldExecute || !optionEval.winnerCandidate) break;
+        // Check whether any agent actually exited (agreed to reverse)
+        const anyExited   = reverseOutcomes.some(o => o.action === 'EXIT');
+        const noAgents    = reverseOutcomes.length === 0;
+        const shouldOpen  = (anyExited || noAgents) && decision.shouldExecute && !!optionEval.winnerCandidate;
 
-        const { sizing, passed } = executionAgent.prepareEntry({
-          decision,
-          signal,
-          option:             optionEval,
-          analysis,
-          accountEquity:      context.accountEquity,
-          accountBuyingPower: context.accountBuyingPower,
-          dailyRealizedPnl:   context.dailyRealizedPnl,
-          timeGateOk,
+        if (!shouldOpen) {
+          console.log(
+            `[Pipeline] REVERSE — no agents exited, skipping new position for ${ticker}`,
+          );
+          break;
+        }
+
+        const { sizing: revSizing, passed: revPassed } = executionAgent.prepareEntry({
+          decision, signal, option: optionEval, analysis,
+          accountEquity: context.accountEquity, accountBuyingPower: context.accountBuyingPower,
+          dailyRealizedPnl: context.dailyRealizedPnl, timeGateOk,
         });
 
-        if (passed && sizing) {
-          const positionId = await registry.createAndStart({
-            decision,
-            candidate:       optionEval.winnerCandidate,
-            sizing,
-            sessionId,
-            entryConfidence: analysis.confidence,
-            entryAlignment:  signal.alignment,
-            entryDirection:  signal.direction,
+        if (revPassed && revSizing && optionEval.winnerCandidate) {
+          const revPositionId = await registry.createAndStart({
+            decision, candidate: optionEval.winnerCandidate, sizing: revSizing, sessionId,
+            entryConfidence: analysis.confidence, entryAlignment: signal.alignment, entryDirection: signal.direction,
           });
-          result.orderSubmitted = !!positionId;
-          result.sizing         = sizing;
+          result.orderSubmitted = !!revPositionId;
+          result.orderSymbol    = optionEval.winnerCandidate.contract.symbol;
+          result.orderQty       = revSizing.qty;
+          result.orderPrice     = revSizing.limitPrice;
+          result.sizing         = revSizing;
         }
         break;
       }
 
       case 'WAIT':
-      default:
+      default: {
+        // Even on WAIT, existing positions need an AI evaluation.
+        // Forward to monitoring agents so each agent makes its own final call
+        // (may EXIT, REDUCE, or ADJUST_STOP independent of the pipeline's WAIT).
+        const waitOutcomes = await registry.notifyWait(
+          ticker,
+          decision.reasoning.slice(0, 150),
+        );
+        if (waitOutcomes.length) result.orderAgentOutcomes = waitOutcomes;
+        if (waitOutcomes.length) {
+          console.log(`[Pipeline] WAIT — triggered AI eval for ${waitOutcomes.length} agent(s) for ${ticker}`);
+        }
         break;
+      }
     }
 
     console.log(`[Pipeline] Done: ${decision.decisionType}, submitted=${result.orderSubmitted}`);

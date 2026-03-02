@@ -139,6 +139,109 @@ export class OrderAgentRegistry {
   }
 
   /**
+   * Forward a CONFIRM_HOLD suggestion to all MONITORING agents for the ticker.
+   *
+   * The orchestrator has reviewed the signal and suggests continuing to hold.
+   * Each agent runs its own full AI evaluation and makes the final call —
+   * it may EXIT, REDUCE, or ADJUST_STOP if position state warrants it.
+   * Only notifies when the agent actively overrides EXIT/REDUCE suggestions.
+   */
+  async notifyConfirmHold(
+    ticker: string,
+    reason: string = 'Orchestrator CONFIRM_HOLD signal',
+  ): Promise<OrderAgentOutcome[]> {
+    const targets = this.getByTicker(ticker).filter(a => a.getPhase() === 'MONITORING');
+
+    if (targets.length === 0) {
+      console.log(`[Registry] notifyConfirmHold: no MONITORING agents for ${ticker}`);
+      return [];
+    }
+
+    const suggestion: OrchestratorSuggestion = { decisionType: 'CONFIRM_HOLD', reason, urgency: 'standard' };
+    const results = await Promise.all(targets.map(a => a.processOrchestratorDecision(suggestion)));
+    console.log(
+      `[Registry] notifyConfirmHold dispatched to ${targets.length} agent(s) for ${ticker}`,
+    );
+    return results.filter((r): r is OrderAgentOutcome => r !== null);
+  }
+
+  /**
+   * Forward a WAIT suggestion to all MONITORING agents for the ticker.
+   *
+   * The orchestrator sees no new entry signal, but existing positions still need
+   * evaluation.  Each agent runs its own full AI evaluation and makes the final
+   * call — it may EXIT, REDUCE, or ADJUST_STOP even though the pipeline said WAIT.
+   */
+  async notifyWait(
+    ticker: string,
+    reason: string = 'Orchestrator WAIT — evaluate existing positions',
+  ): Promise<OrderAgentOutcome[]> {
+    const targets = this.getByTicker(ticker).filter(a => a.getPhase() === 'MONITORING');
+
+    if (targets.length === 0) return [];
+
+    const suggestion: OrchestratorSuggestion = { decisionType: 'WAIT', reason, urgency: 'low' };
+    const results = await Promise.all(targets.map(a => a.processOrchestratorDecision(suggestion)));
+    console.log(
+      `[Registry] notifyWait dispatched to ${targets.length} agent(s) for ${ticker}`,
+    );
+    return results.filter((r): r is OrderAgentOutcome => r !== null);
+  }
+
+  /**
+   * Forward an ADD_POSITION suggestion to all MONITORING agents for the ticker.
+   *
+   * The orchestrator wants to scale in.  Each agent evaluates whether its current
+   * position supports adding more exposure:
+   *   HOLD → "position is healthy, agree to scale-in" (pipeline may create new agent)
+   *   EXIT → "position is struggling, veto the add" (existing position also exits)
+   *   REDUCE / ADJUST_STOP → position-level action, signals caution about scaling
+   */
+  async notifyAddPosition(
+    ticker: string,
+    reason: string = 'Orchestrator ADD_POSITION signal',
+  ): Promise<OrderAgentOutcome[]> {
+    const targets = this.getByTicker(ticker).filter(a => a.getPhase() === 'MONITORING');
+
+    if (targets.length === 0) return [];
+
+    const suggestion: OrchestratorSuggestion = { decisionType: 'ADD_POSITION', reason, urgency: 'standard' };
+    const results = await Promise.all(targets.map(a => a.processOrchestratorDecision(suggestion)));
+    console.log(
+      `[Registry] notifyAddPosition dispatched to ${targets.length} agent(s) for ${ticker}`,
+    );
+    return results.filter((r): r is OrderAgentOutcome => r !== null);
+  }
+
+  /**
+   * Forward a REVERSE suggestion to all active agents for the ticker.
+   *
+   * The orchestrator wants to flip direction.  Each agent evaluates:
+   *   EXIT → "agree to reverse" — pipeline will open opposite-direction position
+   *   HOLD → "refuse reversal" — position is running well, staying in trade
+   *
+   * urgency='immediate' bypasses AI; urgency='standard' lets agent evaluate.
+   */
+  async notifyReverse(
+    ticker: string,
+    reason: string,
+    urgency: OrchestratorSuggestion['urgency'] = 'standard',
+  ): Promise<OrderAgentOutcome[]> {
+    const targets = this.getByTicker(ticker).filter(
+      a => a.getPhase() === 'MONITORING' || a.getPhase() === 'AWAITING_FILL',
+    );
+
+    if (targets.length === 0) return [];
+
+    const suggestion: OrchestratorSuggestion = { decisionType: 'REVERSE', reason, urgency };
+    const results = await Promise.all(targets.map(a => a.processOrchestratorDecision(suggestion)));
+    console.log(
+      `[Registry] notifyReverse (urgency=${urgency}) dispatched to ${targets.length} agent(s) for ${ticker}`,
+    );
+    return results.filter((r): r is OrderAgentOutcome => r !== null);
+  }
+
+  /**
    * Forward a REDUCE_EXPOSURE suggestion to all MONITORING agents for the ticker.
    *
    * Each agent evaluates it through its own position-management rules.
