@@ -708,25 +708,33 @@ export class OrderAgent {
     const entryPrice = this.fillPrice ?? candidate.entryPremium;
     const exitPrice  = exitFill ?? entryPrice;
 
-    await insertOrder({
-      id: uuidv4(),
-      positionId:    this.positionId,
-      decisionId:    decision.id,
-      ticker,
-      optionSymbol:  symbol,
-      alpacaOrderId,
-      alpacaStatus:  error ? 'error' : 'submitted',
-      orderSide:     'sell',
-      orderType:     'market',
-      positionIntent: 'sell_to_close',
-      submittedQty:  currentQty,
-      filledQty:     exitFill ? currentQty : 0,
-      fillPrice:     exitFill,
-      errorMessage:  error,
-      submittedAt:   new Date().toISOString(),
-    });
-
-    await closePosition({ positionId: this.positionId, exitPrice, entryPrice, closeReason: reason });
+    // Record sell order and close position in DB.
+    // Errors here are non-fatal — evaluation must still run regardless.
+    try {
+      await insertOrder({
+        id: uuidv4(),
+        positionId:    this.positionId,
+        decisionId:    decision.id,
+        ticker,
+        optionSymbol:  symbol,
+        alpacaOrderId,
+        alpacaStatus:  error ? 'error' : 'submitted',
+        orderSide:     'sell',
+        orderType:     'market',
+        positionIntent: 'sell_to_close',
+        submittedQty:  currentQty,
+        filledQty:     exitFill ? currentQty : 0,
+        fillPrice:     exitFill,
+        errorMessage:  error,
+        submittedAt:   new Date().toISOString(),
+      });
+      await closePosition({ positionId: this.positionId, exitPrice, entryPrice, closeReason: reason });
+    } catch (dbErr) {
+      console.error(
+        `[OrderAgent ${ticker} ${symbol}] Exit DB error (non-fatal):`,
+        (dbErr as Error).message,
+      );
+    }
 
     const pnl = (exitPrice - entryPrice) * currentQty * 100;
     const pnlStr     = pnl >= 0 ? `+$${pnl.toFixed(2)}` : `-$${Math.abs(pnl).toFixed(2)}`;
@@ -741,7 +749,7 @@ export class OrderAgent {
       `${reason.slice(0, 120)}\n` +
       `Entry: $${entryPrice.toFixed(2)} → Exit: $${exitPrice.toFixed(2)}\n` +
       `P&L: <b>${pnlStr}</b> | Qty: ${currentQty}`,
-    );
+    ).catch(err => console.warn(`[OrderAgent ${ticker}] Notify error:`, (err as Error).message));
 
     await this._triggerEvaluation(exitPrice, reason);
     this.phase = 'CLOSED';
@@ -772,37 +780,77 @@ export class OrderAgent {
 
     const { alpacaOrderId, error } = await reduceAlpacaPosition(symbol, reduceQty);
 
+    const submittedAt = new Date().toISOString();
+    const orderId = uuidv4();
+
+    if (error) {
+      console.error(`[OrderAgent ${decision.ticker}] Reduce error: ${error}`);
+      await insertOrder({
+        id: orderId,
+        positionId:    this.positionId,
+        decisionId:    decision.id,
+        ticker:        decision.ticker,
+        optionSymbol:  symbol,
+        alpacaOrderId,
+        alpacaStatus:  'error',
+        orderSide:     'sell',
+        orderType:     'market',
+        positionIntent: 'sell_to_close',
+        submittedQty:  reduceQty,
+        filledQty:     0,
+        errorMessage:  error,
+        submittedAt,
+      });
+      return;
+    }
+
+    // Poll for fill — reduce orders via DELETE /positions fill asynchronously
+    let reduceFill: number | null = null;
+    let actualFilledQty = 0;
+    if (alpacaOrderId) {
+      reduceFill = await this._pollSellFill(alpacaOrderId);
+      if (reduceFill != null) {
+        actualFilledQty = reduceQty; // market sell — if filled, full qty filled
+        console.log(`[OrderAgent ${decision.ticker} ${symbol}] Reduce fill confirmed: qty=${actualFilledQty} @ $${reduceFill}`);
+      } else {
+        console.warn(`[OrderAgent ${decision.ticker} ${symbol}] Reduce fill not confirmed within 15s — checking Alpaca order`);
+        const order = await getAlpacaOrder(alpacaOrderId);
+        actualFilledQty = order?.filled_qty ? parseInt(order.filled_qty) : 0;
+        reduceFill = order?.filled_avg_price ? parseFloat(order.filled_avg_price) : null;
+      }
+    }
+
     await insertOrder({
-      id: uuidv4(),
+      id: orderId,
       positionId:    this.positionId,
       decisionId:    decision.id,
       ticker:        decision.ticker,
       optionSymbol:  symbol,
       alpacaOrderId,
-      alpacaStatus:  error ? 'error' : 'submitted',
+      alpacaStatus:  'submitted',
       orderSide:     'sell',
       orderType:     'market',
       positionIntent: 'sell_to_close',
       submittedQty:  reduceQty,
-      filledQty:     0,
-      errorMessage:  error,
-      submittedAt:   new Date().toISOString(),
+      filledQty:     actualFilledQty,
+      fillPrice:     reduceFill ?? undefined,
+      submittedAt,
     });
 
-    if (error) {
-      console.error(`[OrderAgent ${decision.ticker}] Reduce error: ${error}`);
+    if (actualFilledQty === 0) {
+      console.warn(`[OrderAgent ${decision.ticker}] Reduce submitted but 0 contracts filled — skipping DB qty decrement`);
       return;
     }
 
-    // Decrement qty in DB so subsequent monitor ticks and exits use the correct remaining qty
+    // Decrement qty in DB by actually-filled qty so subsequent monitor ticks and exits are correct
     const pool = getPool();
     await pool.query(
       `UPDATE trading.position_journal
           SET qty = GREATEST(qty - $1, 0)
         WHERE id = $2 AND status = 'OPEN'`,
-      [reduceQty, this.positionId],
+      [actualFilledQty, this.positionId],
     );
-    console.log(`[OrderAgent ${decision.ticker}] position_journal.qty decremented by ${reduceQty}`);
+    console.log(`[OrderAgent ${decision.ticker}] position_journal.qty decremented by ${actualFilledQty}`);
   }
 
   private async _triggerEvaluation(exitPrice: number, closeReason: string): Promise<void> {

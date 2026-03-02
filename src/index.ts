@@ -1,7 +1,7 @@
 import 'dotenv/config';
 import { config } from './config.js';
 import { runMigrations } from './db/migrate.js';
-import { getPool, closePool } from './db/client.js';
+import { closePool } from './db/client.js';
 import { createTelegramBot } from './telegram/bot.js';
 import { startScheduler } from './scheduler.js';
 import { OrderAgentRegistry } from './agents/order-agent-registry.js';
@@ -22,7 +22,7 @@ async function main(): Promise<void> {
   // ── Telegram Bot ────────────────────────────────────────────────────────
   // bot.launch() with long polling never resolves — fire-and-forget
   const bot = createTelegramBot();
-  bot.launch().catch(err => console.error('[TelegramBot] Launch error:', err));
+  bot.launch({ dropPendingUpdates: true }).catch(err => console.error('[TelegramBot] Launch error:', err));
   console.log('[Boot] Telegram bot launched');
 
   // ── AUTO Scheduler ──────────────────────────────────────────────────────

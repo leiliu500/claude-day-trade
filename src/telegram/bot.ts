@@ -434,8 +434,9 @@ export function createTelegramBot(): Telegraf {
 
     await ctx.reply(`🔍 Analyzing ${parsed.ticker} (${parsed.profile} profile)...`);
 
-    try {
-      const result = await runPipeline(parsed.ticker, parsed.profile, 'MANUAL');
+    // Fire pipeline without awaiting — keeps Telegraf's polling loop unblocked
+    // so that /status, /help, and other commands respond immediately.
+    void runPipeline(parsed.ticker, parsed.profile, 'MANUAL').then(async (result) => {
       track({
         command: 'trade_trigger',
         rawText: text,
@@ -451,7 +452,7 @@ export function createTelegramBot(): Telegraf {
         outcome: result.decision,
       });
       await notifySignalAnalysis(result);
-    } catch (err) {
+    }).catch(async (err) => {
       track({
         command: 'trade_trigger',
         rawText: text,
@@ -463,7 +464,7 @@ export function createTelegramBot(): Telegraf {
         errorMessage: (err as Error).message,
       });
       await ctx.reply(`❌ Pipeline error: ${(err as Error).message}`);
-    }
+    });
   });
 
   // Error handler

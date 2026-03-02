@@ -48,7 +48,7 @@ export async function closePosition(params: {
   await pool.query(
     `UPDATE trading.position_journal
      SET status = 'CLOSED', exit_price = $2, entry_price = $3,
-         realized_pnl = (($2 - $3) * qty * 100),
+         realized_pnl = (($2::numeric - $3::numeric) * qty * 100),
          close_reason = $4, closed_at = NOW()
      WHERE id = $1`,
     [params.positionId, params.exitPrice, params.entryPrice, params.closeReason]

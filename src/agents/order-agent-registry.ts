@@ -497,32 +497,106 @@ export class OrderAgentRegistry {
   /**
    * Safety fallback: directly close all OPEN DB positions for a ticker when
    * no live agents exist (e.g. positions pre-dating the registry pattern).
+   * Records the sell order in order_executions and triggers evaluation.
    */
   private async _directDbFallbackExit(ticker: string, reason: string): Promise<void> {
     const pool = getPool();
-    const { rows } = await pool.query<{ id: string; option_symbol: string; qty: number }>(
-      `SELECT id, option_symbol, qty FROM trading.position_journal
+    const { rows } = await pool.query<{
+      id: string;
+      option_symbol: string;
+      option_right: 'call' | 'put';
+      strike: string;
+      expiration: string | null;
+      qty: number;
+      entry_price: string;
+      opened_at: string;
+      decision_id: string;
+    }>(
+      `SELECT id, option_symbol, option_right, strike::text, expiration::text,
+              qty, entry_price::text, opened_at::text, decision_id
+         FROM trading.position_journal
         WHERE ticker=$1 AND status='OPEN'`,
       [ticker],
     );
 
+    const { submitMarketSellOrder: sell } = await import('../lib/alpaca-api.js');
+    const { insertOrder }      = await import('../db/repositories/orders.js');
+    const { insertEvaluation } = await import('../db/repositories/evaluations.js');
+    const { EvaluationAgent }  = await import('./evaluation-agent.js');
+    const { v4: uuidv4 }       = await import('uuid');
+    const evaluationAgent      = new EvaluationAgent();
+
     for (const pos of rows) {
-      const { submitMarketSellOrder: sell } = await import('../lib/alpaca-api.js');
-      const { fillPrice, error } = await sell(pos.option_symbol, pos.qty);
-      const exitPrice = fillPrice ?? 0;
+      const { alpacaOrderId, fillPrice, error } = await sell(pos.option_symbol, pos.qty);
+      const exitPrice  = fillPrice ?? 0;
+      const entryPrice = parseFloat(pos.entry_price);
+
+      // Record sell order in order_executions
+      try {
+        await insertOrder({
+          id:             uuidv4(),
+          positionId:     pos.id,
+          decisionId:     pos.decision_id,
+          ticker,
+          optionSymbol:   pos.option_symbol,
+          alpacaOrderId,
+          alpacaStatus:   error ? 'error' : 'submitted',
+          orderSide:      'sell',
+          orderType:      'market',
+          positionIntent: 'sell_to_close',
+          submittedQty:   pos.qty,
+          filledQty:      fillPrice ? pos.qty : 0,
+          fillPrice,
+          errorMessage:   error,
+          submittedAt:    new Date().toISOString(),
+        });
+      } catch (err) {
+        console.warn(`[Registry] Fallback insertOrder error:`, (err as Error).message);
+      }
 
       await pool.query(
         `UPDATE trading.position_journal
             SET status='CLOSED', exit_price=$1,
-                realized_pnl=0, close_reason=$2, closed_at=NOW()
-          WHERE id=$3`,
-        [exitPrice, reason, pos.id],
+                realized_pnl=(($1::numeric - $2::numeric) * qty * 100),
+                close_reason=$3, closed_at=NOW()
+          WHERE id=$4`,
+        [exitPrice, entryPrice, reason, pos.id],
       );
 
       console.log(
         `[Registry] Fallback exit: ${pos.option_symbol} @ $${exitPrice}` +
         `${error ? ` (error: ${error})` : ''}`,
       );
+
+      // Trigger evaluation with available DB data
+      try {
+        const evaluation = await evaluationAgent.evaluate({
+          ticker,
+          optionSymbol:    pos.option_symbol,
+          side:            pos.option_right,
+          strike:          parseFloat(pos.strike),
+          expiration:      pos.expiration ?? '',
+          entryPrice,
+          exitPrice,
+          qty:             pos.qty,
+          openedAt:        pos.opened_at,
+          closedAt:        new Date().toISOString(),
+          closeReason:     reason,
+          entryConfidence: 0,
+          entryAlignment:  'unknown',
+          entryDirection:  'unknown',
+          entryReasoning:  reason,
+          positionId:      pos.id,
+          decisionId:      pos.decision_id,
+        });
+        await insertEvaluation(evaluation);
+        console.log(
+          `[Registry] Fallback evaluation: ${evaluation.grade} (${evaluation.score})` +
+          ` — ${evaluation.lessonsLearned}`,
+        );
+      } catch (err) {
+        console.error(`[Registry] Fallback evaluation error:`, (err as Error).message);
+      }
     }
   }
 }
