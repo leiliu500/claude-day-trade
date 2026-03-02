@@ -789,7 +789,7 @@ export class OrderAgent {
         ticker,
         optionSymbol:  symbol,
         alpacaOrderId,
-        alpacaStatus:  error ? 'error' : 'submitted',
+        alpacaStatus:  error ? 'error' : (exitFill ? 'filled' : 'submitted'),
         orderSide:     'sell',
         orderType:     'market',
         positionIntent: 'sell_to_close',
@@ -798,6 +798,7 @@ export class OrderAgent {
         fillPrice:     exitFill,
         errorMessage:  error,
         submittedAt:   new Date().toISOString(),
+        filledAt:      exitFill ? new Date().toISOString() : undefined,
       });
       await closePosition({ positionId: this.positionId, exitPrice, entryPrice, closeReason: reason });
     } catch (dbErr) {
@@ -906,7 +907,7 @@ export class OrderAgent {
       ticker:        decision.ticker,
       optionSymbol:  symbol,
       alpacaOrderId,
-      alpacaStatus:  'submitted',
+      alpacaStatus:  reduceFill ? 'filled' : 'submitted',
       orderSide:     'sell',
       orderType:     'market',
       positionIntent: 'sell_to_close',
@@ -914,6 +915,7 @@ export class OrderAgent {
       filledQty:     actualFilledQty,
       fillPrice:     reduceFill ?? undefined,
       submittedAt,
+      filledAt:      reduceFill ? new Date().toISOString() : undefined,
     });
 
     if (actualFilledQty === 0) {
