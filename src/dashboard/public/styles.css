@@ -190,6 +190,16 @@ tr:hover td { background: #1c2128; }
 
 .meta-sep { color: #30363d; }
 
+.stats-section-label {
+  font-size: 10px;
+  color: #8b949e;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  margin-top: 4px;
+  padding-bottom: 2px;
+  border-bottom: 1px solid #21262d;
+}
+
 .agent-stats {
   display: grid;
   grid-template-columns: repeat(3, 1fr);

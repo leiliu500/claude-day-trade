@@ -97,7 +97,8 @@ export function startDashboard(port: number): void {
         pool.query(
           `SELECT id, ticker, option_symbol, outcome, evaluation_grade, evaluation_score,
                   pnl_total, pnl_pct, hold_duration_min, lessons_learned,
-                  signal_quality, timing_quality, risk_management_quality, evaluated_at
+                  signal_quality, timing_quality, risk_management_quality, evaluated_at,
+                  entry_price, exit_price
            FROM trading.trade_evaluations
            WHERE evaluated_at > NOW() - INTERVAL '30 days'
            ORDER BY evaluated_at DESC

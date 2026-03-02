@@ -291,6 +291,11 @@ export class OrderAgent {
       alpacaOrderId:     this.alpacaOrderId,
       decisionType:      decision.decisionType,
       decisionReasoning: decision.reasoning,
+      // Suggested levels from OptionAgent (before execution sizing)
+      suggestedEntry:    candidate.entryPremium,
+      suggestedStop:     candidate.stopPremium,
+      suggestedTp:       candidate.tpPremium,
+      suggestedRR:       candidate.rrRatio,
     };
   }
 

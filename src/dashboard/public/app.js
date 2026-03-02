@@ -397,6 +397,14 @@ async function loadAgents() {
           <span>${a.alignment || '—'}</span>
           ${tierBadge}
         </div>
+        <div class="stats-section-label">Suggested (OptionAgent)</div>
+        <div class="agent-stats">
+          <div class="agent-stat"><span class="stat-label">Entry</span><span>${a.suggestedEntry != null ? '$' + fmt(a.suggestedEntry) : '—'}</span></div>
+          <div class="agent-stat"><span class="stat-label">Stop</span><span>${a.suggestedStop != null ? '$' + fmt(a.suggestedStop) : '—'}</span></div>
+          <div class="agent-stat"><span class="stat-label">TP</span><span>${a.suggestedTp != null ? '$' + fmt(a.suggestedTp) : '—'}</span></div>
+          <div class="agent-stat"><span class="stat-label">RR</span><span>${a.suggestedRR != null ? a.suggestedRR.toFixed(2) + ':1' : '—'}</span></div>
+        </div>
+        <div class="stats-section-label">Order Agent Decision</div>
         <div class="agent-stats">
           <div class="agent-stat"><span class="stat-label">Qty</span><span>${a.qty}</span></div>
           <div class="agent-stat"><span class="stat-label">Entry</span><span>$${fmt(a.limitPrice)}</span></div>
