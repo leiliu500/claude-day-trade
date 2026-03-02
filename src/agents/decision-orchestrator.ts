@@ -178,6 +178,15 @@ export class DecisionOrchestrator {
       console.error('[DecisionOrchestrator] OpenAI error:', err);
     }
 
+    // Hard gate: EXIT/REDUCE/REVERSE are meaningless without an open position — override to WAIT
+    const isPositionDecision = rawOutput.decision_type === 'EXIT' || rawOutput.decision_type === 'REDUCE_EXPOSURE' || rawOutput.decision_type === 'REVERSE';
+    if (isPositionDecision && context.openPositions.length === 0) {
+      const originalDecision = rawOutput.decision_type;
+      rawOutput.decision_type = 'WAIT';
+      rawOutput.should_execute = false;
+      rawOutput.reasoning = `[GATE OVERRIDE] No open position — ${originalDecision} is not applicable. ${rawOutput.reasoning}`;
+    }
+
     // Hard EOD gate: force EXIT for any open position in EOD window
     if (isEodWindow && context.openPositions.length > 0 && rawOutput.decision_type !== 'EXIT') {
       rawOutput.decision_type = 'EXIT';

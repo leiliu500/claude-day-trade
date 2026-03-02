@@ -449,7 +449,7 @@ export class OrderAgentRegistry {
 
     const { rows } = await pool.query<{
       id: string;
-      signal_id: string;
+      signal_snapshot_id: string | null;
       session_id: string | null;
       decision_type: string;
       ticker: string;
@@ -459,14 +459,11 @@ export class OrderAgentRegistry {
       reasoning: string;
       urgency: string;
       should_execute: boolean;
-      risk_notes: string | null;
-      streak_context: string | null;
       created_at: string;
     }>(
-      `SELECT id, signal_id, session_id, decision_type, ticker, profile,
+      `SELECT id, signal_snapshot_id, session_id, decision_type, ticker, profile,
               confirmation_count, orchestration_confidence::text,
-              reasoning, urgency, should_execute,
-              risk_notes, streak_context, created_at::text
+              reasoning, urgency, should_execute, created_at::text
          FROM trading.trading_decisions
         WHERE id = ANY($1::uuid[])`,
       [ids],
@@ -476,7 +473,7 @@ export class OrderAgentRegistry {
     for (const r of rows) {
       map.set(r.id, {
         id:                     r.id,
-        signalId:               r.signal_id,
+        signalId:               r.signal_snapshot_id ?? '',
         sessionId:              r.session_id ?? undefined,
         decisionType:           r.decision_type as DecisionResult['decisionType'],
         ticker:                 r.ticker,
@@ -486,8 +483,6 @@ export class OrderAgentRegistry {
         reasoning:              r.reasoning,
         urgency:                r.urgency as DecisionResult['urgency'],
         shouldExecute:          r.should_execute,
-        riskNotes:              r.risk_notes ?? undefined,
-        streakContext:          r.streak_context ?? undefined,
         createdAt:              r.created_at,
       });
     }

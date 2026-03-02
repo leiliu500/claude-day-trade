@@ -692,7 +692,10 @@ export class OrderAgent {
     for (let i = 0; i < 5; i++) {
       await new Promise(r => setTimeout(r, 3_000));
       const order = await getAlpacaOrder(orderId);
-      if (order?.filled_avg_price) return parseFloat(order.filled_avg_price);
+      if (order?.filled_avg_price) {
+        const price = parseFloat(order.filled_avg_price);
+        if (price > 0) return price; // paper trading may return "0" before async fill
+      }
       if (['canceled', 'expired', 'rejected'].includes(order?.status ?? '')) break;
     }
     return null;

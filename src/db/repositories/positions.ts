@@ -45,11 +45,31 @@ export async function closePosition(params: {
   closeReason: string;
 }): Promise<void> {
   const pool = getPool();
+  // Prefer confirmed fill data from order_executions over passed exitPrice (which may be 0
+  // when paper-trading fills arrive asynchronously after the 15s polling window).
   await pool.query(
     `UPDATE trading.position_journal
-     SET status = 'CLOSED', exit_price = $2, entry_price = $3,
-         realized_pnl = (($2::numeric - $3::numeric) * qty * 100),
-         close_reason = $4, closed_at = NOW()
+     SET status      = 'CLOSED',
+         entry_price = CASE WHEN $3::numeric > 0 THEN $3::numeric ELSE entry_price END,
+         exit_price  = COALESCE(
+                         NULLIF($2::numeric, 0),
+                         (SELECT SUM(oe.fill_price * oe.filled_qty) / NULLIF(SUM(oe.filled_qty), 0)
+                          FROM trading.order_executions oe
+                          WHERE oe.position_id = $1 AND oe.order_side = 'sell'
+                            AND oe.filled_qty > 0 AND oe.fill_price > 0)
+                       ),
+         realized_pnl = (
+                         COALESCE(
+                           NULLIF($2::numeric, 0),
+                           (SELECT SUM(oe.fill_price * oe.filled_qty) / NULLIF(SUM(oe.filled_qty), 0)
+                            FROM trading.order_executions oe
+                            WHERE oe.position_id = $1 AND oe.order_side = 'sell'
+                              AND oe.filled_qty > 0 AND oe.fill_price > 0)
+                         ) -
+                         CASE WHEN $3::numeric > 0 THEN $3::numeric ELSE entry_price END
+                       ) * qty * 100,
+         close_reason = $4,
+         closed_at    = NOW()
      WHERE id = $1`,
     [params.positionId, params.exitPrice, params.entryPrice, params.closeReason]
   );
