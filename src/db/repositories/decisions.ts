@@ -17,7 +17,7 @@ export async function insertDecision(decision: DecisionResult): Promise<string> 
       decision.ticker,
       decision.profile,
       decision.decisionType,
-      null,
+      decision.direction ?? null,
       decision.confirmationCount,
       decision.orchestrationConfidence,
       decision.reasoning,

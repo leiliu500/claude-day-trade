@@ -233,6 +233,7 @@ export class DecisionOrchestrator {
       decisionType: rawOutput.decision_type,
       ticker: signal.ticker,
       profile: signal.profile,
+      direction: signal.direction,
       confirmationCount: rawOutput.confirmation_count,
       orchestrationConfidence: analysis.confidence,
       reasoning: rawOutput.reasoning,

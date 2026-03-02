@@ -36,6 +36,7 @@ function deterministicWait(
     decisionType: 'WAIT',
     ticker,
     profile,
+    direction: signal.direction,
     confirmationCount: 0,
     orchestrationConfidence: analysis.confidence,
     reasoning: `Confidence ${(analysis.confidence * 100).toFixed(0)}% < threshold ${(config.MIN_CONFIDENCE * 100).toFixed(0)}% — no open positions to manage. AI orchestration skipped.`,

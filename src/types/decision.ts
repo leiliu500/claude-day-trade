@@ -71,6 +71,7 @@ export interface DecisionResult {
   decisionType: DecisionType;
   ticker: string;
   profile: string;
+  direction?: string;
   confirmationCount: number;
   orchestrationConfidence: number;
   reasoning: string;
