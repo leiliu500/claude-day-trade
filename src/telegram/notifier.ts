@@ -455,7 +455,6 @@ async function notifySimple(result: PipelineResult): Promise<void> {
 /** Notify about a trade evaluation — matches n8n "AI Trade Evaluation" message format */
 export async function notifyEvaluation(evaluation: EvaluationRecord): Promise<void> {
   const gradeEmoji  = { A: '⭐', B: '👍', C: '🤷', D: '👎', F: '💥' }[evaluation.grade] ?? '❓';
-  const gradeIcon   = { A: '🏆', B: '✅', C: '🟡', D: '🟠', F: '❌' }[evaluation.grade] ?? '❓';
   const outcomeIcon = evaluation.outcome === 'WIN' ? '✅' : evaluation.outcome === 'LOSS' ? '❌' : '➖';
 
   let msg = `📊 <b>AI Trade Evaluation: ${evaluation.ticker}</b>\n`;
@@ -497,6 +496,55 @@ export async function notifyEvaluation(evaluation: EvaluationRecord): Promise<vo
     for (const s of evaluation.improvementSuggestions.slice(0, 3)) {
       msg += `  • ${s}\n`;
     }
+  }
+
+  await sendMessage(msg);
+}
+
+/** OrderAgent final decision notification (HOLD override or ADJUST_STOP) */
+export async function notifyOrderAgentDecision(params: {
+  action: 'HOLD' | 'ADJUST_STOP';
+  ticker: string;
+  optionSymbol: string;
+  optionSide: 'call' | 'put';
+  reasoning: string;
+  overridingOrchestrator: boolean;
+  orchestratorSuggestion: 'EXIT' | 'REDUCE_EXPOSURE' | null;
+  pnlPct: number;
+  currentPrice: number;
+  entryPrice: number;
+  oldStop?: number | null;
+  newStop?: number;
+}): Promise<void> {
+  const {
+    action, ticker, optionSymbol, optionSide, reasoning,
+    overridingOrchestrator, orchestratorSuggestion,
+    pnlPct, currentPrice, entryPrice, oldStop, newStop,
+  } = params;
+
+  const sideLabel  = optionSide.toUpperCase();
+  const pnlSign    = pnlPct >= 0 ? '+' : '';
+  const overrideTag = overridingOrchestrator ? ' [OVERRIDE]' : '';
+
+  let msg = '';
+
+  if (action === 'HOLD') {
+    const icon = overridingOrchestrator ? '🛡' : '✋';
+    msg += `${icon} <b>OrderAgent: HOLD${overrideTag}</b>\n`;
+    msg += `${ticker} | <code>${optionSymbol}</code> (${sideLabel})\n`;
+    if (orchestratorSuggestion) {
+      msg += `Orchestrator suggested: ${orchestratorSuggestion} → Agent overrides to HOLD\n`;
+    }
+    msg += `P&L: <b>${pnlSign}${pnlPct.toFixed(1)}%</b> | Price: $${currentPrice.toFixed(2)} (Entry: $${entryPrice.toFixed(2)})\n`;
+    msg += `Reason: ${reasoning.slice(0, 250)}`;
+  } else {
+    const oldStopStr = oldStop != null ? `$${oldStop.toFixed(2)}` : 'none';
+    const newStopStr = newStop != null ? `$${newStop.toFixed(2)}` : 'n/a';
+    msg += `🔧 <b>OrderAgent: Stop Adjusted</b>\n`;
+    msg += `${ticker} | <code>${optionSymbol}</code> (${sideLabel})\n`;
+    msg += `Stop: ${oldStopStr} → <b>${newStopStr}</b>\n`;
+    msg += `P&L: <b>${pnlSign}${pnlPct.toFixed(1)}%</b> | Price: $${currentPrice.toFixed(2)}\n`;
+    msg += `Reason: ${reasoning.slice(0, 250)}`;
   }
 
   await sendMessage(msg);

@@ -28,7 +28,7 @@ import { insertOrder } from '../db/repositories/orders.js';
 import { insertEvaluation, getTickerEvaluations } from '../db/repositories/evaluations.js';
 import { insertAgentTick, getRecentAgentTicks } from '../db/repositories/order-agent-ticks.js';
 import { EvaluationAgent } from './evaluation-agent.js';
-import { notifyAlert } from '../telegram/notifier.js';
+import { notifyAlert, notifyOrderAgentDecision } from '../telegram/notifier.js';
 import { loadSkill } from '../utils/skill-loader.js';
 import {
   submitLimitBuyOrder,
@@ -640,12 +640,42 @@ export class OrderAgent {
             `[OrderAgent ${this.cfg.decision.ticker}] Stop trailed:` +
             ` ${currentStop?.toFixed(2) ?? 'none'} → $${newStop.toFixed(2)}`,
           );
+          notifyOrderAgentDecision({
+            action:                 'ADJUST_STOP',
+            ticker:                 this.cfg.decision.ticker,
+            optionSymbol:           this.cfg.candidate.contract.symbol,
+            optionSide:             this.cfg.candidate.contract.side,
+            reasoning:              rec.reasoning,
+            overridingOrchestrator: rec.overriding_orchestrator,
+            orchestratorSuggestion: suggestion?.decisionType ?? null,
+            pnlPct,
+            currentPrice,
+            entryPrice:             this.fillPrice ?? this.cfg.candidate.entryPremium,
+            oldStop:                currentStop,
+            newStop,
+          }).catch(err => console.warn(`[OrderAgent ${this.cfg.decision.ticker}] Notify error:`, (err as Error).message));
         }
         break;
       }
 
       case 'HOLD':
       default:
+        // Only notify when holding against an orchestrator suggestion (override case)
+        if (suggestion) {
+          notifyOrderAgentDecision({
+            action:                 'HOLD',
+            ticker:                 this.cfg.decision.ticker,
+            optionSymbol:           this.cfg.candidate.contract.symbol,
+            optionSide:             this.cfg.candidate.contract.side,
+            reasoning:              rec.reasoning,
+            overridingOrchestrator: rec.overriding_orchestrator,
+            orchestratorSuggestion: suggestion.decisionType,
+            pnlPct,
+            currentPrice,
+            entryPrice:             this.fillPrice ?? this.cfg.candidate.entryPremium,
+            oldStop:                currentStop,
+          }).catch(err => console.warn(`[OrderAgent ${this.cfg.decision.ticker}] Notify error:`, (err as Error).message));
+        }
         break;
     }
   }
@@ -737,14 +767,22 @@ export class OrderAgent {
     }
 
     const pnl = (exitPrice - entryPrice) * currentQty * 100;
-    const pnlStr     = pnl >= 0 ? `+$${pnl.toFixed(2)}` : `-$${Math.abs(pnl).toFixed(2)}`;
-    const emoji      = reason.startsWith('STOP')    ? '🛑'
-                     : reason.startsWith('TP')      ? '🎯'
-                     : reason.startsWith('EXPIRY')  ? '⚠️'
-                     : reason.startsWith('AI_EXIT') ? '🤖' : '🚪';
+    const pnlStr = pnl >= 0 ? `+$${pnl.toFixed(2)}` : `-$${Math.abs(pnl).toFixed(2)}`;
+    const emoji  = reason.startsWith('STOP')       ? '🛑'
+                 : reason.startsWith('TP')         ? '🎯'
+                 : reason.startsWith('EXPIRY')     ? '⚠️'
+                 : reason.startsWith('AI_EXIT')    ? '🤖'
+                 : reason.startsWith('UNFILLED_')  ? '🚫' : '🚪';
+
+    // Label the source so the notification is unambiguous
+    const sourceLabel = reason.startsWith('AI_EXIT')
+      ? 'OrderAgent decision'
+      : reason.startsWith('STOP') || reason.startsWith('TP') || reason.startsWith('EXPIRY')
+        ? 'Hard stop / TP / expiry'
+        : 'Orchestrator (immediate)';
 
     await notifyAlert(
-      `${emoji} <b>Auto-exit: ${ticker}</b>\n` +
+      `${emoji} <b>Exit: ${ticker}</b> — ${sourceLabel}\n` +
       `<code>${symbol}</code>\n` +
       `${reason.slice(0, 120)}\n` +
       `Entry: $${entryPrice.toFixed(2)} → Exit: $${exitPrice.toFixed(2)}\n` +
