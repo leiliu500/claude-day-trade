@@ -6,6 +6,7 @@ import type { OptionEvaluation, OptionCandidate } from '../types/options.js';
 import type { AnalysisResult } from '../types/analysis.js';
 import type { DecisionResult } from '../types/decision.js';
 import type { SizeResult } from '../types/trade.js';
+import type { OrderAgentOutcome } from '../agents/order-agent.js';
 
 const TELEGRAM_BASE = 'https://api.telegram.org';
 
@@ -320,6 +321,28 @@ function buildOrchestratorSection(decisionResult: DecisionResult): string {
   return lines.join('\n');
 }
 
+// ── Order Agent decision section ──────────────────────────────────────────────
+
+function buildOrderAgentSection(outcomes: OrderAgentOutcome[]): string {
+  if (!outcomes.length) return '';
+  const lines: string[] = [];
+  for (const o of outcomes) {
+    const icon = o.action === 'EXIT'         ? '🤖'
+               : o.action === 'REDUCE'       ? '📉'
+               : o.action === 'HOLD'         ? '🛡'
+               : /* ADJUST_STOP */             '🔧';
+    const overrideTag = o.overridingOrchestrator ? ' [OVERRIDE]' : '';
+    lines.push(`\n${icon} <b>Order Agent: ${o.action}${overrideTag}</b>`);
+    lines.push(`<code>${o.optionSymbol}</code>`);
+    if (o.pnlPct != null) {
+      const sign = o.pnlPct >= 0 ? '+' : '';
+      lines.push(`P&L: ${sign}${o.pnlPct.toFixed(1)}%`);
+    }
+    lines.push(`Reason: ${o.reasoning.slice(0, 200)}`);
+  }
+  return lines.join('\n');
+}
+
 // ── Order section ─────────────────────────────────────────────────────────────
 
 function buildOrderSection(result: PipelineResult, sizing: SizeResult | undefined): string {
@@ -395,6 +418,11 @@ export async function notifySignalAnalysis(result: PipelineResult): Promise<void
   // ── Orchestrator decision ──────────────────────────────────────────────────
   if (decisionResult) {
     msg += buildOrchestratorSection(decisionResult);
+  }
+
+  // ── Order Agent decision (EXIT / REDUCE outcomes) ──────────────────────────
+  if (result.orderAgentOutcomes?.length) {
+    msg += buildOrderAgentSection(result.orderAgentOutcomes);
   }
 
   // ── Order / gates / error ──────────────────────────────────────────────────

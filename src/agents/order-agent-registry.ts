@@ -15,7 +15,7 @@
 
 import { getPool } from '../db/client.js';
 import { OrderAgent } from './order-agent.js';
-import type { OrderAgentConfig, RestoredOrderAgentConfig, OrchestratorSuggestion } from './order-agent.js';
+import type { OrderAgentConfig, RestoredOrderAgentConfig, OrchestratorSuggestion, OrderAgentOutcome } from './order-agent.js';
 import type { DecisionResult } from '../types/decision.js';
 import type { OptionCandidate } from '../types/options.js';
 import type { SizeResult } from '../types/trade.js';
@@ -116,7 +116,7 @@ export class OrderAgentRegistry {
     ticker: string,
     reason: string,
     urgency: OrchestratorSuggestion['urgency'] = 'standard',
-  ): Promise<void> {
+  ): Promise<OrderAgentOutcome[]> {
     const targets = this.getByTicker(ticker).filter(
       a => a.getPhase() === 'MONITORING' || a.getPhase() === 'AWAITING_FILL',
     );
@@ -127,14 +127,15 @@ export class OrderAgentRegistry {
         `falling back to direct DB close`,
       );
       await this._directDbFallbackExit(ticker, reason);
-      return;
+      return [];
     }
 
     const suggestion: OrchestratorSuggestion = { decisionType: 'EXIT', reason, urgency };
-    await Promise.all(targets.map(a => a.processOrchestratorDecision(suggestion)));
+    const results = await Promise.all(targets.map(a => a.processOrchestratorDecision(suggestion)));
     console.log(
       `[Registry] notifyExit (urgency=${urgency}) dispatched to ${targets.length} agent(s) for ${ticker}`,
     );
+    return results.filter((r): r is OrderAgentOutcome => r !== null);
   }
 
   /**
@@ -147,19 +148,20 @@ export class OrderAgentRegistry {
     ticker: string,
     reason: string = 'Orchestrator REDUCE_EXPOSURE signal',
     urgency: OrchestratorSuggestion['urgency'] = 'standard',
-  ): Promise<void> {
+  ): Promise<OrderAgentOutcome[]> {
     const targets = this.getByTicker(ticker).filter(a => a.getPhase() === 'MONITORING');
 
     if (targets.length === 0) {
       console.warn(`[Registry] notifyReduce: no MONITORING agents for ${ticker}`);
-      return;
+      return [];
     }
 
     const suggestion: OrchestratorSuggestion = { decisionType: 'REDUCE_EXPOSURE', reason, urgency };
-    await Promise.all(targets.map(a => a.processOrchestratorDecision(suggestion)));
+    const results = await Promise.all(targets.map(a => a.processOrchestratorDecision(suggestion)));
     console.log(
       `[Registry] notifyReduce (urgency=${urgency}) dispatched to ${targets.length} agent(s) for ${ticker}`,
     );
+    return results.filter((r): r is OrderAgentOutcome => r !== null);
   }
 
   // ── Lifecycle ─────────────────────────────────────────────────────────────

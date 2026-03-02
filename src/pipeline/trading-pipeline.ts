@@ -4,6 +4,7 @@ import { AnalysisAgent } from '../agents/analysis-agent.js';
 import { DecisionOrchestrator } from '../agents/decision-orchestrator.js';
 import { ExecutionAgent } from '../agents/execution-agent.js';
 import { OrderAgentRegistry } from '../agents/order-agent-registry.js';
+import type { OrderAgentOutcome } from '../agents/order-agent.js';
 import { ApprovalService } from '../telegram/approval-service.js';
 import { buildContext } from './context-builder.js';
 import { checkMarketOpen } from './safety-gates.js';
@@ -76,6 +77,8 @@ export interface PipelineResult {
   failedGates?: string[];
   // Human approval (only set when decision was NEW_ENTRY and human gate triggered)
   humanApprovalOutcome?: ApprovalOutcome;
+  // Order agent outcomes (set for EXIT / REDUCE_EXPOSURE decisions)
+  orderAgentOutcomes?: OrderAgentOutcome[];
   // Full context for rich notifications
   signal?: SignalPayload;
   option?: OptionEvaluation;
@@ -254,23 +257,25 @@ export async function runPipeline(
       case 'EXIT': {
         // Forward to agents as a suggestion — each agent evaluates through
         // its own position-management rules (may override if not immediate).
-        await registry.notifyExit(
+        const exitOutcomes = await registry.notifyExit(
           ticker,
           decision.reasoning.slice(0, 150),
           decision.urgency,
         );
         result.orderSubmitted = true;
+        if (exitOutcomes.length) result.orderAgentOutcomes = exitOutcomes;
         break;
       }
 
       // ── REDUCE EXPOSURE ───────────────────────────────────────────────
       case 'REDUCE_EXPOSURE': {
-        await registry.notifyReduce(
+        const reduceOutcomes = await registry.notifyReduce(
           ticker,
           decision.reasoning.slice(0, 150),
           decision.urgency,
         );
         result.orderSubmitted = true;
+        if (reduceOutcomes.length) result.orderAgentOutcomes = reduceOutcomes;
         break;
       }
 

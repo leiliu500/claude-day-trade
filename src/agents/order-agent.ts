@@ -94,6 +94,15 @@ interface AiRecommendation {
   overriding_orchestrator: boolean;
 }
 
+/** Outcome returned by processOrchestratorDecision — used by the pipeline for notifications. */
+export interface OrderAgentOutcome {
+  action: 'EXIT' | 'REDUCE' | 'HOLD' | 'ADJUST_STOP';
+  reasoning: string;
+  overridingOrchestrator: boolean;
+  optionSymbol: string;
+  pnlPct?: number;
+}
+
 const TICK_INTERVAL_MS  = 30_000;
 const AI_TICK_INTERVAL  = 5;     // periodic AI check every N ticks (2.5 min)
 
@@ -206,14 +215,15 @@ export class OrderAgent {
    *   - `immediate` urgency  → execute directly (EOD, hard P&L stop — non-negotiable)
    *   - `standard` / `low`   → evaluate through AI; agent may OVERRIDE to HOLD/ADJUST_STOP
    */
-  async processOrchestratorDecision(suggestion: OrchestratorSuggestion): Promise<void> {
-    if (this.phase === 'CLOSING' || this.phase === 'CLOSED' || this.phase === 'FAILED') return;
+  async processOrchestratorDecision(suggestion: OrchestratorSuggestion): Promise<OrderAgentOutcome | null> {
+    if (this.phase === 'CLOSING' || this.phase === 'CLOSED' || this.phase === 'FAILED') return null;
     if (this.phase === 'AWAITING_FILL') {
       // Order hasn't filled yet — only honour immediate exits
       if (suggestion.urgency === 'immediate') {
         await this._executeExit(`UNFILLED_${suggestion.decisionType}: ${suggestion.reason}`);
+        return { action: 'EXIT', reasoning: suggestion.reason, overridingOrchestrator: false, optionSymbol: this.cfg.candidate.contract.symbol };
       }
-      return;
+      return null;
     }
 
     const ticker = this.cfg.decision.ticker;
@@ -227,10 +237,11 @@ export class OrderAgent {
       );
       if (suggestion.decisionType === 'EXIT') {
         await this._executeExit(suggestion.reason);
+        return { action: 'EXIT', reasoning: suggestion.reason, overridingOrchestrator: false, optionSymbol: symbol };
       } else {
         await this._executeReduce(suggestion.reason);
+        return { action: 'REDUCE', reasoning: suggestion.reason, overridingOrchestrator: false, optionSymbol: symbol };
       }
-      return;
     }
 
     // Standard / low urgency — let AI evaluate and potentially override
@@ -238,7 +249,7 @@ export class OrderAgent {
       `[OrderAgent ${ticker} ${symbol}] Received ${suggestion.decisionType}` +
       ` (urgency: ${suggestion.urgency}) — evaluating through AI`,
     );
-    await this._runAIDecision(suggestion);
+    return await this._runAIDecision(suggestion);
   }
 
   /**
@@ -451,13 +462,13 @@ export class OrderAgent {
   private async _runAIDecision(
     suggestion: OrchestratorSuggestion | null,
     state?: { currentPrice: number; stop: number | null; tp: number | null; qty: number; expiration: string | null },
-  ): Promise<void> {
+  ): Promise<OrderAgentOutcome | null> {
     // If called from processOrchestratorDecision, fetch live state ourselves
     let s = state;
     if (!s) {
       const priceMap = await getAlpacaPositionPrices();
       const currentPrice = priceMap.get(this.cfg.candidate.contract.symbol);
-      if (currentPrice == null) return;
+      if (currentPrice == null) return null;
 
       const pool = getPool();
       const { rows } = await pool.query<{
@@ -470,7 +481,7 @@ export class OrderAgent {
            FROM trading.position_journal WHERE id=$1 AND status='OPEN'`,
         [this.positionId],
       );
-      if (rows.length === 0) { this._stopTick(); this._selfRemove(); return; }
+      if (rows.length === 0) { this._stopTick(); this._selfRemove(); return null; }
       const row = rows[0]!;
       s = {
         currentPrice,
@@ -573,13 +584,14 @@ export class OrderAgent {
         ` — ${rec.reasoning.slice(0, 120)}`,
       );
 
-      await this._applyRecommendation(rec, s.stop, s.qty, s.currentPrice, pnlPct, suggestion);
+      return await this._applyRecommendation(rec, s.stop, s.qty, s.currentPrice, pnlPct, suggestion);
     } catch (err) {
       // AI errors are non-fatal; hard stops still protect the position
       console.warn(
         `[OrderAgent ${decision.ticker}] AI error (non-fatal):`,
         (err as Error).message,
       );
+      return null;
     }
   }
 
@@ -590,7 +602,9 @@ export class OrderAgent {
     currentPrice: number,
     pnlPct: number,
     suggestion: OrchestratorSuggestion | null,
-  ): Promise<void> {
+  ): Promise<OrderAgentOutcome> {
+    const symbol = this.cfg.candidate.contract.symbol;
+
     // Persist this AI tick before acting so history is always written even if execution fails
     if (this.positionId) {
       await insertAgentTick({
@@ -643,7 +657,7 @@ export class OrderAgent {
           notifyOrderAgentDecision({
             action:                 'ADJUST_STOP',
             ticker:                 this.cfg.decision.ticker,
-            optionSymbol:           this.cfg.candidate.contract.symbol,
+            optionSymbol:           symbol,
             optionSide:             this.cfg.candidate.contract.side,
             reasoning:              rec.reasoning,
             overridingOrchestrator: rec.overriding_orchestrator,
@@ -665,7 +679,7 @@ export class OrderAgent {
           notifyOrderAgentDecision({
             action:                 'HOLD',
             ticker:                 this.cfg.decision.ticker,
-            optionSymbol:           this.cfg.candidate.contract.symbol,
+            optionSymbol:           symbol,
             optionSide:             this.cfg.candidate.contract.side,
             reasoning:              rec.reasoning,
             overridingOrchestrator: rec.overriding_orchestrator,
@@ -678,6 +692,14 @@ export class OrderAgent {
         }
         break;
     }
+
+    return {
+      action:                 rec.action,
+      reasoning:              rec.reasoning,
+      overridingOrchestrator: rec.overriding_orchestrator,
+      optionSymbol:           symbol,
+      pnlPct,
+    };
   }
 
   // ── Order execution helpers ────────────────────────────────────────────────
