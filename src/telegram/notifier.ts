@@ -49,7 +49,7 @@ function fmtDelta(n: number | null | undefined): string {
 
 function fmtPct(n: number | null | undefined, dp = 2): string {
   if (n == null || !Number.isFinite(n)) return 'n/a';
-  return `${(n * 100).toFixed(dp)}%`;
+  return `${n.toFixed(dp)}%`;
 }
 
 // ── Header helpers ─────────────────────────────────────────────────────────────
