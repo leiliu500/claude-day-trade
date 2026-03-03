@@ -3,6 +3,7 @@ import { config } from '../config.js';
 import { AlpacaStreamManager } from '../lib/alpaca-stream.js';
 import { computeDMI } from '../indicators/dmi.js';
 import { computeATR } from '../indicators/atr.js';
+import { computeOBV } from '../indicators/obv.js';
 import { computeTD } from '../indicators/td-sequential.js';
 import { detectCandlePattern, detectAllPatterns } from '../indicators/candle-patterns.js';
 import { computePriceStructure } from '../indicators/price-structure.js';
@@ -83,6 +84,7 @@ function computeTimeframeIndicators(
     bars,
     dmi: computeDMI(bars, 14, skipGaps),
     atr: computeATR(bars, 14, skipGaps),
+    obv: computeOBV(bars, 14),
     td: computeTD(bars),
     candlePattern: detectCandlePattern(bars),
     allCandlePatterns: detectAllPatterns(bars),

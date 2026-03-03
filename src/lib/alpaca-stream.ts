@@ -417,9 +417,12 @@ export class AlpacaStreamManager extends EventEmitter {
         low:       Math.min(...bars.map(b => b.low)),
         close:     bars[bars.length - 1]!.close,
         volume:    bars.reduce((s, b) => s + b.volume, 0),
-        vwap:      bars.some(b => b.vwap !== undefined)
-          ? bars.reduce((s, b) => s + (b.vwap ?? 0), 0) / bars.length
-          : undefined,
+        vwap:      (() => {
+          if (!bars.some(b => b.vwap !== undefined)) return undefined;
+          const totalVol = bars.reduce((s, b) => s + b.volume, 0);
+          if (totalVol === 0) return undefined;
+          return bars.reduce((s, b) => s + (b.vwap ?? 0) * b.volume, 0) / totalVol;
+        })(),
       }));
   }
 

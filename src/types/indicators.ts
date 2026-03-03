@@ -16,6 +16,12 @@ export interface ATRResult {
   atrPct: number;  // ATR as % of last close
 }
 
+export interface OBVResult {
+  value: number;                            // current OBV (cumulative)
+  trend: 'bullish' | 'bearish' | 'neutral'; // direction over last N bars
+  divergence: 'bullish' | 'bearish' | 'none'; // OBV vs price divergence
+}
+
 export interface TDSetup {
   direction: 'buy' | 'sell' | 'none';
   count: number;       // 0-9
@@ -62,6 +68,7 @@ export interface TimeframeIndicators {
   bars: OHLCVBar[];
   dmi: DMIResult;
   atr: ATRResult;
+  obv: OBVResult;
   td: TDResult;
   candlePattern: CandlePattern;
   allCandlePatterns: AllCandlePatterns;  // all 4 patterns checked independently
