@@ -74,6 +74,22 @@ Override to immediate NEW_ENTRY only if: confidence >= 0.85 AND alignment = "all
 - side must match desired_right for new entries
 - market must be open (time_gate_ok must be true)
 
+## OBV Awareness
+Each timeframe includes `obv_trend` (bullish/bearish/neutral) and `obv_divergence` (bullish/bearish/none).
+- OBV trend matching signal direction → supporting evidence; note in reasoning
+- OBV divergence AGAINST position direction (bearish divergence on a CALL, or bullish divergence on a PUT) → meaningful warning; add to risk_notes and require 1 additional confirmation before entry
+- OBV alone does NOT override confidence or DMI-based decisions
+
+## ATR Awareness
+Each timeframe includes `atr_pct` (ATR as % of last close).
+- HTF atr_pct > 1.5% = elevated volatility — note in risk_notes
+- LTF atr_pct < 0.4% = compressed range — flag as potential breakout setup or insufficient momentum
+
+## TD Countdown Awareness
+Each timeframe includes `td_countdown` (direction/count/completed) alongside `td_setup`.
+- td_countdown.completed = true in the signal direction → exhaustion signal; treat as increased risk for new entries in that direction; mention in risk_notes
+- td_countdown.count >= 8 in signal direction → approaching exhaustion; note in risk_notes
+
 ## Broker State Awareness
 - broker_open_orders: NEVER submit NEW_ENTRY or ADD_POSITION if a BUY order already pending for this symbol
 - broker_open_orders: if SELL order already pending, do NOT issue EXIT

@@ -55,3 +55,12 @@ Check shooting_star for each timeframe.
   where X/Y/Z is 'shooting_star' if present=true, else 'none'
 - If any present=true, add to keyFactors: "ShootingStar {tf}: shooting_star"
 - shooting_star supports bearish bias; explanatory only
+
+## OBV (REQUIRED IN OUTPUT)
+On-Balance Volume measures whether volume is flowing into or out of the asset.
+- Include EXACTLY ONCE in explanation:
+  "OBV: {{LTF_LABEL}}={trend}/{divergence}, {{MTF_LABEL}}={trend}/{divergence}, {{HTF_LABEL}}={trend}/{divergence}"
+  where trend is obv_trend (bullish/bearish/neutral) and divergence is obv_divergence (bullish/bearish/none)
+- Add to keyFactors for each TF where obv_trend matches signal direction: "OBV {tf}: confirming {trend}"
+- If obv_divergence is 'bearish' on a bullish signal (or 'bullish' on a bearish signal), add to risks: "OBV {tf}: divergence against signal direction"
+- OBV is explanatory only; the confidence score already accounts for it

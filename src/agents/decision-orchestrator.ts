@@ -114,8 +114,14 @@ export class DecisionOrchestrator {
         tf: tf.timeframe,
         trend: tf.dmi.trend,
         adx: tf.dmi.adx.toFixed(1),
+        di_plus: tf.dmi.plusDI.toFixed(1),
+        di_minus: tf.dmi.minusDI.toFixed(1),
         td_setup: tf.td.setup,
+        td_countdown: tf.td.countdown,
+        obv_trend: tf.obv.trend,
+        obv_divergence: tf.obv.divergence,
         candle: tf.candlePattern,
+        atr_pct: tf.atr.atrPct.toFixed(2),
       })),
 
       // Position context

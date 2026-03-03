@@ -15,7 +15,7 @@ function computeConfidence(signal: SignalPayload, option: OptionEvaluation): Con
   const tfs = signal.timeframes;
   const [ltf, mtf, htf] = tfs;
   if (!ltf || !mtf || !htf) {
-    return { base: 0.40, diSpreadBonus: 0, adxBonus: 0, alignmentBonus: 0, tdAdjustment: 0, oiVolumeBonus: 0, total: 0.40 };
+    return { base: 0.40, diSpreadBonus: 0, adxBonus: 0, alignmentBonus: 0, tdAdjustment: 0, obvBonus: 0, oiVolumeBonus: 0, total: 0.40 };
   }
 
   // Base: slight bullish bias
@@ -54,6 +54,21 @@ function computeConfidence(signal: SignalPayload, option: OptionEvaluation): Con
   }
   tdAdjustment = Math.max(-0.05, Math.min(0.03, tdAdjustment));
 
+  // OBV bonus — HTF and MTF only; LTF OBV is too noisy to score
+  // +0.015 per TF whose OBV trend matches signal direction (max +0.03)
+  // -0.03 if any HTF/MTF shows OBV divergence against signal direction
+  let obvBonus = 0;
+  if (signal.direction !== 'neutral') {
+    for (const tf of [htf, mtf]) {
+      if (tf.obv.trend === signal.direction) obvBonus += 0.015;
+      const badDivergence =
+        (signal.direction === 'bullish' && tf.obv.divergence === 'bearish') ||
+        (signal.direction === 'bearish' && tf.obv.divergence === 'bullish');
+      if (badDivergence) obvBonus -= 0.03;
+    }
+    obvBonus = Math.max(-0.03, Math.min(0.03, obvBonus));
+  }
+
   // OI/Volume bonus — triggered only when option volume is extremely high.
   // High volume relative to open interest signals fresh speculative momentum.
   //   volume >= 1000 AND vol/OI >= 1.0  → +0.05 (volume exceeds all existing OI)
@@ -79,9 +94,9 @@ function computeConfidence(signal: SignalPayload, option: OptionEvaluation): Con
   }
   oiVolumeBonus = Math.min(oiVolumeBonus, 0.05);
 
-  const total = Math.max(0, Math.min(1, base + diSpreadBonus + adxBonus + alignmentBonus + tdAdjustment + oiVolumeBonus));
+  const total = Math.max(0, Math.min(1, base + diSpreadBonus + adxBonus + alignmentBonus + tdAdjustment + obvBonus + oiVolumeBonus));
 
-  return { base, diSpreadBonus, adxBonus, alignmentBonus, tdAdjustment, oiVolumeBonus, total };
+  return { base, diSpreadBonus, adxBonus, alignmentBonus, tdAdjustment, obvBonus, oiVolumeBonus, total };
 }
 
 /**
@@ -117,6 +132,8 @@ async function generateExplanation(
       diMinus: tf.dmi.minusDI.toFixed(1),
       adx: tf.dmi.adx.toFixed(1),
       trend: tf.dmi.trend,
+      obv_trend: tf.obv.trend,
+      obv_divergence: tf.obv.divergence,
       td_setup: tf.td.setup,
       td_countdown: tf.td.countdown,
       // Individual pattern flags for explicit formatting rules
