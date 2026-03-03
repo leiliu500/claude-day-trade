@@ -517,17 +517,7 @@ export class OrderAgent {
     const tp     = current_tp   ? parseFloat(current_tp)   : null;
 
     // ── 0. Trailing stop: 15% from peak (ratchets up only) ────────────────
-    const entryForTrail = this.fillPrice ?? candidate.entryPremium;
-    if (this.highestPrice === null) this.highestPrice = entryForTrail;
-    if (currentPrice > this.highestPrice) this.highestPrice = currentPrice;
-    const trailingStop = parseFloat((this.highestPrice * 0.85).toFixed(2));
-    if (dbStop === null || trailingStop > dbStop) {
-      await pool.query(
-        `UPDATE trading.position_journal SET current_stop=$1 WHERE id=$2 AND status='OPEN'`,
-        [trailingStop, this.positionId],
-      );
-    }
-    const stop = Math.max(trailingStop, dbStop ?? 0);
+    const stop = await this._updateTrailingStop(currentPrice, dbStop);
 
     // ── 1. Hard stop / TP (deterministic, no AI override) ─────────────────
     if (currentPrice <= stop) {
@@ -606,10 +596,14 @@ export class OrderAgent {
       );
       if (rows.length === 0) { this._stopTick(); this._selfRemove(); return null; }
       const row = rows[0]!;
+      const dbStop = row.current_stop ? parseFloat(row.current_stop) : null;
+      // Update trailing stop with this fresh price so peaks seen by the
+      // orchestrator pipeline (1 min cadence) are not missed by the 30 s tick loop.
+      const updatedStop = await this._updateTrailingStop(currentPrice, dbStop);
       s = {
         currentPrice,
-        stop:       row.current_stop ? parseFloat(row.current_stop) : null,
-        tp:         row.current_tp   ? parseFloat(row.current_tp)   : null,
+        stop:       updatedStop,
+        tp:         row.current_tp ? parseFloat(row.current_tp) : null,
         qty:        row.qty,
         expiration: row.expiration,
       };
@@ -823,6 +817,29 @@ export class OrderAgent {
       if (['canceled', 'expired', 'rejected'].includes(order?.status ?? '')) break;
     }
     return null;
+  }
+
+  /**
+   * Ratchet the trailing stop (15% below peak) upward whenever a fresh price is
+   * available. Called from both _monitorPosition (30 s tick) and _runAIDecision
+   * (1 min orchestrator cadence) so that brief peaks are never missed.
+   *
+   * Returns the effective stop to use for the current check:
+   *   Math.max(new trailing stop, existing DB stop)
+   */
+  private async _updateTrailingStop(currentPrice: number, dbStop: number | null): Promise<number> {
+    const entryForTrail = this.fillPrice ?? this.cfg.candidate.entryPremium;
+    if (this.highestPrice === null) this.highestPrice = entryForTrail;
+    if (currentPrice > this.highestPrice) this.highestPrice = currentPrice;
+    const trailingStop = parseFloat((this.highestPrice * 0.85).toFixed(2));
+    if (dbStop === null || trailingStop > dbStop) {
+      const pool = getPool();
+      await pool.query(
+        `UPDATE trading.position_journal SET current_stop=$1 WHERE id=$2 AND status='OPEN'`,
+        [trailingStop, this.positionId],
+      );
+    }
+    return Math.max(trailingStop, dbStop ?? 0);
   }
 
   /** Close the full position. Idempotent — CLOSING/CLOSED phases guard double-exit. */
