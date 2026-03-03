@@ -332,7 +332,7 @@ async function loadOrders() {
       <td>${o.fill_price ? '$' + fmt(o.fill_price) : '—'}</td>
       <td>${o.alpaca_status ?? '—'}</td>
       <td>${o.filled_at ? fmtTime(o.filled_at) : '—'}</td>
-      <td class="${o.error_message ? 'bearish' : ''}" title="${o.error_message || ''}">${o.error_message ? '⚠ ' + o.error_message.slice(0, 30) : '—'}</td>
+      <td class="${o.error_message ? 'bearish' : ''}" style="word-break:break-word;max-width:200px">${o.error_message ? '⚠ ' + o.error_message : '—'}</td>
     </tr>
   `);
   setRows('tbl-orders', rows);
@@ -655,7 +655,7 @@ async function loadInteractions() {
         <td class="reasoning" title="${i.raw_text || ''}">${i.raw_text ?? '—'}</td>
         <td class="reasoning" title="${paramsStr}">${paramsStr}</td>
         <td>${outcomeBadge(i.outcome)}</td>
-        <td class="${i.error_message ? 'bearish' : ''}" title="${i.error_message || ''}">${i.error_message ? i.error_message.slice(0, 40) : '—'}</td>
+        <td class="${i.error_message ? 'bearish' : ''}" style="word-break:break-word;max-width:200px">${i.error_message ? i.error_message : '—'}</td>
       </tr>
     `;
   });
@@ -796,8 +796,10 @@ function renderAnalysisCard(sig) {
       ${renderConfidenceBar('DI Spread',   cb.diSpreadBonus ?? 0, 0.25, 'conf-bar-bonus')}
       ${renderConfidenceBar('ADX',         cb.adxBonus      ?? 0, 0.10, 'conf-bar-bonus')}
       ${renderConfidenceBar('Alignment',   cb.alignmentBonus ?? 0, 0.10, 'conf-bar-bonus')}
-      ${renderConfidenceBar('TD Seq',      cb.tdAdjustment  ?? 0, 0.05, 'conf-bar-bonus')}
-      ${renderConfidenceBar('OI/Volume',   cb.oiVolumeBonus ?? 0, 0.05, 'conf-bar-bonus')}
+      ${renderConfidenceBar('TD Seq',       cb.tdAdjustment            ?? 0, 0.05, 'conf-bar-bonus')}
+      ${renderConfidenceBar('OBV',         cb.obvBonus                ?? 0, 0.03, 'conf-bar-bonus')}
+      ${renderConfidenceBar('Price Pos',   cb.pricePositionAdjustment ?? 0, 0.10, 'conf-bar-bonus')}
+      ${renderConfidenceBar('OI/Volume',   cb.oiVolumeBonus           ?? 0, 0.05, 'conf-bar-bonus')}
       <div class="conf-total-row">
         <span>Total</span>
         <span class="${thresh ? 'bullish' : 'bearish'}" style="font-weight:700">${confPct}%${thresh ? ' ✅' : ' (below threshold)'}</span>

@@ -27,7 +27,8 @@
       "Bash(docker-compose logs --tail=35 orchestrator)",
       "Bash(docker-compose logs --tail=20 orchestrator)",
       "Bash(docker-compose restart orchestrator)",
-      "Bash(docker-compose logs --tail=30 orchestrator)"
+      "Bash(docker-compose logs --tail=30 orchestrator)",
+      "Bash(docker exec day-trade-orchestrator grep -A2 \"prior setup done\" /app/dist/skills/analysis-agent.md)"
     ],
     "additionalDirectories": [
       "/home/ec2-user/.claude/projects/-home-ec2-user-claude-day-trade"
