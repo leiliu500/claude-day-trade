@@ -16,12 +16,15 @@ const AUTO_TICKERS: Array<{ ticker: string; profile: 'S' | 'M' | 'L' }> = [
 
 const TRADING_INTERVAL_MS = 3 * 60 * 1000; // 3 minutes
 
-/** True when current UTC time is within the trading window: Mon-Fri 12:00-20:59 UTC (market closes 21:00 UTC / 4 PM ET) */
+/** True when current UTC time is within the trading window: Mon-Fri 13:30-20:30 UTC (9:30 AM - 4:30 PM ET) */
 function isTradingWindow(): boolean {
-  const now = new Date();
-  const day  = now.getUTCDay();   // 0=Sun, 6=Sat
-  const hour = now.getUTCHours();
-  return day >= 1 && day <= 5 && hour >= 12 && hour < 21;
+  const now    = new Date();
+  const day    = now.getUTCDay();     // 0=Sun, 6=Sat
+  const hour   = now.getUTCHours();
+  const minute = now.getUTCMinutes();
+  const afterStart = hour > 13 || (hour === 13 && minute >= 30);
+  const beforeEnd  = hour < 20 || (hour === 20 && minute < 30);
+  return day >= 1 && day <= 5 && afterStart && beforeEnd;
 }
 
 /**
@@ -135,8 +138,8 @@ function scheduleTradingTick(): void {
 /**
  * Start the scheduler.
  *
- * Trading: self-correcting setTimeout chain, Mon-Fri 12:00-21:00 UTC
- *   (covers ~7:00 AM - 4:00 PM ET, pre-market through market close)
+ * Trading: self-correcting setTimeout chain, Mon-Fri 13:30-20:30 UTC
+ *   (covers 9:30 AM - 4:30 PM ET, market open through 30 min after close)
  *
  * Daily cleanup: 07:00 UTC Mon-Fri — truncates all trading tables so each
  *   day starts with an empty database (runs ~7:30 hours before market open).
@@ -144,7 +147,7 @@ function scheduleTradingTick(): void {
 export function startScheduler(): void {
   // Trading ticks — drift-free setTimeout chain
   scheduleTradingTick();
-  console.log(`[Scheduler] Trading interval: every 3 min, Mon-Fri 12:00-21:00 UTC`);
+  console.log(`[Scheduler] Trading interval: every 3 min, Mon-Fri 13:30-20:30 UTC`);
 
   // Daily cleanup — once a day, cron precision is fine here
   const cleanupCron = '0 7 * * 1-5';
