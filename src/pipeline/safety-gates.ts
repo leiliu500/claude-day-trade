@@ -77,6 +77,19 @@ export function checkSafetyGates(params: {
     }
   }
 
+  // 10. Open-volatility gate — no new entries in first 30 min of session (13:30–14:00 UTC)
+  {
+    const now = new Date();
+    const utcH = now.getUTCHours();
+    const utcM = now.getUTCMinutes();
+    const minutesSinceOpen = (utcH - 13) * 60 + utcM; // minutes since 13:00 UTC
+    if (minutesSinceOpen >= 30 && minutesSinceOpen < 60) {
+      // 13:30–14:00 UTC = first 30 min of session
+      const minsLeft = 60 - minutesSinceOpen;
+      failed.push(`OPEN_VOLATILITY_GATE: first 30 min of session — ${minsLeft} min until 14:00 UTC (10:00 AM ET)`);
+    }
+  }
+
   return { passed: failed.length === 0, failedGates: failed };
 }
 
