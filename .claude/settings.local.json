@@ -28,7 +28,9 @@
       "Bash(docker-compose logs --tail=20 orchestrator)",
       "Bash(docker-compose restart orchestrator)",
       "Bash(docker-compose logs --tail=30 orchestrator)",
-      "Bash(docker exec day-trade-orchestrator grep -A2 \"prior setup done\" /app/dist/skills/analysis-agent.md)"
+      "Bash(docker exec day-trade-orchestrator grep -A2 \"prior setup done\" /app/dist/skills/analysis-agent.md)",
+      "Bash(docker exec day-trade-postgres psql -U trader -d day_trade -c \"\\\\d trading.trade_evaluations;\")",
+      "Bash(docker exec day-trade-postgres psql -U trader -d day_trade -c \":*)"
     ],
     "additionalDirectories": [
       "/home/ec2-user/.claude/projects/-home-ec2-user-claude-day-trade"

@@ -115,6 +115,18 @@ export async function buildContext(ticker: string): Promise<PositionContext> {
     ),
   ]);
 
+  // Only surface broker positions / orders that the DB actively tracks.
+  // Orphaned Alpaca positions (e.g. a fill whose DB record was already CLOSED due to a
+  // failed UNFILLED_EXIT) must not appear in the orchestrator's context — they caused the
+  // AI to confuse a losing orphan with the live position and trigger a spurious EXIT.
+  const activeSymbols = new Set(activePos.rows.map(r => r.option_symbol as string));
+  const filteredBrokerPositions = brokerState.positions.filter(
+    p => activeSymbols.has((p as Record<string, unknown>)['symbol'] as string),
+  );
+  const filteredBrokerOrders = brokerState.orders.filter(
+    o => activeSymbols.has((o as Record<string, unknown>)['symbol'] as string),
+  );
+
   return {
     openPositions: activePos.rows.map(r => ({
       id: r.id,
@@ -127,8 +139,8 @@ export async function buildContext(ticker: string): Promise<PositionContext> {
       openedAt: r.opened_at,
       confirmationCount: r.confirmation_count ?? 0,
     })),
-    brokerPositions: brokerState.positions,
-    brokerOpenOrders: brokerState.orders,
+    brokerPositions: filteredBrokerPositions,
+    brokerOpenOrders: filteredBrokerOrders,
     recentDecisions: recentDecisions.rows.map(r => ({
       decisionType: r.decision_type,
       ticker: r.ticker,
