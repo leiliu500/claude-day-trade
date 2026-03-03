@@ -19,7 +19,8 @@ Ignore {{LTF_LABEL}} ADX entirely — do not mention it.
 ## TD SEQUENTIAL (REQUIRED IN OUTPUT)
 For each timeframe where td_setup or td_countdown exists:
 - Include a line: "TD {tf}: setup={dir or 'none'} {count}/9, countdown={dir or 'none'} {count}/13"
-- Append "(setup completed)" if td_setup.completed is true
+- Append "(setup completed)" if td_setup.completed is true AND td_setup.count === 9
+- Append "(prior setup done)" if td_setup.completed is true AND td_setup.count < 9 (a previous 9-bar setup finished; this is a new setup forming)
 - Append "(countdown completed)" if td_countdown.completed is true
 - Add at least one TD entry in keyFactors when any TD data exists
 - TD is explanatory only; it does NOT override the pre-computed direction
