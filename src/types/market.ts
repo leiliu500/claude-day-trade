@@ -2,7 +2,7 @@ export type Timeframe = '1m' | '2m' | '3m' | '5m' | '15m' | '1h' | '1d';
 export type TradingProfile = 'S' | 'M' | 'L';
 
 export const PROFILE_TIMEFRAMES: Record<TradingProfile, [Timeframe, Timeframe, Timeframe]> = {
-  S: ['2m', '3m', '5m'],   // Scalp — LTF, MTF, HTF
+  S: ['1m', '3m', '5m'],   // Scalp — LTF, MTF, HTF
   M: ['1m', '5m', '15m'],  // Medium
   L: ['5m', '1h', '1d'],   // Long / swing
 };
