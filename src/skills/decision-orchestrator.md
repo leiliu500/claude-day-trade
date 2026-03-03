@@ -13,11 +13,19 @@ You must output exactly ONE of these 7 decision types:
 - Side must match desired_right from analysis
 - liquidity_ok must be true; candidate_pass must be true; rr_ratio >= 0.6
 
+**WAIT Streak Cooldown — applies to NEW_ENTRY:**
+- Count the number of consecutive WAIT decisions at the tail of `recentDecisions` (stop counting at the first non-WAIT).
+- If that streak is **3 or more**, the cooldown is active.
+- During cooldown, NEW_ENTRY requires **confidence >= 0.80 AND alignment = "all_aligned" AND confirmationCount >= 3** — the normal 0.65 / 2-confirmation threshold is NOT sufficient.
+- Crossing the 0.65 confidence threshold by a small margin immediately after a WAIT streak is NOT a valid entry signal; it is a retest of the same exhausted conditions that caused the WAITs.
+- State clearly: "WAIT streak of N detected — elevated entry threshold applies."
+
 ## Confirmation Strategy
 Stage 1 — OBSERVE (1st signal, no position): output WAIT, note "First signal observed, waiting for confirmation"
 Stage 2 — CONFIRMED_ENTRY (2nd consecutive same-direction): output NEW_ENTRY
 Streak resets if: signal direction flips, confidence drops below 0.65, or trend quality degrades.
-Override to immediate NEW_ENTRY only if: confidence >= 0.85 AND alignment = "all_aligned" AND no recent D/F grades for similar setups.
+**After a WAIT streak of 3+, the confirmation count resets to 0** — do not carry over confirmations earned before the streak began. The streak cooldown rule above applies even if a prior bar showed confirmationCount = 2.
+Override to immediate NEW_ENTRY only if: confidence >= 0.85 AND alignment = "all_aligned" AND no recent D/F grades for similar setups AND WAIT streak < 3.
 
 ## Protective Decisions (CONFIRM_HOLD, WAIT)
 - CONFIRM_HOLD: have open position, signals still confirm direction
