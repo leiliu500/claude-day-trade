@@ -36,6 +36,7 @@ import {
   reduceAlpacaPosition,
   getAlpacaOrder,
   getAlpacaPositionPrices,
+  cancelOpenOrdersForSymbol,
 } from '../lib/alpaca-api.js';
 import { AlpacaStreamManager } from '../lib/alpaca-stream.js';
 import type { TradeUpdateEvent } from '../lib/alpaca-stream.js';
@@ -240,8 +241,25 @@ export class OrderAgent {
     if (this.phase === 'AWAITING_FILL') {
       // Order hasn't filled yet — only honour immediate exits
       if (suggestion.urgency === 'immediate') {
-        await this._executeExit(`UNFILLED_${suggestion.decisionType}: ${suggestion.reason}`);
-        return { action: 'EXIT', reasoning: suggestion.reason, overridingOrchestrator: false, optionSymbol: this.cfg.candidate.contract.symbol };
+        const symbol = this.cfg.candidate.contract.symbol;
+        const ticker = this.cfg.decision.ticker;
+        const reason = `UNFILLED_CANCELLED: ${suggestion.reason}`;
+
+        // Cancel the pending buy order so it never fills and creates an orphaned position.
+        // _executeExit must NOT be used here — it tries sell_to_close on a position that
+        // doesn't exist yet (Alpaca error 42210000), and crucially never cancels the buy.
+        this.phase = 'CLOSING';
+        this._stopTick();
+        if (this.alpacaOrderId) AlpacaStreamManager.getInstance().unwatchOrder(this.alpacaOrderId);
+        await cancelOpenOrdersForSymbol(symbol).catch(err =>
+          console.warn(`[OrderAgent ${ticker} ${symbol}] Cancel buy order failed (best-effort):`, (err as Error).message),
+        );
+        await this._voidPosition(reason);
+        this.phase = 'FAILED';
+        console.log(`[OrderAgent ${ticker} ${symbol}] Phase: FAILED — buy order cancelled (${reason})`);
+        this._selfRemove();
+
+        return { action: 'EXIT', reasoning: suggestion.reason, overridingOrchestrator: false, optionSymbol: symbol };
       }
       return null;
     }
