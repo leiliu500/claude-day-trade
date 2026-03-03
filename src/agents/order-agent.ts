@@ -123,6 +123,7 @@ export class OrderAgent {
   private timer: NodeJS.Timeout | null = null;
   private expiryWarningSent           = false;
   private tickCount                   = 0;
+  private highestPrice: number | null = null;
 
   constructor(private readonly cfg: OrderAgentConfig | RestoredOrderAgentConfig) {
     if ('positionId' in cfg) {
@@ -494,11 +495,24 @@ export class OrderAgent {
     if (rows.length === 0) { this._stopTick(); this._selfRemove(); return; }
 
     const { current_stop, current_tp, qty, expiration } = rows[0]!;
-    const stop = current_stop ? parseFloat(current_stop) : null;
-    const tp   = current_tp   ? parseFloat(current_tp)   : null;
+    const dbStop = current_stop ? parseFloat(current_stop) : null;
+    const tp     = current_tp   ? parseFloat(current_tp)   : null;
+
+    // ── 0. Trailing stop: 15% from peak (ratchets up only) ────────────────
+    const entryForTrail = this.fillPrice ?? candidate.entryPremium;
+    if (this.highestPrice === null) this.highestPrice = entryForTrail;
+    if (currentPrice > this.highestPrice) this.highestPrice = currentPrice;
+    const trailingStop = parseFloat((this.highestPrice * 0.85).toFixed(2));
+    if (dbStop === null || trailingStop > dbStop) {
+      await pool.query(
+        `UPDATE trading.position_journal SET current_stop=$1 WHERE id=$2 AND status='OPEN'`,
+        [trailingStop, this.positionId],
+      );
+    }
+    const stop = Math.max(trailingStop, dbStop ?? 0);
 
     // ── 1. Hard stop / TP (deterministic, no AI override) ─────────────────
-    if (stop != null && currentPrice <= stop) {
+    if (currentPrice <= stop) {
       await this._executeExit(`STOP_HIT @ $${currentPrice.toFixed(2)} (stop=$${stop.toFixed(2)})`);
       return;
     }
@@ -726,42 +740,10 @@ export class OrderAgent {
         }
         break;
 
-      case 'ADJUST_STOP': {
-        const newStop = rec.new_stop;
-        const side    = this.cfg.candidate.contract.side;
-        const improves = newStop > 0 && (
-          currentStop == null
-            ? true
-            : side === 'call' ? newStop > currentStop : newStop < currentStop
-        );
-
-        if (improves) {
-          const pool = getPool();
-          await pool.query(
-            `UPDATE trading.position_journal SET current_stop=$1 WHERE id=$2 AND status='OPEN'`,
-            [newStop, this.positionId],
-          );
-          console.log(
-            `[OrderAgent ${this.cfg.decision.ticker}] Stop trailed:` +
-            ` ${currentStop?.toFixed(2) ?? 'none'} → $${newStop.toFixed(2)}`,
-          );
-          notifyOrderAgentDecision({
-            action:                 'ADJUST_STOP',
-            ticker:                 this.cfg.decision.ticker,
-            optionSymbol:           symbol,
-            optionSide:             this.cfg.candidate.contract.side,
-            reasoning:              rec.reasoning,
-            overridingOrchestrator: rec.overriding_orchestrator,
-            orchestratorSuggestion: suggestion?.decisionType ?? null,
-            pnlPct,
-            currentPrice,
-            entryPrice:             this.fillPrice ?? this.cfg.candidate.entryPremium,
-            oldStop:                currentStop,
-            newStop,
-          }).catch(err => console.warn(`[OrderAgent ${this.cfg.decision.ticker}] Notify error:`, (err as Error).message));
-        }
+      case 'ADJUST_STOP':
+        // Stop is managed automatically by 15% trailing stop — AI suggestion ignored
+        console.log(`[OrderAgent ${this.cfg.decision.ticker}] AI ADJUST_STOP ignored — trailing stop is automatic`);
         break;
-      }
 
       case 'HOLD':
       default:
