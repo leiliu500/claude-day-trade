@@ -31,7 +31,14 @@
       "Bash(docker exec day-trade-orchestrator grep -A2 \"prior setup done\" /app/dist/skills/analysis-agent.md)",
       "Bash(docker exec day-trade-postgres psql -U trader -d day_trade -c \"\\\\d trading.trade_evaluations;\")",
       "Bash(docker exec day-trade-postgres psql -U trader -d day_trade -c \":*)",
-      "Bash(curl -s -H \"APCA-API-KEY-ID: PK52GZ34XOEQZZMS75G54IQT3I\" -H \"APCA-API-SECRET-KEY: 3xPVDT77uRiepNDnmRrCTotwdXD2yjgKYcHB94LuTHZV\" \"https://paper-api.alpaca.markets/v2/orders?symbols=SPY260304C00680000&status=all&limit=50\")"
+      "Bash(curl -s -H \"APCA-API-KEY-ID: PK52GZ34XOEQZZMS75G54IQT3I\" -H \"APCA-API-SECRET-KEY: 3xPVDT77uRiepNDnmRrCTotwdXD2yjgKYcHB94LuTHZV\" \"https://paper-api.alpaca.markets/v2/orders?symbols=SPY260304C00680000&status=all&limit=50\")",
+      "Bash(docker-compose logs --since=\"2026-03-03T18:10:00Z\" --until=\"2026-03-03T18:45:00Z\" orchestrator)",
+      "Bash(docker exec day-trade-postgres psql -U trader -d trading -c \":*)",
+      "Bash(docker exec day-trade-postgres psql -U trader -d postgres -c \"\\\\dt\")",
+      "Bash(docker exec day-trade-postgres psql -U trader -d postgres -c \"\\\\l+\")",
+      "Bash(docker exec day-trade-postgres psql -U trader -d day_trade -c \"\\\\dt *.*\")",
+      "Bash(docker exec day-trade-postgres psql -U trader -d day_trade -c \"\\\\d trading.scheduler_runs\")",
+      "Bash(docker exec day-trade-postgres psql -U trader -d day_trade -c \"\\\\d trading.trading_decisions\")"
     ],
     "additionalDirectories": [
       "/home/ec2-user/.claude/projects/-home-ec2-user-claude-day-trade"

@@ -825,7 +825,7 @@ function renderAnalysisCard(sig) {
             cp.bullishEngulfing?.present ? 'BullEngulf' : null,
             cp.bearishEngulfing?.present ? 'BearEngulf' : null,
           ].filter(Boolean).join(', ') || '—';
-          const trendCls = dmi.trend === 'up' ? 'bullish' : dmi.trend === 'down' ? 'bearish' : 'neutral';
+          const trendCls = dmi.trend === 'bullish' ? 'bullish' : dmi.trend === 'bearish' ? 'bearish' : 'neutral';
           const tdStr = td.count != null
             ? `${td.direction === 'buy' ? '▲' : '▼'} ${td.count}${td.completed ? ' ✓' : ''}`
             : '—';
