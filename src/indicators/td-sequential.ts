@@ -21,67 +21,60 @@ export function computeTD(bars: OHLCVBar[]): TDResult {
   let setupCount = 0;
   let setupDir: 'buy' | 'sell' | 'none' = 'none';
   let setupCompleted = false;
+  let setupCompletionIdx = -1;
 
-  // Compute setup: run from the end backwards to find the current active setup
   for (let i = 4; i < n; i++) {
     const curr = bars[i]!;
     const ref = bars[i - 4]!;
 
     if (curr.close < ref.close) {
-      // Bullish setup bar (price declining — potential buy setup)
       if (setupDir === 'buy') {
         setupCount++;
       } else {
         setupDir = 'buy';
         setupCount = 1;
         setupCompleted = false;
+        setupCompletionIdx = -1;
       }
     } else if (curr.close > ref.close) {
-      // Bearish setup bar (price rising — potential sell setup)
       if (setupDir === 'sell') {
         setupCount++;
       } else {
         setupDir = 'sell';
         setupCount = 1;
         setupCompleted = false;
+        setupCompletionIdx = -1;
       }
     } else {
-      // Equality — reset setup
       setupDir = 'none';
       setupCount = 0;
       setupCompleted = false;
+      setupCompletionIdx = -1;
     }
 
-    if (setupCount >= 9) {
+    if (setupCount === 9 && !setupCompleted) {
       setupCompleted = true;
-      // Don't break — check if we reset after completion
-      if (setupCount === 9) {
-        setupCompleted = true;
-      }
+      setupCompletionIdx = i;
     }
   }
 
   const setup: TDSetup = {
     direction: setupCount > 0 ? setupDir : 'none',
     count: Math.min(setupCount, 9),
-    completed: setupCompleted || setupCount >= 9,
+    completed: setupCompleted,
   };
 
   // ── Countdown Phase ────────────────────────────────────────────────────────
-  // Countdown begins after a setup is complete and counts qualifying bars
-  // Simplified: find completed setups and count from there
+  // Countdown begins after setup completion and counts all qualifying bars
+  // Buy countdown:  close <= low[2]
+  // Sell countdown: close >= high[2]
   let cdCount = 0;
   let cdDir: 'buy' | 'sell' | 'none' = 'none';
   let cdCompleted = false;
 
-  // Find if there's a completed setup to base countdown on
-  if (setup.completed) {
+  if (setupCompleted && setupCompletionIdx >= 0) {
     cdDir = setup.direction;
-    // Count qualifying countdown bars after setup completion
-    // For buy countdown: close <= low[2]
-    // For sell countdown: close >= high[2]
-    const startIdx = Math.max(0, n - 14);  // look back up to 14 bars
-    for (let i = startIdx + 2; i < n; i++) {
+    for (let i = setupCompletionIdx + 1; i < n; i++) {
       const curr = bars[i]!;
       const ref2 = bars[i - 2]!;
 

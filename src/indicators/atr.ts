@@ -3,10 +3,11 @@ import type { ATRResult } from '../types/indicators.js';
 
 /**
  * Compute ATR (Average True Range) using Wilder's smoothing
+ * skipSessionGaps: when true, uses high-low only for first bar of a new session
+ * to avoid overnight gap contamination (use for intraday timeframes).
  */
-export function computeATR(bars: OHLCVBar[], period = 14): ATRResult {
+export function computeATR(bars: OHLCVBar[], period = 14, skipSessionGaps = false): ATRResult {
   if (bars.length < period + 1) {
-    const lastClose = bars[bars.length - 1]?.close ?? 1;
     return { atr: 0, atrPct: 0 };
   }
 
@@ -14,11 +15,14 @@ export function computeATR(bars: OHLCVBar[], period = 14): ATRResult {
   for (let i = 1; i < bars.length; i++) {
     const prev = bars[i - 1]!;
     const curr = bars[i]!;
-    const tr = Math.max(
-      curr.high - curr.low,
-      Math.abs(curr.high - prev.close),
-      Math.abs(curr.low - prev.close)
-    );
+    const newSession = skipSessionGaps && curr.timestamp.slice(0, 10) !== prev.timestamp.slice(0, 10);
+    const tr = newSession
+      ? curr.high - curr.low
+      : Math.max(
+          curr.high - curr.low,
+          Math.abs(curr.high - prev.close),
+          Math.abs(curr.low - prev.close)
+        );
     trValues.push(tr);
   }
 

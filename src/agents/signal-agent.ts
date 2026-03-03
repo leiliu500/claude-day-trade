@@ -52,11 +52,12 @@ function computeTimeframeIndicators(
   timeframe: Timeframe,
   direction: 'bullish' | 'bearish' | 'neutral' = 'neutral'
 ): TimeframeIndicators {
+  const skipGaps = timeframe !== '1d';
   return {
     timeframe,
     bars,
-    dmi: computeDMI(bars),
-    atr: computeATR(bars),
+    dmi: computeDMI(bars, 14, skipGaps),
+    atr: computeATR(bars, 14, skipGaps),
     td: computeTD(bars),
     candlePattern: detectCandlePattern(bars),
     allCandlePatterns: detectAllPatterns(bars),
@@ -65,14 +66,6 @@ function computeTimeframeIndicators(
   };
 }
 
-function synthesizeDirection(tfs: TimeframeIndicators[]): SignalDirection {
-  const votes = tfs.map(tf => tf.dmi.trend);
-  const bullish = votes.filter(v => v === 'bullish').length;
-  const bearish = votes.filter(v => v === 'bearish').length;
-  if (bullish > bearish) return 'bullish';
-  if (bearish > bullish) return 'bearish';
-  return 'neutral';
-}
 
 function classifyAlignment(tfs: TimeframeIndicators[], direction: SignalDirection): AlignmentType {
   // tfs order: [LTF, MTF, HTF]
@@ -107,7 +100,11 @@ export class SignalAgent {
     ]);
 
     // First pass: compute DMI-based indicators to determine direction
-    const dmiOnly = [ltfBars, mtfBars, htfBars].map(bars => computeDMI(bars));
+    const dmiOnly = [
+      computeDMI(ltfBars, 14, ltf !== '1d'),
+      computeDMI(mtfBars, 14, mtf !== '1d'),
+      computeDMI(htfBars, 14, htf !== '1d'),
+    ];
     const directionVotes = dmiOnly.map(d => d.trend);
     const bullishVotes = directionVotes.filter(v => v === 'bullish').length;
     const bearishVotes = directionVotes.filter(v => v === 'bearish').length;

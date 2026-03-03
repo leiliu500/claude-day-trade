@@ -4,8 +4,10 @@ import type { DMIResult } from '../types/indicators.js';
 /**
  * Compute DMI (Directional Movement Index) + ADX
  * Uses Wilder's smoothing (EMA with alpha = 1/period)
+ * skipSessionGaps: when true, uses high-low only for True Range on first bar of a new session
+ * to avoid overnight gap contamination (use for intraday timeframes).
  */
-export function computeDMI(bars: OHLCVBar[], period = 14): DMIResult {
+export function computeDMI(bars: OHLCVBar[], period = 14, skipSessionGaps = false): DMIResult {
   if (bars.length < period + 1) {
     return { plusDI: 0, minusDI: 0, adx: 0, trend: 'neutral', adxStrength: 'weak', crossedUp: false, crossedDown: false };
   }
@@ -21,12 +23,15 @@ export function computeDMI(bars: OHLCVBar[], period = 14): DMIResult {
     const curr = bars[i]!;
     const upMove = curr.high - prev.high;
     const downMove = prev.low - curr.low;
+    const newSession = skipSessionGaps && curr.timestamp.slice(0, 10) !== prev.timestamp.slice(0, 10);
 
-    trueRange[i] = Math.max(
-      curr.high - curr.low,
-      Math.abs(curr.high - prev.close),
-      Math.abs(curr.low - prev.close)
-    );
+    trueRange[i] = newSession
+      ? curr.high - curr.low
+      : Math.max(
+          curr.high - curr.low,
+          Math.abs(curr.high - prev.close),
+          Math.abs(curr.low - prev.close)
+        );
 
     if (upMove > downMove && upMove > 0) {
       dmPlus[i] = upMove;
