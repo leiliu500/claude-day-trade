@@ -42,6 +42,7 @@ export function computePriceStructure(
       priceVsSwingHigh: 0, priceVsSwingLow: 0,
       swingHighBarsAgo: 0, swingLowBarsAgo: 0,
       atrValue: 0, triggerPrice: 0, invalidationLevel: 0, targetLevel: 0, underlyingRR: 0,
+      rangePosition: 0.5, priceHalf: 'lower' as const,
     };
   }
 
@@ -85,10 +86,16 @@ export function computePriceStructure(
   const reward = targetLevel - triggerPrice;
   const underlyingRR = risk > 0 ? reward / risk : 0;
 
+  // Price position within the swing range
+  const rangeSize = swingHigh - swingLow;
+  const rangePosition = rangeSize > 0 ? (currentPrice - swingLow) / rangeSize : 0.5;
+  const priceHalf: 'upper' | 'lower' = rangePosition >= 0.5 ? 'upper' : 'lower';
+
   return {
     swingHigh, swingLow, currentPrice,
     priceVsSwingHigh, priceVsSwingLow,
     swingHighBarsAgo, swingLowBarsAgo,
     atrValue, triggerPrice, invalidationLevel, targetLevel, underlyingRR,
+    rangePosition, priceHalf,
   };
 }

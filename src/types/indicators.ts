@@ -61,6 +61,9 @@ export interface PriceStructure {
   invalidationLevel: number;   // swing low (bullish) or swing high (bearish)
   targetLevel: number;         // swing high (bullish) or swing low (bearish)
   underlyingRR: number;        // (target - trigger) / (trigger - invalidation)
+  // Price position within the swing range
+  rangePosition: number;       // 0.0 (at swingLow) → 1.0 (at swingHigh)
+  priceHalf: 'upper' | 'lower'; // whether price is above or below swing midpoint
 }
 
 export interface TimeframeIndicators {

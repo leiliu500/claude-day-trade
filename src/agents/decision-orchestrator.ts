@@ -82,6 +82,14 @@ export class DecisionOrchestrator {
 
       // Analysis
       confidence: analysis.confidence,
+      confidence_breakdown: {
+        price_position_adjustment: analysis.confidenceBreakdown.pricePositionAdjustment,
+        price_half: signal.timeframes[2]?.priceStructure.priceHalf ?? signal.timeframes[0]?.priceStructure.priceHalf ?? 'lower',
+        range_position: parseFloat((signal.timeframes[2]?.priceStructure.rangePosition ?? signal.timeframes[0]?.priceStructure.rangePosition ?? 0.5).toFixed(2)),
+        note: (signal.timeframes[2]?.priceStructure.priceHalf ?? signal.timeframes[0]?.priceStructure.priceHalf) === 'lower'
+          ? 'Lower half: puts preferred, calls are higher risk'
+          : 'Upper half: calls preferred, puts are higher risk',
+      },
       meets_entry_threshold: analysis.meetsEntryThreshold,
       desired_right: analysis.desiredRight,
       key_factors: analysis.keyFactors,

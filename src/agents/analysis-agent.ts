@@ -15,7 +15,7 @@ function computeConfidence(signal: SignalPayload, option: OptionEvaluation): Con
   const tfs = signal.timeframes;
   const [ltf, mtf, htf] = tfs;
   if (!ltf || !mtf || !htf) {
-    return { base: 0.40, diSpreadBonus: 0, adxBonus: 0, alignmentBonus: 0, tdAdjustment: 0, obvBonus: 0, oiVolumeBonus: 0, total: 0.40 };
+    return { base: 0.40, diSpreadBonus: 0, adxBonus: 0, alignmentBonus: 0, tdAdjustment: 0, obvBonus: 0, oiVolumeBonus: 0, pricePositionAdjustment: 0, total: 0.40 };
   }
 
   // Base: slight bullish bias
@@ -94,9 +94,24 @@ function computeConfidence(signal: SignalPayload, option: OptionEvaluation): Con
   }
   oiVolumeBonus = Math.min(oiVolumeBonus, 0.05);
 
-  const total = Math.max(0, Math.min(1, base + diSpreadBonus + adxBonus + alignmentBonus + tdAdjustment + obvBonus + oiVolumeBonus));
+  // Price position adjustment — penalizes counter-range trades (higher risk).
+  // Uses HTF rangePosition: 0.0 = at swing low, 1.0 = at swing high.
+  //   Bullish/call in lower half: calls are higher risk → penalty up to -0.10
+  //   Bearish/put in upper half: puts are higher risk → penalty up to -0.10
+  //   Lower half prefers puts; upper half prefers calls.
+  let pricePositionAdjustment = 0;
+  const htfRangePosition = htf.priceStructure.rangePosition;
+  if (signal.direction === 'bullish' && htfRangePosition < 0.5) {
+    // Calling bullish from the lower half — fighting the range position
+    pricePositionAdjustment = Math.max(-0.10, -(0.5 - htfRangePosition) * 0.20);
+  } else if (signal.direction === 'bearish' && htfRangePosition > 0.5) {
+    // Calling bearish from the upper half — fighting the range position
+    pricePositionAdjustment = Math.max(-0.10, -(htfRangePosition - 0.5) * 0.20);
+  }
 
-  return { base, diSpreadBonus, adxBonus, alignmentBonus, tdAdjustment, obvBonus, oiVolumeBonus, total };
+  const total = Math.max(0, Math.min(1, base + diSpreadBonus + adxBonus + alignmentBonus + tdAdjustment + obvBonus + oiVolumeBonus + pricePositionAdjustment));
+
+  return { base, diSpreadBonus, adxBonus, alignmentBonus, tdAdjustment, obvBonus, oiVolumeBonus, pricePositionAdjustment, total };
 }
 
 /**
@@ -120,12 +135,23 @@ async function generateExplanation(
   const tfs = signal.timeframes;
   const [ltf, mtf, htf] = tfs;
 
+  const htfPs = htf?.priceStructure;
   const payload = {
     ticker: signal.ticker,
     profile: signal.profile,
     direction: signal.direction,
     alignment: signal.alignment,
     confidence: cb.total.toFixed(2),
+    price_position: {
+      range_position: htfPs ? parseFloat(htfPs.rangePosition.toFixed(2)) : 0.5,
+      price_half: htfPs?.priceHalf ?? 'lower',
+      swing_high: htfPs?.swingHigh ?? 0,
+      swing_low: htfPs?.swingLow ?? 0,
+      price_position_adjustment: cb.pricePositionAdjustment.toFixed(3),
+      note: htfPs?.priceHalf === 'lower'
+        ? 'Price in lower half of range — puts preferred, calls are higher risk'
+        : 'Price in upper half of range — calls preferred, puts are higher risk',
+    },
     timeframes: tfs.map(tf => ({
       tf: tf.timeframe,
       diPlus: tf.dmi.plusDI.toFixed(1),
