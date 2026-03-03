@@ -20,7 +20,8 @@
       "Bash(docker exec day-trade-postgres psql -U trader -d day_trade -c \"SELECT COUNT\\(*\\) FROM trading.signal_snapshots WHERE trade_date = CURRENT_DATE;\")",
       "Bash(docker exec day-trade-postgres psql -U trader -d day_trade -c \"SELECT trade_date, COUNT\\(*\\) FROM trading.signal_snapshots GROUP BY trade_date ORDER BY trade_date DESC LIMIT 5;\")",
       "Bash(docker exec day-trade-postgres psql -U trader -d day_trade -c \"SELECT CURRENT_DATE, NOW\\(\\), CURRENT_TIMESTAMP AT TIME ZONE ''UTC'';\")",
-      "Bash(node --version)"
+      "Bash(node --version)",
+      "WebFetch(domain:alpaca.markets)"
     ],
     "additionalDirectories": [
       "/tmp"

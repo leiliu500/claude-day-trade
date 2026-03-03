@@ -832,6 +832,24 @@ export class OrderAgent {
 
     const { alpacaOrderId, fillPrice: immediateExitFill, error } = await submitMarketSellOrder(symbol, currentQty);
 
+    // Detect Alpaca 42210000 — "position intent mismatch, inferred: sell_to_open".
+    // This means Alpaca has no long position for this symbol (expired worthless, already
+    // closed on their side, etc.).  Treat the exit price as $0 so we record a full loss
+    // and close the DB record cleanly rather than leaving it stuck as OPEN.
+    let positionGoneFromAlpaca = false;
+    if (error) {
+      try {
+        const errObj = JSON.parse(error) as { code?: number };
+        if (errObj.code === 42210000) {
+          positionGoneFromAlpaca = true;
+          console.warn(
+            `[OrderAgent ${ticker} ${symbol}] Position not found in Alpaca (code 42210000) —` +
+            ` recording as $0 exit (expired worthless / already closed)`,
+          );
+        }
+      } catch { /* non-JSON error body — fall through */ }
+    }
+
     // Paper-trading options fill asynchronously — poll if not immediately filled
     let exitFill = immediateExitFill;
     if (!exitFill && alpacaOrderId && !error) {
@@ -843,9 +861,10 @@ export class OrderAgent {
       }
     }
 
-    // Always derive both prices from confirmed fills, never from the stale DB column
+    // Always derive both prices from confirmed fills, never from the stale DB column.
+    // If Alpaca had no position (code 42210000), record exit at $0 (full loss).
     const entryPrice = this.fillPrice ?? candidate.entryPremium;
-    const exitPrice  = exitFill ?? entryPrice;
+    const exitPrice  = positionGoneFromAlpaca ? 0 : (exitFill ?? entryPrice);
 
     // Record sell order and close position in DB.
     // Errors here are non-fatal — evaluation must still run regardless.

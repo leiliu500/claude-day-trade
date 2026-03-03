@@ -18,8 +18,9 @@ interface AlpacaOptionSnapshot {
     gamma?: number;
     theta?: number;
     vega?: number;
-    implied_volatility?: number;
+    rho?: number;
   };
+  impliedVolatility?: number;
   latestQuote?: {
     ap?: number;  // ask
     bp?: number;  // bid
@@ -189,7 +190,7 @@ export class OptionAgent {
       gamma: snap?.greeks?.gamma,
       theta: snap?.greeks?.theta,
       vega: snap?.greeks?.vega,
-      impliedVolatility: snap?.greeks?.implied_volatility,
+      impliedVolatility: snap?.impliedVolatility,
       lastTrade: snap?.latestTrade?.p,
       quoteAgeSeconds: quoteAgeSeconds(snap?.latestQuote?.t),
     };
