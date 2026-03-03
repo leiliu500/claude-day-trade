@@ -664,6 +664,40 @@ async function loadInteractions() {
 }
 loaderMap['loadInteractions'] = loadInteractions;
 
+// ── Purge bar cache ───────────────────────────────────────────────────────────
+async function purgeCache() {
+  const btn = document.getElementById('btn-purge-cache');
+  const resultEl = document.getElementById('db-cleanup-result');
+  if (btn) btn.disabled = true;
+  if (resultEl) { resultEl.style.display = 'none'; resultEl.textContent = ''; }
+
+  try {
+    const res = await fetch(`${API}/api/purge-cache`, { method: 'POST' });
+    const data = await res.json();
+    if (resultEl) {
+      resultEl.style.display = 'block';
+      if (data.ok) {
+        const detail = data.tickers?.length
+          ? `Cleared ${data.barsRemoved} bar(s) across ${data.tickers.join(', ')}.`
+          : 'Cache was already empty.';
+        resultEl.textContent = `✅ Cache purged: ${detail}`;
+        resultEl.className = 'db-cleanup-result db-result-ok';
+      } else {
+        resultEl.textContent = `❌ Purge failed: ${data.error}`;
+        resultEl.className = 'db-cleanup-result db-result-err';
+      }
+    }
+  } catch (e) {
+    if (resultEl) {
+      resultEl.style.display = 'block';
+      resultEl.textContent = `❌ Error: ${e.message}`;
+      resultEl.className = 'db-cleanup-result db-result-err';
+    }
+  } finally {
+    if (btn) btn.disabled = false;
+  }
+}
+
 // ── Database cleanup ──────────────────────────────────────────────────────────
 let _cleanupPending = null; // { scope, expiresAt }
 

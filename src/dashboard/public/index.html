@@ -224,6 +224,15 @@
 
         <div class="db-cleanup-card">
           <div class="db-cleanup-info">
+            <h3>Purge Bar Cache</h3>
+            <p>Clears the <strong>in-memory 1-min bar ring buffer</strong> for all tickers (SPY, QQQ). The next pipeline run will fall back to REST and the cache repopulates automatically as new bars stream in.</p>
+            <p class="db-safe-note">✅ No database data is deleted. Safe to run at any time.</p>
+          </div>
+          <button class="btn-cleanup-signals" id="btn-purge-cache" onclick="purgeCache()">🗑️ Purge Cache</button>
+        </div>
+
+        <div class="db-cleanup-card">
+          <div class="db-cleanup-info">
             <h3>Cleanup Signal History</h3>
             <p>Deletes rows <strong>older than today</strong> from: signal_snapshots, trading_decisions, decision_confirmations, trading_sessions (CLOSED), scheduler_runs, order_agent_ticks.</p>
             <p class="db-safe-note">✅ Position journal and trade evaluations are <strong>not</strong> affected.</p>

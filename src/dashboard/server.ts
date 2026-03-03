@@ -4,6 +4,7 @@ import { fileURLToPath } from 'url';
 import { getPool } from '../db/client.js';
 import { OrderAgentRegistry } from '../agents/order-agent-registry.js';
 import { cleanupSignalHistory, cleanupAllData } from '../db/repositories/cleanup.js';
+import { AlpacaStreamManager } from '../lib/alpaca-stream.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -394,6 +395,16 @@ export function startDashboard(port: number): void {
         ticker,
       );
       res.json({ ok: true, ticker: ticker ?? 'ALL', ...result });
+    } catch (err) {
+      res.status(500).json({ ok: false, error: (err as Error).message });
+    }
+  });
+
+  // ── POST /api/purge-cache — clear the in-memory 1-min bar cache ──────────
+  app.post('/api/purge-cache', (_req, res) => {
+    try {
+      const result = AlpacaStreamManager.getInstance().purgeCache();
+      res.json({ ok: true, ...result });
     } catch (err) {
       res.status(500).json({ ok: false, error: (err as Error).message });
     }

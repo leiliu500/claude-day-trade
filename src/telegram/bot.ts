@@ -7,6 +7,7 @@ import { ApprovalService } from './approval-service.js';
 import { OrderAgentRegistry } from '../agents/order-agent-registry.js';
 import { cleanupSignalHistory, cleanupAllData } from '../db/repositories/cleanup.js';
 import { insertTelegramInteraction } from '../db/repositories/telegram-interactions.js';
+import { AlpacaStreamManager } from '../lib/alpaca-stream.js';
 import type { TradingProfile } from '../types/market.js';
 
 // ── Interaction tracker (fire-and-forget, never blocks bot handlers) ──────────
@@ -61,6 +62,7 @@ export function createTelegramBot(): Telegraf {
       `/status — system status\n` +
       `/positions — open positions\n` +
       `/closeall [TICKER] — close positions (e.g. /closeall SPY)\n` +
+      `/purgecache — clear in-memory bar cache\n` +
       `/cleanup [all] — delete old DB data (add "all" for full reset)\n` +
       `/help — this message`,
       { parse_mode: 'HTML' }
@@ -82,6 +84,7 @@ export function createTelegramBot(): Telegraf {
       `/status — system status\n` +
       `/positions — open positions\n` +
       `/closeall [TICKER] — close positions (e.g. /closeall SPY)\n` +
+      `/purgecache — clear in-memory bar cache\n` +
       `/cleanup — delete signal/decision history older than today\n` +
       `/cleanup all — ⚠️ full reset (truncates ALL tables)\n\n` +
       `Trade trigger: <code>SPY S</code>`,
@@ -332,6 +335,38 @@ export function createTelegramBot(): Telegraf {
         errorMessage: (err as Error).message,
       });
       await ctx.reply(`❌ Cleanup failed: ${(err as Error).message}`);
+    }
+  });
+
+  // ── /purgecache ───────────────────────────────────────────────────────────
+  bot.command('purgecache', async (ctx) => {
+    try {
+      const result = AlpacaStreamManager.getInstance().purgeCache();
+      const detail = result.tickers.length
+        ? `Cleared ${result.barsRemoved} bar(s) across: ${result.tickers.join(', ')}`
+        : 'Cache was already empty.';
+
+      track({
+        command: '/purgecache',
+        rawText: ctx.message.text,
+        userId: String(ctx.from.id),
+        userName: ctx.from.username ?? ctx.from.first_name,
+        chatId: String(ctx.chat.id),
+        params: { tickers: result.tickers, barsRemoved: result.barsRemoved },
+        outcome: 'ok',
+      });
+      await ctx.reply(`✅ <b>Cache Purged</b>\n${detail}\n\nThe cache will repopulate automatically as new bars stream in.`, { parse_mode: 'HTML' });
+    } catch (err) {
+      track({
+        command: '/purgecache',
+        rawText: ctx.message.text,
+        userId: String(ctx.from.id),
+        userName: ctx.from.username ?? ctx.from.first_name,
+        chatId: String(ctx.chat.id),
+        outcome: 'error',
+        errorMessage: (err as Error).message,
+      });
+      await ctx.reply(`❌ Purge failed: ${(err as Error).message}`);
     }
   });
 

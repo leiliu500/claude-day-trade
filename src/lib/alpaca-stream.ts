@@ -128,6 +128,19 @@ export class AlpacaStreamManager extends EventEmitter {
     return aggregated;
   }
 
+  /**
+   * Purge all cached 1-min bars for all tickers.
+   * Returns summary of what was cleared. The cache repopulates automatically
+   * as new bars arrive from the stream.
+   */
+  purgeCache(): { tickers: string[]; barsRemoved: number } {
+    const tickers = [...this.barCache.keys()];
+    const barsRemoved = tickers.reduce((sum, t) => sum + (this.barCache.get(t)?.length ?? 0), 0);
+    this.barCache.clear();
+    console.log(`[AlpacaStream] Cache purged — ${barsRemoved} bars removed across ${tickers.length} ticker(s): ${tickers.join(',')}`);
+    return { tickers, barsRemoved };
+  }
+
   /** True when the data stream is authenticated and delivering bars. */
   isDataStreamLive(): boolean {
     return this.dataWs !== null && this.dataWs.readyState === WebSocket.OPEN;
