@@ -37,6 +37,8 @@ import {
   getAlpacaOrder,
   getAlpacaPositionPrices,
 } from '../lib/alpaca-api.js';
+import { AlpacaStreamManager } from '../lib/alpaca-stream.js';
+import type { TradeUpdateEvent } from '../lib/alpaca-stream.js';
 import { config } from '../config.js';
 import type { DecisionResult } from '../types/decision.js';
 import type { OptionCandidate } from '../types/options.js';
@@ -196,6 +198,15 @@ export class OrderAgent {
       ` — orderId=${this.alpacaOrderId ?? 'none'} positionId=${this.positionId}` +
       ` (decision: ${decision.decisionType}, urgency: ${decision.urgency})`,
     );
+
+    // Register with the trading stream for instant fill notification.
+    // The 30 s polling tick remains active as a fallback.
+    if (this.alpacaOrderId) {
+      AlpacaStreamManager.getInstance().watchOrder(this.alpacaOrderId, (event) => {
+        void this._handleTradeUpdate(event);
+      });
+    }
+
     this._startTick();
   }
 
@@ -205,6 +216,14 @@ export class OrderAgent {
       `[OrderAgent ${cfg.decision.ticker} ${cfg.candidate.contract.symbol}] ` +
       `Restored positionId=${cfg.positionId} — resuming AWAITING_FILL check`,
     );
+
+    // Re-register with stream in case the order is still pending fill
+    if (cfg.alpacaOrderId) {
+      AlpacaStreamManager.getInstance().watchOrder(cfg.alpacaOrderId, (event) => {
+        void this._handleTradeUpdate(event);
+      });
+    }
+
     this._startTick();
   }
 
@@ -337,7 +356,68 @@ export class OrderAgent {
     }
   }
 
+  /**
+   * Real-time fill handler — called immediately by the trading stream WebSocket.
+   * Transitions AWAITING_FILL → MONITORING on fill, or FAILED on cancel/reject.
+   * The 30 s polling fallback (_checkFill) is idempotent and harmless if it fires too.
+   */
+  private async _handleTradeUpdate(event: TradeUpdateEvent): Promise<void> {
+    if (this.phase !== 'AWAITING_FILL') return;
+
+    const { decision, candidate } = this.cfg;
+    const { order } = event;
+
+    console.log(
+      `[OrderAgent ${decision.ticker} ${candidate.contract.symbol}] ` +
+      `Stream trade_update: event=${event.event} status=${order.status}`,
+    );
+
+    if (event.event === 'fill' || event.event === 'partial_fill') {
+      const filledQty = parseInt(order.filled_qty ?? '0');
+      const fillPrice = order.filled_avg_price ? parseFloat(order.filled_avg_price) : null;
+      const filledAt  = order.filled_at ?? new Date().toISOString();
+
+      const pool = getPool();
+      await pool.query(
+        `UPDATE trading.order_executions
+           SET filled_qty=$1, fill_price=$2, alpaca_status=$3, filled_at=$4
+         WHERE position_id=$5 AND order_side='buy'`,
+        [filledQty, fillPrice, order.status, filledAt, this.positionId],
+      );
+      if (fillPrice) {
+        await pool.query(
+          `UPDATE trading.position_journal SET entry_price=$1 WHERE id=$2 AND status='OPEN'`,
+          [fillPrice, this.positionId],
+        );
+        this.fillPrice = fillPrice;
+      }
+
+      this.phase = 'MONITORING';
+      console.log(
+        `[OrderAgent ${decision.ticker} ${candidate.contract.symbol}] ` +
+        `[STREAM] Filled qty=${filledQty} @ $${fillPrice ?? 'n/a'} → Phase: MONITORING`,
+      );
+
+    } else if (['canceled', 'expired', 'rejected'].includes(event.event)) {
+      await this._voidPosition(`order_${event.event}`);
+      this.phase = 'FAILED';
+      console.log(
+        `[OrderAgent ${decision.ticker} ${candidate.contract.symbol}] ` +
+        `[STREAM] Phase: FAILED (order ${event.event})`,
+      );
+      this._stopTick();
+      this._selfRemove();
+    }
+  }
+
+  /**
+   * 30 s polling fallback for fill detection.
+   * Runs every tick while in AWAITING_FILL phase.
+   * Harmless if _handleTradeUpdate already transitioned to MONITORING.
+   */
   private async _checkFill(): Promise<void> {
+    // Already transitioned by the stream handler — nothing to do
+    if (this.phase !== 'AWAITING_FILL') return;
     if (!this.alpacaOrderId) { this.phase = 'MONITORING'; return; }
 
     const order = await getAlpacaOrder(this.alpacaOrderId);
@@ -368,15 +448,16 @@ export class OrderAgent {
       this.phase = 'MONITORING';
       console.log(
         `[OrderAgent ${decision.ticker} ${candidate.contract.symbol}] ` +
-        `Filled qty=${filledQty} @ $${fillPrice ?? 'n/a'} → Phase: MONITORING`,
+        `[POLL] Filled qty=${filledQty} @ $${fillPrice ?? 'n/a'} → Phase: MONITORING`,
       );
 
     } else if (['canceled', 'expired', 'rejected'].includes(order.status)) {
+      if (this.alpacaOrderId) AlpacaStreamManager.getInstance().unwatchOrder(this.alpacaOrderId);
       await this._voidPosition(`order_${order.status}`);
       this.phase = 'FAILED';
       console.log(
         `[OrderAgent ${decision.ticker} ${candidate.contract.symbol}] ` +
-        `Phase: FAILED (order ${order.status})`,
+        `[POLL] Phase: FAILED (order ${order.status})`,
       );
       this._stopTick();
       this._selfRemove();

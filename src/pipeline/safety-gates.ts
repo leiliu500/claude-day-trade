@@ -83,10 +83,10 @@ export function checkSafetyGates(params: {
 /** Check if current market is open via Alpaca clock */
 export async function checkMarketOpen(): Promise<boolean> {
   try {
-    const res = await fetch(`${process.env['ALPACA_BASE_URL'] ?? 'https://paper-api.alpaca.markets'}/v2/clock`, {
+    const res = await fetch(`${config.ALPACA_BASE_URL}/v2/clock`, {
       headers: {
-        'APCA-API-KEY-ID': process.env['ALPACA_API_KEY'] ?? '',
-        'APCA-API-SECRET-KEY': process.env['ALPACA_SECRET_KEY'] ?? '',
+        'APCA-API-KEY-ID': config.ALPACA_API_KEY,
+        'APCA-API-SECRET-KEY': config.ALPACA_SECRET_KEY,
       },
     });
     if (!res.ok) return false;

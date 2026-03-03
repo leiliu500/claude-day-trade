@@ -23,7 +23,12 @@
       "Bash(docker-compose up -d --build orchestrator)",
       "Bash(docker exec day-trade-orchestrator sh -c 'echo ${TELEGRAM_BOT_TOKEN:0:10}...')",
       "Read(//Users/leiliu/projects/claude-day-trade/**)",
-      "Bash(docker exec day-trade-orchestrator sh -c 'curl -s \"\"https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/getMe\"\" | head -c 200')"
+      "Bash(docker exec day-trade-orchestrator sh -c 'curl -s \"\"https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/getMe\"\" | head -c 200')",
+      "Bash(docker-compose logs --tail=35 orchestrator)",
+      "Bash(docker-compose logs --tail=20 orchestrator)"
+    ],
+    "additionalDirectories": [
+      "/home/ec2-user/.claude/projects/-home-ec2-user-claude-day-trade"
     ]
   }
 }

@@ -146,7 +146,7 @@ export class OptionAgent {
 
     const url = new URL(`${config.ALPACA_DATA_URL}/v1beta1/options/snapshots`);
     url.searchParams.set('symbols', symbols.join(','));
-    url.searchParams.set('feed', 'indicative');
+    url.searchParams.set('feed', 'opra'); // real-time OPRA feed (Algo Trader Plus)
 
     const res = await fetch(url.toString(), { headers: this.headers, signal: AbortSignal.timeout(20_000) });
     if (!res.ok) return {};

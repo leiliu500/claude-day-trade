@@ -1,5 +1,6 @@
 import { v4 as uuidv4 } from 'uuid';
 import { config } from '../config.js';
+import { AlpacaStreamManager } from '../lib/alpaca-stream.js';
 import { computeDMI } from '../indicators/dmi.js';
 import { computeATR } from '../indicators/atr.js';
 import { computeTD } from '../indicators/td-sequential.js';
@@ -22,7 +23,8 @@ const ALPACA_TIMEFRAME: Record<Timeframe, string> = {
   '1d':  '1Day',
 };
 
-async function fetchBars(
+/** Fetch bars via Alpaca REST API. Always returns real-time data. */
+async function fetchBarsRest(
   ticker: string,
   timeframe: Timeframe,
   limit = BARS_LIMIT
@@ -36,7 +38,7 @@ async function fetchBars(
   url.searchParams.set('timeframe', ALPACA_TIMEFRAME[timeframe]);
   url.searchParams.set('limit', String(limit));
   url.searchParams.set('adjustment', 'raw');
-  url.searchParams.set('feed', 'iex');
+  url.searchParams.set('feed', 'sip'); // SIP consolidated tape (Algo Trader Plus)
 
   const res = await fetch(url.toString(), { headers, signal: AbortSignal.timeout(20_000) });
   if (!res.ok) {
@@ -45,6 +47,29 @@ async function fetchBars(
 
   const data = (await res.json()) as AlpacaBarsResponse;
   return normalizeAlpacaBars(data);
+}
+
+/**
+ * Primary bar fetcher — tries the streaming cache first (zero REST calls),
+ * falls back to the REST API when the cache is absent, stale, or has
+ * insufficient bars (e.g. before the stream has warmed up, or for 1h/1d).
+ */
+async function fetchBars(
+  ticker: string,
+  timeframe: Timeframe,
+  limit = BARS_LIMIT
+): Promise<OHLCVBar[]> {
+  const cached = AlpacaStreamManager.getInstance().getBars(ticker, timeframe, Math.min(limit, 50));
+  if (cached) {
+    // Return up to `limit` bars from the cache (newest are at the end)
+    const bars = cached.length > limit ? cached.slice(cached.length - limit) : cached;
+    console.log(`[SignalAgent] Using stream cache: ${ticker} ${timeframe} (${bars.length} bars)`);
+    return bars;
+  }
+
+  // Fallback: REST API (always real-time, no caching at REST layer)
+  console.log(`[SignalAgent] REST fallback: ${ticker} ${timeframe}`);
+  return fetchBarsRest(ticker, timeframe, limit);
 }
 
 function computeTimeframeIndicators(
