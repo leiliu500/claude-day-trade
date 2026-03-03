@@ -56,10 +56,11 @@ function deterministicWait(
 }
 
 /** True when AI orchestration is required */
-function needsAIOrchestration(analysis: AnalysisResult, context: PositionContext): boolean {
+function needsAIOrchestration(analysis: AnalysisResult, context: PositionContext, timeGateOk: boolean): boolean {
   const hasOpenPositions = context.openPositions.length > 0;
   const hasActiveStreak  = context.confirmationStreaks.length > 0;
-  return analysis.meetsEntryThreshold || hasOpenPositions || hasActiveStreak;
+  // When market is closed, only run AI if there are positions to manage — not for potential new entries
+  return (analysis.meetsEntryThreshold && timeGateOk) || hasOpenPositions || hasActiveStreak;
 }
 
 export interface PipelineResult {
@@ -116,34 +117,34 @@ export async function runPipeline(
   console.log(`[Pipeline] Starting: ${ticker} ${profile} (${trigger})`);
 
   try {
-    // ── Phase 1: Session ───────────────────────────────────────────────────
+    // ── Phase 1: Market hours (cheap — determines whether AI calls are needed) ─
+    const timeGateOk = await checkMarketOpen();
+
+    // ── Phase 2: Session ───────────────────────────────────────────────────
     const intervals = profile === 'S' ? '2m,3m,5m' : profile === 'M' ? '1m,5m,15m' : '5m,1h,1d';
     const sessionId = await getOrCreateSession(ticker, profile, intervals);
 
-    // ── Phase 2: Signal Generation ─────────────────────────────────────────
+    // ── Phase 3: Signal Generation ─────────────────────────────────────────
     const signal = await signalAgent.run(ticker, profile, trigger, sessionId);
     console.log(`[Pipeline] Signal: ${signal.direction} (${signal.alignment})`);
 
-    // ── Phase 3: Option Selection ──────────────────────────────────────────
+    // ── Phase 4: Option Selection ──────────────────────────────────────────
     const optionEval = await optionAgent.run(signal);
     console.log(`[Pipeline] Option: winner=${optionEval.winner ?? 'none'}, liq=${optionEval.liquidityOk}`);
 
-    // ── Phase 4: Analysis (deterministic confidence + AI explanation) ──────
-    const analysis = await analysisAgent.run(signal, optionEval);
+    // ── Phase 5: Analysis (deterministic confidence; AI explanation only when market open) ──
+    const analysis = await analysisAgent.run(signal, optionEval, timeGateOk);
     console.log(`[Pipeline] Analysis: confidence=${analysis.confidence.toFixed(2)}, threshold=${analysis.meetsEntryThreshold}`);
 
-    // ── Phase 5: Persist Signal Snapshot ──────────────────────────────────
+    // ── Phase 6: Persist Signal Snapshot ──────────────────────────────────
     const snapshotId = await insertSignalSnapshot(signal, optionEval, analysis, sessionId);
     signal.id = snapshotId;
 
-    // ── Phase 6: Check Market Hours ────────────────────────────────────────
-    const timeGateOk = await checkMarketOpen();
-
-    // ── Phase 7: Build Orchestrator Context ────────────────────────────────
+    // ── Phase 6: Build Orchestrator Context ────────────────────────────────
     const context = await buildContext(ticker);
 
-    // ── Phase 8: Decision Orchestrator (or deterministic bypass) ──────────
-    const useAI = needsAIOrchestration(analysis, context);
+    // ── Phase 7: Decision Orchestrator (or deterministic bypass) ──────────
+    const useAI = needsAIOrchestration(analysis, context, timeGateOk);
     const decision = useAI
       ? await decisionOrchestrator.run({ signal, option: optionEval, analysis, context, timeGateOk })
       : deterministicWait(signal, analysis, ticker, profile);

@@ -198,18 +198,18 @@ async function generateExplanation(
 }
 
 export class AnalysisAgent {
-  async run(signal: SignalPayload, option: OptionEvaluation): Promise<AnalysisResult> {
+  async run(signal: SignalPayload, option: OptionEvaluation, timeGateOk = true): Promise<AnalysisResult> {
     const cb = computeConfidence(signal, option);
     const meetsEntryThreshold = cb.total >= config.MIN_CONFIDENCE;
     const desiredRight = deriveDesiredRight(signal);
 
-    let aiExplanation = 'Confidence below threshold — AI explanation skipped.';
+    let aiExplanation = 'Market closed or confidence below threshold — AI explanation skipped.';
     let keyFactors: string[] = [];
     let risks: string[] = [];
 
-    // Only generate AI explanation when confidence meets the entry threshold —
-    // below-threshold signals will be skipped by the orchestrator bypass anyway
-    if (meetsEntryThreshold) {
+    // Only generate AI explanation when confidence meets the entry threshold
+    // AND the market is open — saves quota on pre/post-market ticks
+    if (meetsEntryThreshold && timeGateOk) {
       const ai = await generateExplanation(signal, option, cb);
       aiExplanation = ai.aiExplanation;
       keyFactors = ai.keyFactors;
