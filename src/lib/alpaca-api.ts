@@ -203,6 +203,37 @@ export async function cancelAllOpenOrders(): Promise<{ cancelled: number; errors
   return { cancelled, errors };
 }
 
+/** Close ALL open positions via DELETE /v2/positions (Alpaca bulk liquidation). */
+export async function closeAllPositions(): Promise<{ closed: number; errors: string[] }> {
+  const errors: string[] = [];
+  let closed = 0;
+
+  try {
+    const res = await fetch(
+      `${config.ALPACA_BASE_URL}/v2/positions?cancel_orders=true`,
+      { method: 'DELETE', headers: authHeaders(), signal: AbortSignal.timeout(15_000) },
+    );
+
+    // 207 Multi-Status — Alpaca returns an array of per-position results
+    if (res.status === 207 || res.ok) {
+      const results = (await res.json()) as Array<{ symbol: string; status: number; body?: { error?: string } }>;
+      for (const r of results) {
+        if (r.status >= 200 && r.status < 300) closed++;
+        else errors.push(`Close ${r.symbol}: status ${r.status} — ${r.body?.error ?? ''}`);
+      }
+    } else if (res.status === 500) {
+      // Alpaca returns 500 when there are no positions — treat as success
+      closed = 0;
+    } else {
+      errors.push(`closeAllPositions: HTTP ${res.status} — ${await res.text()}`);
+    }
+  } catch (err) {
+    errors.push(`closeAllPositions: ${(err as Error).message}`);
+  }
+
+  return { closed, errors };
+}
+
 /** Fetch all open Alpaca positions and return a symbol → currentPrice map. */
 export async function getAlpacaPositionPrices(): Promise<Map<string, number>> {
   try {

@@ -3,6 +3,8 @@ import { runPipeline } from './pipeline/trading-pipeline.js';
 import { runDailyCleanup } from './pipeline/daily-cleanup.js';
 import { notifySignalAnalysis, notifyAlert } from './telegram/notifier.js';
 import { AlpacaStreamManager } from './lib/alpaca-stream.js';
+import { cancelAllOpenOrders, closeAllPositions } from './lib/alpaca-api.js';
+import { OrderAgentRegistry } from './agents/order-agent-registry.js';
 import {
   insertSchedulerRun,
   completeSchedulerRun,
@@ -190,6 +192,33 @@ export function startScheduler(): void {
   // Fallback: 3-min tick — only runs tickers not recently covered by stream
   scheduleTradingTick();
   console.log(`[Scheduler] Fallback interval: every 3 min, Mon-Fri 13:30-20:30 UTC`);
+
+  // Midnight PST close — 08:00 UTC Mon-Fri: cancel all orders + close all positions
+  const midnightCloseCron = '0 8 * * 1-5';
+  cron.schedule(midnightCloseCron, async () => {
+    console.log('[Scheduler] Midnight PST close — cancelling orders and closing all positions');
+
+    // Shut down all active order agents first so they don't interfere
+    OrderAgentRegistry.getInstance().shutdownAll();
+
+    const [cancelResult, closeResult] = await Promise.allSettled([
+      cancelAllOpenOrders(),
+      closeAllPositions(),
+    ]);
+
+    const cancelled = cancelResult.status === 'fulfilled' ? cancelResult.value.cancelled : 0;
+    const closed    = closeResult.status  === 'fulfilled' ? closeResult.value.closed    : 0;
+    const errors: string[] = [
+      ...(cancelResult.status === 'fulfilled' ? cancelResult.value.errors : [`cancelAllOpenOrders threw: ${(cancelResult.reason as Error).message}`]),
+      ...(closeResult.status  === 'fulfilled' ? closeResult.value.errors  : [`closeAllPositions threw: ${(closeResult.reason as Error).message}`]),
+    ];
+
+    const summary = `Midnight PST close: ${cancelled} order(s) cancelled, ${closed} position(s) closed` +
+      (errors.length ? `\nErrors: ${errors.join('; ')}` : '');
+    console.log(`[Scheduler] ${summary}`);
+    await notifyAlert(summary);
+  }, { timezone: 'UTC' });
+  console.log(`[Scheduler] Midnight PST close cron: "${midnightCloseCron}" (Mon-Fri 08:00 UTC)`);
 
   // Daily cleanup — once a day, cron precision is fine here
   const cleanupCron = '0 7 * * 1-5';
