@@ -34,6 +34,7 @@ export function computeTD(bars: OHLCVBar[]): TDResult {
       } else {
         setupDir = 'buy';
         setupCount = 1;
+        setupCompleted = false;
       }
     } else if (curr.close > ref.close) {
       // Bearish setup bar (price rising — potential sell setup)
@@ -42,11 +43,13 @@ export function computeTD(bars: OHLCVBar[]): TDResult {
       } else {
         setupDir = 'sell';
         setupCount = 1;
+        setupCompleted = false;
       }
     } else {
       // Equality — reset setup
       setupDir = 'none';
       setupCount = 0;
+      setupCompleted = false;
     }
 
     if (setupCount >= 9) {
