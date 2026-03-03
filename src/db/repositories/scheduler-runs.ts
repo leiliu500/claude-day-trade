@@ -12,9 +12,9 @@ export interface TickerRunResult {
 /** Insert a new scheduler run row. Returns the generated id. */
 export async function insertSchedulerRun(
   runAt: Date,
-  triggerType: 'AUTO' | 'MANUAL',
+  triggerType: 'AUTO' | 'MANUAL' | 'STREAM',
   status: 'RUNNING' | 'SKIPPED',
-  skippedReason?: 'PREV_RUN_ACTIVE',
+  skippedReason?: 'PREV_RUN_ACTIVE' | 'STREAM_ACTIVE',
 ): Promise<string> {
   const pool = getPool();
   const { rows } = await pool.query<{ id: string }>(
