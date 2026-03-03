@@ -220,6 +220,34 @@ export function startScheduler(): void {
   }, { timezone: 'UTC' });
   console.log(`[Scheduler] Midnight PST close cron: "${midnightCloseCron}" (Mon-Fri 08:00 UTC)`);
 
+  // Pre-market-close forced liquidation — 15:50 ET (America/New_York, DST-aware)
+  // Fires 10 min before the 4:00 PM ET close; closes ALL positions and orders regardless of P&L.
+  const preCloseCron = '50 15 * * 1-5';
+  cron.schedule(preCloseCron, async () => {
+    console.log('[Scheduler] Pre-close forced liquidation — cancelling orders and closing all positions');
+
+    // Shut down all active order agents first so they don't fight the close
+    OrderAgentRegistry.getInstance().shutdownAll();
+
+    const [cancelResult, closeResult] = await Promise.allSettled([
+      cancelAllOpenOrders(),
+      closeAllPositions(),
+    ]);
+
+    const cancelled = cancelResult.status === 'fulfilled' ? cancelResult.value.cancelled : 0;
+    const closed    = closeResult.status  === 'fulfilled' ? closeResult.value.closed    : 0;
+    const errors: string[] = [
+      ...(cancelResult.status === 'fulfilled' ? cancelResult.value.errors : [`cancelAllOpenOrders threw: ${(cancelResult.reason as Error).message}`]),
+      ...(closeResult.status  === 'fulfilled' ? closeResult.value.errors  : [`closeAllPositions threw: ${(closeResult.reason as Error).message}`]),
+    ];
+
+    const summary = `Pre-close liquidation (15:50 ET): ${cancelled} order(s) cancelled, ${closed} position(s) closed` +
+      (errors.length ? `\nErrors: ${errors.join('; ')}` : '');
+    console.log(`[Scheduler] ${summary}`);
+    await notifyAlert(summary);
+  }, { timezone: 'America/New_York' });
+  console.log(`[Scheduler] Pre-close cron: "${preCloseCron}" ET (Mon-Fri 15:50 ET, DST-aware)`);
+
   // Daily cleanup — once a day, cron precision is fine here
   const cleanupCron = '0 7 * * 1-5';
   cron.schedule(cleanupCron, async () => {
