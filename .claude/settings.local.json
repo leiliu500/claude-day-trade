@@ -61,7 +61,8 @@
       "Bash(docker exec day-trade-postgres psql -U trader -d trading -c \"\\\\d trading.order_agent_dispatches\")",
       "Bash(docker exec day-trade-postgres psql -U trader -d trader -c \"\\\\d trading.order_agent_dispatches\")",
       "Bash(docker exec day-trade-postgres psql -U postgres -c \"\\\\l\")",
-      "Bash(docker exec day-trade-postgres psql -U trader -d day_trade -c \"\\\\d trading.order_agent_dispatches\")"
+      "Bash(docker exec day-trade-postgres psql -U trader -d day_trade -c \"\\\\d trading.order_agent_dispatches\")",
+      "Bash(npm run typecheck)"
     ],
     "additionalDirectories": [
       "/home/ec2-user/.claude/projects/-home-ec2-user-claude-day-trade"

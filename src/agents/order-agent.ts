@@ -794,6 +794,7 @@ export class OrderAgent {
             decision_type: suggestion.decisionType,
             reason:        suggestion.reason.slice(0, 200),
             urgency:       suggestion.urgency,
+            confidence:    suggestion.confidence ?? null,
           }
         : null,
       // Live position state
