@@ -138,6 +138,7 @@ async function closePositions(ticker) {
       const parts = [];
       if (result.agentsNotified)   parts.push(`${result.agentsNotified} agent(s) notified`);
       if (result.dbFallbackClosed) parts.push(`${result.dbFallbackClosed} DB position(s) closed`);
+      if (result.alpacaClosed)     parts.push(`${result.alpacaClosed} Alpaca position(s) liquidated`);
       if (result.ordersCancelled)  parts.push(`${result.ordersCancelled} order(s) cancelled`);
       alert(`✅ Close complete (${label})\n${parts.join(', ') || 'Nothing to close.'}`);
     } else {
@@ -921,6 +922,86 @@ async function loadAnalysis() {
 }
 loaderMap['loadAnalysis'] = loadAnalysis;
 
+// ── Alpaca live positions + orders ────────────────────────────────────────────
+async function loadAlpaca() {
+  const data = await fetch(`${API}/api/alpaca`).then(r => r.json()).catch(() => ({ positions: [], orders: [] }));
+
+  const positions = Array.isArray(data.positions) ? data.positions : [];
+  const orders    = Array.isArray(data.orders)    ? data.orders    : [];
+
+  const posCount = document.getElementById('alpaca-positions-count');
+  if (posCount) posCount.textContent = positions.length > 0 ? `(${positions.length})` : '';
+
+  const posRows = positions.map(p => {
+    const pl  = parseFloat(p.unrealized_pl ?? 0);
+    const plPct = parseFloat(p.unrealized_plpc ?? 0) * 100;
+    const plCls = pl >= 0 ? 'bullish' : 'bearish';
+    return `<tr>
+      <td><code>${p.symbol}</code></td>
+      <td>${p.side}</td>
+      <td>${p.qty}</td>
+      <td>$${parseFloat(p.avg_entry_price).toFixed(2)}</td>
+      <td>$${parseFloat(p.current_price ?? p.avg_entry_price).toFixed(2)}</td>
+      <td>$${parseFloat(p.market_value).toFixed(2)}</td>
+      <td class="${plCls}">${pl >= 0 ? '+' : ''}$${Math.abs(pl).toFixed(2)}</td>
+      <td class="${plCls}">${pl >= 0 ? '+' : ''}${plPct.toFixed(2)}%</td>
+    </tr>`;
+  });
+  setRows('tbl-alpaca-positions', posRows);
+
+  const ordCount = document.getElementById('alpaca-orders-count');
+  if (ordCount) ordCount.textContent = orders.length > 0 ? `(${orders.length})` : '';
+
+  const ordRows = orders.map(o => `<tr>
+    <td><code>${o.symbol}</code></td>
+    <td>${o.side}</td>
+    <td>${o.qty ?? o.notional ?? '—'}</td>
+    <td>${o.type}</td>
+    <td>${o.limit_price ? '$' + parseFloat(o.limit_price).toFixed(2) : '—'}</td>
+    <td>${o.stop_price  ? '$' + parseFloat(o.stop_price).toFixed(2)  : '—'}</td>
+    <td>${o.status}</td>
+    <td>${fmtTime(o.created_at)}</td>
+    <td style="font-size:0.7rem;color:#8b949e">${o.id.slice(0, 8)}…</td>
+  </tr>`);
+  setRows('tbl-alpaca-orders', ordRows);
+}
+
+let _alpacaClosePending = false;
+window.closeAllAlpaca = async function() {
+  if (!_alpacaClosePending) {
+    _alpacaClosePending = true;
+    if (!confirm('⚠️ Click OK then click again within 10s to confirm closing ALL Alpaca positions.')) {
+      _alpacaClosePending = false; return;
+    }
+    setTimeout(() => { _alpacaClosePending = false; }, 10_000);
+    return;
+  }
+  _alpacaClosePending = false;
+  const btn = document.getElementById('btn-alpaca-closeall');
+  if (btn) { btn.disabled = true; btn.textContent = 'Closing…'; }
+  try {
+    const res = await fetch(`${API}/api/closeall`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}',
+    });
+    const result = await res.json();
+    if (result.ok) {
+      const parts = [];
+      if (result.agentsNotified)   parts.push(`${result.agentsNotified} agent(s) notified`);
+      if (result.dbFallbackClosed) parts.push(`${result.dbFallbackClosed} DB position(s) closed`);
+      if (result.alpacaClosed)     parts.push(`${result.alpacaClosed} Alpaca position(s) liquidated`);
+      if (result.ordersCancelled)  parts.push(`${result.ordersCancelled} order(s) cancelled`);
+      alert(`✅ Close complete\n${parts.join(', ') || 'Nothing to close.'}`);
+    } else {
+      alert(`❌ Close failed: ${result.error}`);
+    }
+  } catch (e) {
+    alert(`❌ Error: ${e.message}`);
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = '🔴 Close All'; }
+    loadAlpaca();
+  }
+};
+
 // ── Main refresh ──────────────────────────────────────────────────────────────
 function loadTab(tab) {
   switch (tab) {
@@ -933,6 +1014,7 @@ function loadTab(tab) {
     case 'agents':      loadAgents();      break;
     case 'scheduler':   loadScheduler();   break;
     case 'activity':    loadApprovals(); loadInteractions(); break;
+    case 'alpaca':      loadAlpaca();      break;
     case 'database':    /* static panel, nothing to load */ break;
   }
 }

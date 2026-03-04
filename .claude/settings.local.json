@@ -45,7 +45,19 @@
       "Bash(docker ps --format \"{{.Names}}\\\\t{{.Status}}\")",
       "Bash(docker exec day-trade-postgres psql -U trader -d trader_db -c \":*)",
       "Bash(source .env)",
-      "Bash(docker-compose exec -T orchestrator node -e \":*)"
+      "Bash(docker-compose exec -T orchestrator node -e \":*)",
+      "Bash(node -e \":*)",
+      "Bash(docker-compose exec orchestrator ls /app/dist/lib/)",
+      "Bash(KEY=PK52GZ34XOEQZZMS75G54IQT3I)",
+      "Bash(SECRET=3xPVDT77uRiepNDnmRrCTotwdXD2yjgKYcHB94LuTHZV)",
+      "Bash(BASE=https://paper-api.alpaca.markets)",
+      "Bash(__NEW_LINE_690945a9c786c920__ echo \"=== OPEN POSITIONS ===\")",
+      "Bash(curl -s -H \"APCA-API-KEY-ID: $KEY\" -H \"APCA-API-SECRET-KEY: $SECRET\" \"$BASE/v2/positions\")",
+      "Bash(__NEW_LINE_ab073a0559fa9094__ echo \"\")",
+      "Bash(curl -s -H \"APCA-API-KEY-ID: $KEY\" -H \"APCA-API-SECRET-KEY: $SECRET\" \"$BASE/v2/orders?status=open&limit=100\")",
+      "Bash(curl -s http://localhost:3001/api/alpaca)",
+      "Bash(python3 -c \":*)",
+      "Bash(curl -s -X POST http://localhost:3001/api/closeall -H 'Content-Type: application/json' -d '{}')"
     ],
     "additionalDirectories": [
       "/home/ec2-user/.claude/projects/-home-ec2-user-claude-day-trade"

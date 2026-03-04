@@ -5,6 +5,7 @@ import { getPool } from '../db/client.js';
 import { OrderAgentRegistry } from '../agents/order-agent-registry.js';
 import { cleanupSignalHistory, cleanupAllData } from '../db/repositories/cleanup.js';
 import { AlpacaStreamManager } from '../lib/alpaca-stream.js';
+import { config } from '../config.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -389,14 +390,48 @@ export function startDashboard(port: number): void {
           ? rawTicker.toUpperCase()
           : undefined;
 
+      const { closeAllPositions: alpacaCloseAll, cancelAllOpenOrders } = await import('../lib/alpaca-api.js');
+
       const registry = OrderAgentRegistry.getInstance();
-      const result = await registry.closeAllPositions(
-        `User-initiated via dashboard /api/closeall${ticker ? ` ${ticker}` : ''}`,
-        ticker,
-      );
-      res.json({ ok: true, ticker: ticker ?? 'ALL', ...result });
+      const [result, alpacaResult] = await Promise.all([
+        registry.closeAllPositions(
+          `User-initiated via dashboard /api/closeall${ticker ? ` ${ticker}` : ''}`,
+          ticker,
+        ),
+        // Also liquidate directly on Alpaca to catch any positions not tracked in DB
+        ticker ? Promise.resolve({ closed: 0, errors: [] }) : alpacaCloseAll(),
+      ]);
+
+      const totalErrors = [...result.errors, ...alpacaResult.errors];
+      res.json({
+        ok: true,
+        ticker: ticker ?? 'ALL',
+        agentsNotified: result.agentsNotified,
+        dbFallbackClosed: result.dbFallbackClosed,
+        ordersCancelled: result.ordersCancelled,
+        alpacaClosed: alpacaResult.closed,
+        errors: totalErrors,
+      });
     } catch (err) {
       res.status(500).json({ ok: false, error: (err as Error).message });
+    }
+  });
+
+  // ── GET /api/alpaca — live positions + open orders from Alpaca REST ─────────
+  app.get('/api/alpaca', async (_req, res) => {
+    const headers = {
+      'APCA-API-KEY-ID': config.ALPACA_API_KEY,
+      'APCA-API-SECRET-KEY': config.ALPACA_SECRET_KEY,
+    };
+    try {
+      const [posRes, ordRes] = await Promise.all([
+        fetch(`${config.ALPACA_BASE_URL}/v2/positions`, { headers }),
+        fetch(`${config.ALPACA_BASE_URL}/v2/orders?status=open&limit=100`, { headers }),
+      ]);
+      const [positions, orders] = await Promise.all([posRes.json(), ordRes.json()]);
+      res.json({ positions, orders });
+    } catch (err) {
+      res.status(500).json({ error: (err as Error).message });
     }
   });
 

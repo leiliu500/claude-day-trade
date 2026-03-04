@@ -55,6 +55,7 @@
       <button class="tab" data-tab="analysis">Analysis</button>
       <button class="tab" data-tab="scheduler">Scheduler</button>
       <button class="tab" data-tab="activity">Human Activity</button>
+      <button class="tab" data-tab="alpaca">Alpaca</button>
       <button class="tab" data-tab="database">Database</button>
     </nav>
 
@@ -215,6 +216,39 @@
         </table>
         <div id="pagination-interactions"></div>
 
+      </div>
+    </section>
+
+    <section id="tab-alpaca" class="tab-content">
+      <div class="agents-section-header">
+        Live Alpaca Positions <small id="alpaca-positions-count"></small>
+        <span style="float:right">
+          <button class="btn-close-all" id="btn-alpaca-closeall" onclick="closeAllAlpaca()">🔴 Close All</button>
+        </span>
+      </div>
+      <table id="tbl-alpaca-positions">
+        <thead>
+          <tr>
+            <th>Symbol</th><th>Side</th><th>Qty</th><th>Entry</th>
+            <th>Current</th><th>Mkt Value</th><th>P&amp;L $</th><th>P&amp;L %</th>
+          </tr>
+        </thead>
+        <tbody></tbody>
+      </table>
+
+      <div class="agents-history-section" style="margin-top:1.5rem">
+        <div class="agents-section-header">
+          Open Orders <small id="alpaca-orders-count"></small>
+        </div>
+        <table id="tbl-alpaca-orders">
+          <thead>
+            <tr>
+              <th>Symbol</th><th>Side</th><th>Qty</th><th>Type</th>
+              <th>Limit $</th><th>Stop $</th><th>Status</th><th>Created</th><th>ID</th>
+            </tr>
+          </thead>
+          <tbody></tbody>
+        </table>
       </div>
     </section>
 
