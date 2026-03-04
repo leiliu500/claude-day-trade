@@ -6,8 +6,9 @@
  *
  * Deletion order respects FK constraints:
  *   trade_evaluations → order_executions → decision_confirmations
- *   → position_journal → trading_decisions → signal_snapshots
+ *   → order_agent_ticks → position_journal → trading_decisions → signal_snapshots
  *   → trading_sessions → broker_open_orders → broker_positions
+ *   → scheduler_runs → telegram_interactions → human_approvals
  *
  * Before truncating the DB the registry is told to hard-stop any lingering
  * agents (should be zero at 07:00 UTC, but handled defensively).
@@ -27,12 +28,16 @@ const TABLES_IN_ORDER: Array<{ schema: string; name: string; label: string }> = 
   { schema: 'trading', name: 'trade_evaluations',     label: 'Evaluations' },
   { schema: 'trading', name: 'order_executions',      label: 'Orders' },
   { schema: 'trading', name: 'decision_confirmations', label: 'Confirmations' },
+  { schema: 'trading', name: 'order_agent_ticks',     label: 'AgentTicks' },
   { schema: 'trading', name: 'position_journal',      label: 'Positions' },
   { schema: 'trading', name: 'trading_decisions',     label: 'Decisions' },
   { schema: 'trading', name: 'signal_snapshots',      label: 'Signals' },
   { schema: 'trading', name: 'trading_sessions',      label: 'Sessions' },
   { schema: 'trading', name: 'broker_open_orders',    label: 'BrokerOrders' },
   { schema: 'trading', name: 'broker_positions',      label: 'BrokerPositions' },
+  { schema: 'trading', name: 'scheduler_runs',        label: 'SchedulerRuns' },
+  { schema: 'trading', name: 'telegram_interactions', label: 'TelegramInteractions' },
+  { schema: 'trading', name: 'human_approvals',       label: 'HumanApprovals' },
 ];
 
 async function truncateAll(pool: ReturnType<typeof getPool>): Promise<Record<string, number>> {
