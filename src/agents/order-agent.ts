@@ -28,7 +28,7 @@ import { insertOrder } from '../db/repositories/orders.js';
 import { insertEvaluation, getTickerEvaluations } from '../db/repositories/evaluations.js';
 import { insertAgentTick, getRecentAgentTicks } from '../db/repositories/order-agent-ticks.js';
 import { EvaluationAgent } from './evaluation-agent.js';
-import { notifyAlert, notifyOrderAgentDecision } from '../telegram/notifier.js';
+import { notifyAlert, notifyOrderAgentDecision, notifyOrderAgentDispatch } from '../telegram/notifier.js';
 import { loadSkill } from '../utils/skill-loader.js';
 import {
   submitLimitBuyOrder,
@@ -107,7 +107,7 @@ export interface OrderAgentOutcome {
 }
 
 const TICK_INTERVAL_MS  = 30_000;
-const AI_TICK_INTERVAL  = 5;     // periodic AI check every N ticks (2.5 min)
+const AI_TICK_INTERVAL  = 2;     // periodic AI check every N ticks (1 min)
 
 const openai            = new OpenAI({ apiKey: config.OPENAI_API_KEY });
 const ORDER_AGENT_SKILL = loadSkill('order-agent');
@@ -348,6 +348,15 @@ export class OrderAgent {
       `[OrderAgent ${ticker} ${symbol}] Received ${suggestion.decisionType}` +
       ` (urgency: ${suggestion.urgency}) — evaluating through AI`,
     );
+    // Notify that orchestrator has reached this agent (proves dispatch is working)
+    void notifyOrderAgentDispatch({
+      ticker,
+      optionSymbol:        symbol,
+      optionSide:          this.cfg.candidate.contract.side,
+      orchestratorDecision: suggestion.decisionType,
+      urgency:             suggestion.urgency,
+      reason:              suggestion.reason,
+    });
     return await this._runAIDecision(suggestion);
   }
 
@@ -620,12 +629,13 @@ export class OrderAgent {
       }
     }
 
-    // ── 2b. Rapid-decline deterministic exit ───────────────────────────────
-    // 4+ consecutive price drops AND P&L ≤ -8%: momentum is strongly against the
-    // position; exit before the trailing stop fires to save 5-7% additional loss.
+    // ── 2b. Deterministic exit rules (no AI — fire before AI check) ─────────
+    // These protect profits and cut losses faster than waiting for AI evaluation.
     const entryForRapid = this.fillPrice ?? candidate.entryPremium;
     const pnlPctNow = entryForRapid > 0 ? ((currentPrice - entryForRapid) / entryForRapid) * 100 : 0;
-    if (this.consecutiveDeclines >= 4 && pnlPctNow <= -8) {
+
+    // Rapid-decline: 3+ consecutive drops AND P&L ≤ -6% (tightened from 4/-8%)
+    if (this.consecutiveDeclines >= 3 && pnlPctNow <= -6) {
       await this._executeExit(
         `RAPID_DECLINE: ${this.consecutiveDeclines} consecutive ticks falling,` +
         ` pnl=${pnlPctNow.toFixed(1)}%`,
@@ -633,10 +643,40 @@ export class OrderAgent {
       return;
     }
 
+    // Peak-erosion exits: fire when significant gains have been surrendered.
+    // These catch profit reversals deterministically — the AI may be 1 min behind.
+    if (this.peakPnlPct >= 25 && pnlPctNow <= 8) {
+      await this._executeExit(
+        `PEAK_EROSION: peak=+${this.peakPnlPct.toFixed(1)}%, now=${pnlPctNow >= 0 ? '+' : ''}${pnlPctNow.toFixed(1)}%`,
+      );
+      return;
+    }
+    if (this.peakPnlPct >= 15 && pnlPctNow <= 2) {
+      await this._executeExit(
+        `PEAK_GONE: peak=+${this.peakPnlPct.toFixed(1)}%, now=${pnlPctNow >= 0 ? '+' : ''}${pnlPctNow.toFixed(1)}%`,
+      );
+      return;
+    }
+    if (this.peakPnlPct >= 10 && pnlPctNow <= -3) {
+      await this._executeExit(
+        `PEAK_REVERSAL: peak=+${this.peakPnlPct.toFixed(1)}%, now=${pnlPctNow.toFixed(1)}%`,
+      );
+      return;
+    }
+
+    // Pre-emptive loss exit: exit at -10% before hard stop fires at ~-13%.
+    // Saves 3%+ per trade. Only activates after 3+ min (6 ticks) to avoid entry noise.
+    if (pnlPctNow <= -10 && this.tickCount >= 6) {
+      await this._executeExit(
+        `PRE_EMPTIVE_LOSS: pnl=${pnlPctNow.toFixed(1)}% — cutting before hard stop`,
+      );
+      return;
+    }
+
     // ── 3. Periodic AI independent monitoring (adaptive frequency) ─────────
-    // Check every tick when price is declining (2+ ticks), every 5 ticks normally.
+    // Check every tick when price is declining (1+ ticks), every 2 ticks (1 min) normally.
     // This ensures the AI can react quickly when a position deteriorates.
-    const shouldRunAI = this.consecutiveDeclines >= 2 || this.tickCount % AI_TICK_INTERVAL === 0;
+    const shouldRunAI = this.consecutiveDeclines >= 1 || this.tickCount % AI_TICK_INTERVAL === 0;
     if (shouldRunAI) {
       await this._runAIDecision(null, { currentPrice, stop, tp, qty, expiration });
     }
@@ -850,33 +890,23 @@ export class OrderAgent {
 
       case 'HOLD':
       default:
-        // Notify when the agent's HOLD is meaningful:
-        //   EXIT / REDUCE_EXPOSURE  → agent overrides an exit/reduce directive
-        //   REVERSE                 → agent refuses direction flip (meaningful override)
-        //   ADD_POSITION            → agent agrees position is healthy for scale-in
-        // CONFIRM_HOLD / WAIT / periodic ticks: HOLD is expected — no notification.
-        if (
-          suggestion && (
-            suggestion.decisionType === 'EXIT' ||
-            suggestion.decisionType === 'REDUCE_EXPOSURE' ||
-            suggestion.decisionType === 'REVERSE' ||
-            suggestion.decisionType === 'ADD_POSITION'
-          )
-        ) {
-          notifyOrderAgentDecision({
-            action:                 'HOLD',
-            ticker:                 this.cfg.decision.ticker,
-            optionSymbol:           symbol,
-            optionSide:             this.cfg.candidate.contract.side,
-            reasoning:              rec.reasoning,
-            overridingOrchestrator: rec.overriding_orchestrator,
-            orchestratorSuggestion: suggestion.decisionType,
-            pnlPct,
-            currentPrice,
-            entryPrice:             this.fillPrice ?? this.cfg.candidate.entryPremium,
-            oldStop:                currentStop,
-          }).catch(err => console.warn(`[OrderAgent ${this.cfg.decision.ticker}] Notify error:`, (err as Error).message));
-        }
+        // Notify on every HOLD so the user can see all agent decisions,
+        // including periodic independent checks and orchestrator dispatches.
+        notifyOrderAgentDecision({
+          action:                 'HOLD',
+          ticker:                 this.cfg.decision.ticker,
+          optionSymbol:           symbol,
+          optionSide:             this.cfg.candidate.contract.side,
+          reasoning:              rec.reasoning,
+          overridingOrchestrator: rec.overriding_orchestrator,
+          orchestratorSuggestion: suggestion?.decisionType ?? null,
+          pnlPct,
+          currentPrice,
+          entryPrice:             this.fillPrice ?? this.cfg.candidate.entryPremium,
+          peakPnlPct:             this.peakPnlPct,
+          consecutiveDeclines:    this.consecutiveDeclines,
+          oldStop:                currentStop,
+        }).catch(err => console.warn(`[OrderAgent ${this.cfg.decision.ticker}] Notify error:`, (err as Error).message));
         break;
     }
 
@@ -929,18 +959,20 @@ export class OrderAgent {
       this.peakPnlPct = Math.max(this.peakPnlPct, peakNow);
     }
 
-    // Raw trailing stop: 15% below peak price
-    const rawTrailingStop = parseFloat((this.highestPrice * 0.85).toFixed(2));
+    // Raw trailing stop: 13% below peak price (tightened from 15% to lock in more profit)
+    const rawTrailingStop = parseFloat((this.highestPrice * 0.87).toFixed(2));
 
     // Profit-protection floors — once a profit threshold is crossed, the stop never
     // falls below that floor.  This prevents giving back gains on small/moderate peaks
-    // where the raw 15%-from-peak stop would still be below the entry price.
+    // where the raw 13%-from-peak stop would still be below the entry price.
     //   Peak ≥ +10% → stop floor at breakeven (entry)
-    //   Peak ≥ +20% → stop floor at +5% profit
-    //   Peak ≥ +30% → stop floor at +15% profit
+    //   Peak ≥ +15% → stop floor at +3% profit
+    //   Peak ≥ +20% → stop floor at +8% profit
+    //   Peak ≥ +30% → stop floor at +18% profit
     let profitFloor = 0;
-    if (this.peakPnlPct >= 30) profitFloor = parseFloat((entryForTrail * 1.15).toFixed(2));
-    else if (this.peakPnlPct >= 20) profitFloor = parseFloat((entryForTrail * 1.05).toFixed(2));
+    if (this.peakPnlPct >= 30) profitFloor = parseFloat((entryForTrail * 1.18).toFixed(2));
+    else if (this.peakPnlPct >= 20) profitFloor = parseFloat((entryForTrail * 1.08).toFixed(2));
+    else if (this.peakPnlPct >= 15) profitFloor = parseFloat((entryForTrail * 1.03).toFixed(2));
     else if (this.peakPnlPct >= 10) profitFloor = parseFloat(entryForTrail.toFixed(2));
 
     const trailingStop = parseFloat(Math.max(rawTrailingStop, profitFloor).toFixed(2));
@@ -1167,6 +1199,19 @@ export class OrderAgent {
       [actualFilledQty, this.positionId],
     );
     console.log(`[OrderAgent ${decision.ticker}] position_journal.qty decremented by ${actualFilledQty}`);
+
+    const entryForPnl = this.fillPrice ?? candidate.entryPremium;
+    const pnlPct = entryForPnl > 0 && reduceFill
+      ? ((reduceFill - entryForPnl) / entryForPnl) * 100 : 0;
+    const pnlSign = pnlPct >= 0 ? '+' : '';
+    await notifyAlert(
+      `📉 <b>OrderAgent: REDUCE — ${decision.ticker}</b>\n` +
+      `<code>${symbol}</code>\n` +
+      `${reason.slice(0, 120)}\n` +
+      `Reduced: ${actualFilledQty} contract(s)` +
+      (reduceFill ? ` @ $${reduceFill.toFixed(2)}` : '') +
+      ` | P&L: <b>${pnlSign}${pnlPct.toFixed(1)}%</b>`,
+    ).catch(err => console.warn(`[OrderAgent ${decision.ticker}] Notify error:`, (err as Error).message));
   }
 
   private async _triggerEvaluation(exitPrice: number, closeReason: string): Promise<void> {

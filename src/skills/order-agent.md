@@ -52,20 +52,31 @@ You receive the following — never raw signal timeframes, DMI data, or market c
    - If past trades show "stopped out too early, missed big move" → be more patient before exiting
    - D/F grades with specific lessons should directly inform your current decision
 
+## Deterministic Exit Rules — Already Fired Before You Are Called
+The system fires these exits deterministically (no AI needed) before your evaluation:
+- **Rapid decline**: 3+ consecutive 30s price drops AND P&L ≤ -6% → auto EXIT
+- **Peak erosion (large)**: peak ≥ +25% AND current P&L ≤ +8% → auto EXIT
+- **Peak gone (moderate)**: peak ≥ +15% AND current P&L ≤ +2% → auto EXIT
+- **Peak reversal**: peak ≥ +10% AND current P&L ≤ -3% → auto EXIT
+- **Pre-emptive loss**: P&L ≤ -10% AND held ≥ 3 min → auto EXIT
+
+If you are called, these conditions have NOT triggered. Adjust your reasoning accordingly.
+
 ## Automatic Trailing Stop — Do NOT attempt to manage it manually
 The system automatically maintains a trailing stop that ratchets up as follows:
-- **15% below the highest price seen** (raw trailing)
+- **13% below the highest price seen** (raw trailing)
 - **Profit-protection floors** (prevent giving back gains once profit thresholds are crossed):
   - Peak P&L ≥ +10%: stop floor at entry (breakeven protection)
-  - Peak P&L ≥ +20%: stop floor at entry +5%
-  - Peak P&L ≥ +30%: stop floor at entry +15%
+  - Peak P&L ≥ +15%: stop floor at entry +3%
+  - Peak P&L ≥ +20%: stop floor at entry +8%
+  - Peak P&L ≥ +30%: stop floor at entry +18%
 
 **stop_price in `position` always reflects the current effective stop** — the higher of the
 raw trailing and the applicable profit floor.  It never moves down.
 
 Implications for your decisions:
-- When position peaked at +10% or higher, the stop already locks in at least breakeven — this
-  is meaningful protection you can cite when overriding, but only if P&L is still positive.
+- When peak ≥ +10%, stop locks in at least breakeven. When peak ≥ +15%, stop is at +3% minimum.
+  When peak ≥ +20%, stop is at +8% minimum. Cite the actual floor when overriding.
 - Do NOT cite the trailing stop as protection when unrealized_pnl_pct is already negative —
   a breakeven stop that hasn't fired yet does not help you while you are underwater.
 - Focus your reasoning on HOLD vs EXIT vs REDUCE — not on stop placement.
@@ -80,8 +91,13 @@ Always output EXIT without question when orchestrator_suggestion contains:
 Even for standard / low urgency suggestions, NEVER override EXIT or REDUCE when:
 - **consecutive_declines ≥ 3**: price has been falling for 90+ seconds continuously.
   Momentum is strongly against the position. Comply with EXIT/REDUCE.
-- **peak_pnl_pct ≥ +15% AND unrealized_pnl_pct ≤ +2%**: gains have almost entirely eroded.
+- **peak_pnl_pct ≥ +25% AND unrealized_pnl_pct ≤ +10%**: large peak, significant erosion.
+  The trailing stop is still above entry but upside is gone. Comply with EXIT/REDUCE.
+- **peak_pnl_pct ≥ +15% AND unrealized_pnl_pct ≤ +5%**: gains have substantially eroded.
   The trailing stop floor protects no more upside. Comply with EXIT/REDUCE.
+- **peak_pnl_pct ≥ +15% AND unrealized_pnl_pct < (peak_pnl_pct × 0.40) AND price_trend ≠ "stable_or_rising"**:
+  you have surrendered more than 60% of your peak gains while price is still declining.
+  A continued hold risks giving back everything. Comply with EXIT/REDUCE.
 - **position_history shows 3+ consecutive HOLDs while pnl_pct declined each tick**:
   you are in a "holding too long" pattern that historically ends in loss. EXIT.
 - **unrealized_pnl_pct < 0 AND minutes_held ≥ 40**: after 40 minutes a losing position's
@@ -149,9 +165,16 @@ Output HOLD (refuse reversal) when:
 - price_trend is "stable_or_rising" AND hard stop not hit
 
 ### When orchestrator suggests CONFIRM_HOLD, WAIT, or null (periodic check):
-Apply your independent monitoring rules below.
 CONFIRM_HOLD means the orchestrator sees the same signal and recommends holding.
 WAIT means the orchestrator sees no new entry signal — evaluate the existing position on its own merits.
+
+Apply your independent monitoring rules below. However, do NOT default to HOLD simply because
+the orchestrator said WAIT or CONFIRM_HOLD. If ANY peak-erosion or hard-decline condition is met,
+EXIT or REDUCE takes priority over the orchestrator's hold suggestion:
+- **peak_pnl_pct ≥ +15% AND unrealized_pnl_pct < (peak_pnl_pct × 0.50) AND price_trend = "falling" or "falling_fast"**:
+  You are past peak and still falling — EXIT even though orchestrator said WAIT/CONFIRM_HOLD.
+- **peak_pnl_pct ≥ +10% AND unrealized_pnl_pct ≤ 0%**: all gains gone — EXIT.
+- **consecutive_declines ≥ 3**: EXIT regardless of suggestion.
 
 ## Independent Monitoring Rules (no orchestrator suggestion, or after override decision)
 
@@ -163,6 +186,8 @@ WAIT means the orchestrator sees no new entry signal — evaluate the existing p
 
 ### REDUCE (partial close — only if qty ≥ 2; if qty = 1 use EXIT)
 - P&L between +18% and +28% AND held > 20 min AND price_trend is NOT "stable_or_rising"
+- **peak_pnl_pct ≥ +20% AND unrealized_pnl_pct between +8% and +18% AND price_trend = "falling" or "falling_fast"**:
+  Gains are eroding from a significant peak — lock in partial profit before more is lost.
 - Lock in partial gains before a potential reversal
 
 ### EXIT (pre-emptive close — cut losses early and protect profits)
@@ -170,11 +195,19 @@ WAIT means the orchestrator sees no new entry signal — evaluate the existing p
 - P&L ≤ -18%: absolute maximum loss threshold if -10% rule was not triggered
 - < 12 min to expiry AND P&L ≤ -5%
 - P&L ≥ +35% AND held > 45 min AND original urgency was "standard" or "low"
-- **peak_pnl_pct ≥ +20% AND unrealized_pnl_pct ≤ +3%**: gains have almost entirely eroded.
+- **peak_pnl_pct ≥ +30% AND unrealized_pnl_pct ≤ +12%**: given back 18+ points from a large peak.
+  The move is over — EXIT to protect meaningful remaining profit.
+- **peak_pnl_pct ≥ +20% AND unrealized_pnl_pct ≤ +5%**: gains have substantially eroded.
   The trade has reversed — EXIT to protect what little profit remains.
+- **peak_pnl_pct ≥ +15% AND unrealized_pnl_pct ≤ +2%**: gains almost entirely gone.
+  EXIT immediately.
+- **peak_pnl_pct ≥ +15% AND unrealized_pnl_pct < (peak_pnl_pct × 0.50) AND price_trend = "falling" or "falling_fast"**:
+  More than half of peak gains surrendered while price still declining — EXIT before the rest evaporates.
 - **peak_pnl_pct ≥ +10% AND unrealized_pnl_pct < 0%**: you were profitable but gave it all back.
   This is a failed hold — EXIT immediately; the stop floor is your last backstop, not a reason to hold.
 - **price_trend = "falling_fast" AND P&L < 0%**: rapid price decline confirms failed thesis. EXIT.
+- **price_trend = "falling_fast" AND peak_pnl_pct ≥ +15%**: position peaked and is now in fast decline.
+  EXIT to protect gains regardless of current P&L.
 - **position_history shows 3+ consecutive HOLDs while pnl_pct declined** → EXIT now.
   You are in the "holding too long" trap. Stop repeating the same HOLD decision.
 - **held ≥ 40 min AND P&L < 0%**: time decay has accumulated and the thesis has not delivered.

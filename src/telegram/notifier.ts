@@ -529,7 +529,32 @@ export async function notifyEvaluation(evaluation: EvaluationRecord): Promise<vo
   await sendMessage(msg);
 }
 
-/** OrderAgent final decision notification (HOLD override or ADJUST_STOP) */
+/**
+ * Sent when the orchestrator pipeline dispatches a decision to an OrderAgent.
+ * Proves that the orchestrator is reaching active agents every pipeline run.
+ */
+export async function notifyOrderAgentDispatch(params: {
+  ticker: string;
+  optionSymbol: string;
+  optionSide: 'call' | 'put';
+  orchestratorDecision: string;
+  urgency: string;
+  reason: string;
+}): Promise<void> {
+  const { ticker, optionSymbol, optionSide, orchestratorDecision, urgency, reason } = params;
+  const decIcon: Record<string, string> = {
+    EXIT: '🚪', REDUCE_EXPOSURE: '📉', CONFIRM_HOLD: '✅',
+    WAIT: '⏳', ADD_POSITION: '➕', REVERSE: '🔄',
+  };
+  const icon = decIcon[orchestratorDecision] ?? '📡';
+  const msg =
+    `${icon} <b>Orchestrator→OrderAgent: ${orchestratorDecision}</b>\n` +
+    `${ticker} | <code>${optionSymbol}</code> (${optionSide.toUpperCase()}) | urgency: ${urgency}\n` +
+    `Reason: ${reason.slice(0, 200)}`;
+  await sendMessage(msg);
+}
+
+/** OrderAgent AI decision notification — sent for every AI outcome (HOLD, REDUCE, ADJUST_STOP). */
 export async function notifyOrderAgentDecision(params: {
   action: 'HOLD' | 'ADJUST_STOP';
   ticker: string;
@@ -541,17 +566,21 @@ export async function notifyOrderAgentDecision(params: {
   pnlPct: number;
   currentPrice: number;
   entryPrice: number;
+  peakPnlPct?: number;
+  consecutiveDeclines?: number;
   oldStop?: number | null;
   newStop?: number;
 }): Promise<void> {
   const {
     action, ticker, optionSymbol, optionSide, reasoning,
     overridingOrchestrator, orchestratorSuggestion,
-    pnlPct, currentPrice, entryPrice, oldStop, newStop,
+    pnlPct, currentPrice, entryPrice,
+    peakPnlPct, consecutiveDeclines,
+    oldStop, newStop,
   } = params;
 
-  const sideLabel  = optionSide.toUpperCase();
-  const pnlSign    = pnlPct >= 0 ? '+' : '';
+  const sideLabel   = optionSide.toUpperCase();
+  const pnlSign     = pnlPct >= 0 ? '+' : '';
   const overrideTag = overridingOrchestrator ? ' [OVERRIDE]' : '';
 
   let msg = '';
@@ -560,17 +589,24 @@ export async function notifyOrderAgentDecision(params: {
     const icon = overridingOrchestrator ? '🛡' : '✋';
     msg += `${icon} <b>OrderAgent: HOLD${overrideTag}</b>\n`;
     msg += `${ticker} | <code>${optionSymbol}</code> (${sideLabel})\n`;
-    if (orchestratorSuggestion === 'CONFIRM_HOLD') {
-      msg += `Orchestrator: CONFIRM_HOLD → Agent acknowledges, continuing to hold\n`;
-    } else if (orchestratorSuggestion === 'ADD_POSITION') {
-      msg += `Orchestrator suggested: ADD_POSITION → Agent agrees, position healthy for scale-in\n`;
-    } else if (orchestratorSuggestion === 'REVERSE') {
-      msg += `Orchestrator suggested: REVERSE → Agent refuses, staying in current position\n`;
-    } else if (orchestratorSuggestion) {
-      msg += `Orchestrator suggested: ${orchestratorSuggestion} → Agent overrides to HOLD\n`;
+    if (orchestratorSuggestion) {
+      msg += `Orchestrator: ${orchestratorSuggestion}`;
+      if (overridingOrchestrator) msg += ` → Agent overrides to HOLD`;
+      else if (orchestratorSuggestion === 'CONFIRM_HOLD') msg += ` → Agent acknowledges`;
+      else if (orchestratorSuggestion === 'ADD_POSITION') msg += ` → Agent agrees (healthy for scale-in)`;
+      else if (orchestratorSuggestion === 'REVERSE') msg += ` → Agent refuses reversal`;
+      else msg += ` → Agent holds`;
+      msg += `\n`;
+    } else {
+      msg += `Source: periodic independent check\n`;
     }
-    msg += `P&L: <b>${pnlSign}${pnlPct.toFixed(1)}%</b> | Price: $${currentPrice.toFixed(2)} (Entry: $${entryPrice.toFixed(2)})\n`;
-    msg += `Reason: ${reasoning.slice(0, 250)}`;
+    msg += `P&L: <b>${pnlSign}${pnlPct.toFixed(1)}%</b>`;
+    if (peakPnlPct != null) msg += ` | Peak: +${peakPnlPct.toFixed(1)}%`;
+    msg += ` | Price: $${currentPrice.toFixed(2)} (Entry: $${entryPrice.toFixed(2)})`;
+    if (consecutiveDeclines != null && consecutiveDeclines > 0) {
+      msg += ` | Declines: ${consecutiveDeclines}`;
+    }
+    msg += `\nReason: ${reasoning.slice(0, 200)}`;
   } else {
     const oldStopStr = oldStop != null ? `$${oldStop.toFixed(2)}` : 'none';
     const newStopStr = newStop != null ? `$${newStop.toFixed(2)}` : 'n/a';
@@ -578,7 +614,7 @@ export async function notifyOrderAgentDecision(params: {
     msg += `${ticker} | <code>${optionSymbol}</code> (${sideLabel})\n`;
     msg += `Stop: ${oldStopStr} → <b>${newStopStr}</b>\n`;
     msg += `P&L: <b>${pnlSign}${pnlPct.toFixed(1)}%</b> | Price: $${currentPrice.toFixed(2)}\n`;
-    msg += `Reason: ${reasoning.slice(0, 250)}`;
+    msg += `Reason: ${reasoning.slice(0, 200)}`;
   }
 
   await sendMessage(msg);
