@@ -14,7 +14,7 @@ You must output exactly ONE of these 7 decision types:
 - liquidity_ok must be true; candidate_pass must be true; rr_ratio >= 0.6
 
 **WAIT Streak Cooldown — applies to NEW_ENTRY:**
-- Count the number of consecutive WAIT decisions at the tail of `recentDecisions` (stop counting at the first non-WAIT) **where confidence was >= 0.65**. WAITs with confidence < 0.65 are pre-signal noise and do NOT count toward the streak.
+- Count the number of consecutive WAIT decisions at the tail of `recentDecisions` (stop counting at the first non-WAIT) **where confirmationCount >= 1** (i.e., the signal had already been observed at least once but entry was still blocked). WAITs with confirmationCount = 0 are Stage 1 OBSERVE WAITs — normal first-look hesitation — and do NOT count toward the streak.
 - If that streak is **3 or more**, the cooldown is active.
 - During cooldown, NEW_ENTRY requires **confidence >= 0.80 AND alignment = "all_aligned" AND confirmationCount >= 3** — the normal 0.65 / 2-confirmation threshold is NOT sufficient.
 - Crossing the 0.65 confidence threshold by a small margin immediately after a high-confidence WAIT streak is NOT a valid entry signal; it is a retest of the same exhausted conditions that caused the WAITs.
