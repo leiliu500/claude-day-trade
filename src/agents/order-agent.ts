@@ -125,6 +125,12 @@ export class OrderAgent {
   private expiryWarningSent           = false;
   private tickCount                   = 0;
   private highestPrice: number | null = null;
+  /** Highest unrealized P&L % ever seen — used to trigger profit-protection floors. */
+  private peakPnlPct: number          = 0;
+  /** Previous tick's price — used to detect consecutive price declines. */
+  private lastPrice: number | null    = null;
+  /** Number of consecutive 30 s ticks where price fell — drives rapid-decline exit and adaptive AI. */
+  private consecutiveDeclines: number = 0;
 
   constructor(private readonly cfg: OrderAgentConfig | RestoredOrderAgentConfig) {
     if ('positionId' in cfg) {
@@ -226,7 +232,57 @@ export class OrderAgent {
       });
     }
 
+    // Recover in-memory trailing-stop state from DB so the profit-protection
+    // floors are not lost across restarts.
+    this._restoreStateFromDB().catch(err =>
+      console.warn(
+        `[OrderAgent ${cfg.decision.ticker}] State restore warning:`,
+        (err as Error).message,
+      ),
+    );
+
     this._startTick();
+  }
+
+  /**
+   * Reconstruct in-memory trailing-stop state (highestPrice / peakPnlPct) from the
+   * position's stored current_stop after an app restart.
+   *
+   * Under the trailing-stop formula: stop = highestPrice * 0.85 (before profit floors),
+   * so highestPrice ≈ stop / 0.85.  This is a conservative lower bound — real peak
+   * could have been higher, but this prevents the stop from being reset below its
+   * last recorded value on the next tick.
+   */
+  private async _restoreStateFromDB(): Promise<void> {
+    const pool = getPool();
+    const { rows } = await pool.query<{ current_stop: string | null; entry_price: string | null }>(
+      `SELECT current_stop, entry_price FROM trading.position_journal WHERE id=$1 AND status='OPEN'`,
+      [this.positionId],
+    );
+    if (!rows[0]) return;
+
+    const { current_stop, entry_price } = rows[0];
+
+    // Restore fill price if the agent was reconstructed without it
+    if (entry_price && !this.fillPrice) {
+      this.fillPrice = parseFloat(entry_price);
+    }
+
+    if (current_stop) {
+      const dbStop    = parseFloat(current_stop);
+      const entry     = this.fillPrice ?? this.cfg.candidate.entryPremium;
+      // Derive implied peak from stored stop (lower bound; real peak may have been higher)
+      const impliedPeak = parseFloat((dbStop / 0.85).toFixed(2));
+      this.highestPrice = Math.max(impliedPeak, entry);
+      if (entry > 0) {
+        this.peakPnlPct = Math.max(0, ((this.highestPrice - entry) / entry) * 100);
+      }
+      console.log(
+        `[OrderAgent ${this.cfg.decision.ticker}] Restored state:` +
+        ` fillPrice=$${this.fillPrice} highestPrice=$${this.highestPrice}` +
+        ` peakPnlPct=${this.peakPnlPct.toFixed(1)}%`,
+      );
+    }
   }
 
   /**
@@ -519,6 +575,17 @@ export class OrderAgent {
     // ── 0. Trailing stop: 15% from peak (ratchets up only) ────────────────
     const stop = await this._updateTrailingStop(currentPrice, dbStop);
 
+    // ── 0b. Track price direction (30 s granularity) ───────────────────────
+    const prevPrice = this.lastPrice;
+    this.lastPrice  = currentPrice;
+    if (prevPrice !== null) {
+      if (currentPrice < prevPrice) {
+        this.consecutiveDeclines++;
+      } else {
+        this.consecutiveDeclines = 0;
+      }
+    }
+
     // ── 1. Hard stop / TP (deterministic, no AI override) ─────────────────
     if (currentPrice <= stop) {
       await this._executeExit(`STOP_HIT @ $${currentPrice.toFixed(2)} (stop=$${stop.toFixed(2)})`);
@@ -553,8 +620,24 @@ export class OrderAgent {
       }
     }
 
-    // ── 3. Periodic AI independent monitoring ─────────────────────────────
-    if (this.tickCount % AI_TICK_INTERVAL === 0) {
+    // ── 2b. Rapid-decline deterministic exit ───────────────────────────────
+    // 4+ consecutive price drops AND P&L ≤ -8%: momentum is strongly against the
+    // position; exit before the trailing stop fires to save 5-7% additional loss.
+    const entryForRapid = this.fillPrice ?? candidate.entryPremium;
+    const pnlPctNow = entryForRapid > 0 ? ((currentPrice - entryForRapid) / entryForRapid) * 100 : 0;
+    if (this.consecutiveDeclines >= 4 && pnlPctNow <= -8) {
+      await this._executeExit(
+        `RAPID_DECLINE: ${this.consecutiveDeclines} consecutive ticks falling,` +
+        ` pnl=${pnlPctNow.toFixed(1)}%`,
+      );
+      return;
+    }
+
+    // ── 3. Periodic AI independent monitoring (adaptive frequency) ─────────
+    // Check every tick when price is declining (2+ ticks), every 5 ticks normally.
+    // This ensures the AI can react quickly when a position deteriorates.
+    const shouldRunAI = this.consecutiveDeclines >= 2 || this.tickCount % AI_TICK_INTERVAL === 0;
+    if (shouldRunAI) {
       await this._runAIDecision(null, { currentPrice, stop, tp, qty, expiration });
     }
   }
@@ -645,17 +728,25 @@ export class OrderAgent {
         : null,
       // Live position state
       position: {
-        option_symbol:      candidate.contract.symbol,
-        option_side:        candidate.contract.side,
-        strike:             candidate.contract.strike,
-        entry_price:        entryPrice.toFixed(2),
-        current_price:      s.currentPrice.toFixed(2),
-        unrealized_pnl_pct: pnlPct.toFixed(1),
-        stop_price:         s.stop?.toFixed(2)  ?? 'none',
-        tp_price:           s.tp?.toFixed(2)    ?? 'none',
-        qty:                s.qty,
-        minutes_held:       minutesHeld,
-        minutes_to_expiry:  minutesToExp,
+        option_symbol:       candidate.contract.symbol,
+        option_side:         candidate.contract.side,
+        strike:              candidate.contract.strike,
+        entry_price:         entryPrice.toFixed(2),
+        current_price:       s.currentPrice.toFixed(2),
+        unrealized_pnl_pct:  pnlPct.toFixed(1),
+        // Highest P&L% ever reached — key for detecting peak-erosion situations
+        peak_pnl_pct:        this.peakPnlPct.toFixed(1),
+        stop_price:          s.stop?.toFixed(2)  ?? 'none',
+        tp_price:            s.tp?.toFixed(2)    ?? 'none',
+        qty:                 s.qty,
+        minutes_held:        minutesHeld,
+        minutes_to_expiry:   minutesToExp,
+        // Real-time price momentum from 30 s tick history
+        price_trend:         this.consecutiveDeclines >= 4 ? 'falling_fast'
+                           : this.consecutiveDeclines >= 2 ? 'falling'
+                           : this.consecutiveDeclines === 1 ? 'slight_dip'
+                           : 'stable_or_rising',
+        consecutive_declines: this.consecutiveDeclines,
       },
       // Prior AI decisions for this position (oldest → newest, up to 5)
       position_history: history.map(t => ({
@@ -831,7 +922,29 @@ export class OrderAgent {
     const entryForTrail = this.fillPrice ?? this.cfg.candidate.entryPremium;
     if (this.highestPrice === null) this.highestPrice = entryForTrail;
     if (currentPrice > this.highestPrice) this.highestPrice = currentPrice;
-    const trailingStop = parseFloat((this.highestPrice * 0.85).toFixed(2));
+
+    // Track peak P&L % — ratchets up only, never resets
+    if (entryForTrail > 0) {
+      const peakNow = ((this.highestPrice - entryForTrail) / entryForTrail) * 100;
+      this.peakPnlPct = Math.max(this.peakPnlPct, peakNow);
+    }
+
+    // Raw trailing stop: 15% below peak price
+    const rawTrailingStop = parseFloat((this.highestPrice * 0.85).toFixed(2));
+
+    // Profit-protection floors — once a profit threshold is crossed, the stop never
+    // falls below that floor.  This prevents giving back gains on small/moderate peaks
+    // where the raw 15%-from-peak stop would still be below the entry price.
+    //   Peak ≥ +10% → stop floor at breakeven (entry)
+    //   Peak ≥ +20% → stop floor at +5% profit
+    //   Peak ≥ +30% → stop floor at +15% profit
+    let profitFloor = 0;
+    if (this.peakPnlPct >= 30) profitFloor = parseFloat((entryForTrail * 1.15).toFixed(2));
+    else if (this.peakPnlPct >= 20) profitFloor = parseFloat((entryForTrail * 1.05).toFixed(2));
+    else if (this.peakPnlPct >= 10) profitFloor = parseFloat(entryForTrail.toFixed(2));
+
+    const trailingStop = parseFloat(Math.max(rawTrailingStop, profitFloor).toFixed(2));
+
     if (dbStop === null || trailingStop > dbStop) {
       const pool = getPool();
       await pool.query(

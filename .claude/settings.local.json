@@ -38,7 +38,14 @@
       "Bash(docker exec day-trade-postgres psql -U trader -d postgres -c \"\\\\l+\")",
       "Bash(docker exec day-trade-postgres psql -U trader -d day_trade -c \"\\\\dt *.*\")",
       "Bash(docker exec day-trade-postgres psql -U trader -d day_trade -c \"\\\\d trading.scheduler_runs\")",
-      "Bash(docker exec day-trade-postgres psql -U trader -d day_trade -c \"\\\\d trading.trading_decisions\")"
+      "Bash(docker exec day-trade-postgres psql -U trader -d day_trade -c \"\\\\d trading.trading_decisions\")",
+      "Bash(docker-compose exec -T db psql -U trader -d trader_db -c \":*)",
+      "Bash(docker-compose -f /home/ec2-user/claude-day-trade/docker-compose.yml exec -T db psql -U trader -d trader_db -c \":*)",
+      "Bash(psql postgresql://trader:trader_password@localhost:5434/trader_db -c \":*)",
+      "Bash(docker ps --format \"{{.Names}}\\\\t{{.Status}}\")",
+      "Bash(docker exec day-trade-postgres psql -U trader -d trader_db -c \":*)",
+      "Bash(source .env)",
+      "Bash(docker-compose exec -T orchestrator node -e \":*)"
     ],
     "additionalDirectories": [
       "/home/ec2-user/.claude/projects/-home-ec2-user-claude-day-trade"
