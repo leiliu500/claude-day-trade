@@ -72,7 +72,11 @@
       "Bash(docker exec day-trade-postgres psql -U trader -d day_trade -c \"SELECT d.id, d.ticker, d.signal_direction, d.confidence, d.decision_type, d.option_right, d.option_symbol, d.execute, d.created_at, d.reason FROM trading.trading_decisions d WHERE d.option_symbol = ''SPY260304P00674000'' OR d.id IN \\(SELECT decision_id FROM trading.position_journal WHERE option_symbol = ''SPY260304P00674000''\\) ORDER BY d.created_at;\")",
       "Bash(docker exec day-trade-postgres psql -U trader -d day_trade -c \"\\\\d trading.trading_decisions;\")",
       "Bash(docker exec day-trade-postgres psql -U trader -d day_trade -c \":*)",
-      "Bash(docker exec day-trade-postgres psql -U trader -d day_trade -c \"\\\\d trading.signal_snapshots;\")"
+      "Bash(docker exec day-trade-postgres psql -U trader -d day_trade -c \"\\\\d trading.signal_snapshots;\")",
+      "Bash(docker-compose logs orchestrator --tail=50)",
+      "Bash(docker-compose logs orchestrator --since=\"2026-03-04T20:29:00Z\")",
+      "Bash(docker-compose logs orchestrator --tail=15)",
+      "Bash(docker-compose logs orchestrator --tail=30)"
     ],
     "additionalDirectories": [
       "/tmp"

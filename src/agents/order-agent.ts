@@ -134,6 +134,8 @@ export class OrderAgent {
   private lastPrice: number | null    = null;
   /** Number of consecutive 30 s ticks where price fell — drives rapid-decline exit and adaptive AI. */
   private consecutiveDeclines: number = 0;
+  /** Rolling buffer of last 5 pnlPctNow values — used to detect sustained-loss hold traps. */
+  private recentTickPnls: number[] = [];
 
   constructor(private readonly cfg: OrderAgentConfig | RestoredOrderAgentConfig) {
     if ('positionId' in cfg) {
@@ -591,7 +593,10 @@ export class OrderAgent {
 
     const priceMap     = await getAlpacaPositionPrices();
     const currentPrice = priceMap.get(symbol);
-    if (currentPrice == null) return;
+    if (currentPrice == null) {
+      console.warn(`[OrderAgent ${ticker}] No broker price for ${symbol} — tick ${this.tickCount} skipped (position may have closed at broker)`);
+      return;
+    }
 
     const pool = getPool();
     const { rows } = await pool.query<{
@@ -664,6 +669,10 @@ export class OrderAgent {
     const entryForRapid = this.fillPrice ?? candidate.entryPremium;
     const pnlPctNow = entryForRapid > 0 ? ((currentPrice - entryForRapid) / entryForRapid) * 100 : 0;
 
+    // Track rolling pnl for hold-trap detection (keep last 5 values)
+    this.recentTickPnls.push(pnlPctNow);
+    if (this.recentTickPnls.length > 5) this.recentTickPnls.shift();
+
     // Rapid-decline: 3+ consecutive drops AND P&L ≤ -6% (tightened from 4/-8%)
     if (this.consecutiveDeclines >= 3 && pnlPctNow <= -6) {
       await this._executeExit(
@@ -673,15 +682,49 @@ export class OrderAgent {
       return;
     }
 
-    // Peak-erosion exits: fire when significant gains have been surrendered.
-    // These catch profit reversals deterministically — the AI may be 1 min behind.
-    if (this.peakPnlPct >= 25 && pnlPctNow <= 8) {
+    // ── Profit-lock exits: exit WHILE STILL PROFITABLE when price is declining ──
+    // Goal: maximize profit by locking in gains before they fully erode.
+    // These fire when: (a) price is actively declining AND (b) 55%+ of peak gains surrendered.
+    // Ordered largest peak first so the tightest threshold wins.
+
+    // Large peak (≥25%): lock in at ≥10% profit when 60%+ of gains eroded while declining
+    if (this.peakPnlPct >= 25 && pnlPctNow < this.peakPnlPct * 0.40 && pnlPctNow > 0 && this.consecutiveDeclines >= 2) {
+      await this._executeExit(
+        `PROFIT_LOCK_LARGE: peak=+${this.peakPnlPct.toFixed(1)}%, now=+${pnlPctNow.toFixed(1)}% (${((pnlPctNow / this.peakPnlPct) * 100).toFixed(0)}% of peak) — locking profit while declining`,
+      );
+      return;
+    }
+    // Medium peak (≥20%): lock in while profitable when 55%+ of gains eroded while declining
+    if (this.peakPnlPct >= 20 && pnlPctNow < this.peakPnlPct * 0.45 && pnlPctNow > 0 && this.consecutiveDeclines >= 2) {
+      await this._executeExit(
+        `PROFIT_LOCK_MEDIUM: peak=+${this.peakPnlPct.toFixed(1)}%, now=+${pnlPctNow.toFixed(1)}% (${((pnlPctNow / this.peakPnlPct) * 100).toFixed(0)}% of peak) — locking profit while declining`,
+      );
+      return;
+    }
+    // Moderate peak (≥15%): lock in while profitable when 60%+ of gains eroded while falling hard
+    if (this.peakPnlPct >= 15 && pnlPctNow < this.peakPnlPct * 0.40 && pnlPctNow > 0 && this.consecutiveDeclines >= 3) {
+      await this._executeExit(
+        `PROFIT_LOCK_MODERATE: peak=+${this.peakPnlPct.toFixed(1)}%, now=+${pnlPctNow.toFixed(1)}% (${((pnlPctNow / this.peakPnlPct) * 100).toFixed(0)}% of peak) — locking profit while falling`,
+      );
+      return;
+    }
+    // Small peak (≥10%): lock in while profitable when 65%+ of gains eroded while falling fast
+    if (this.peakPnlPct >= 10 && pnlPctNow < this.peakPnlPct * 0.35 && pnlPctNow > 0 && this.consecutiveDeclines >= 4) {
+      await this._executeExit(
+        `PROFIT_LOCK_SMALL: peak=+${this.peakPnlPct.toFixed(1)}%, now=+${pnlPctNow.toFixed(1)}% (${((pnlPctNow / this.peakPnlPct) * 100).toFixed(0)}% of peak) — locking remaining profit`,
+      );
+      return;
+    }
+
+    // ── Peak-erosion exits: fire when ALL gains are gone (tightened thresholds) ──
+    // These are the last-resort catches when profit-lock rules didn't fire (no declining momentum).
+    if (this.peakPnlPct >= 20 && pnlPctNow <= 10) {
       await this._executeExit(
         `PEAK_EROSION: peak=+${this.peakPnlPct.toFixed(1)}%, now=${pnlPctNow >= 0 ? '+' : ''}${pnlPctNow.toFixed(1)}%`,
       );
       return;
     }
-    if (this.peakPnlPct >= 15 && pnlPctNow <= 2) {
+    if (this.peakPnlPct >= 12 && pnlPctNow <= 4) {
       await this._executeExit(
         `PEAK_GONE: peak=+${this.peakPnlPct.toFixed(1)}%, now=${pnlPctNow >= 0 ? '+' : ''}${pnlPctNow.toFixed(1)}%`,
       );
@@ -692,6 +735,29 @@ export class OrderAgent {
         `PEAK_REVERSAL: peak=+${this.peakPnlPct.toFixed(1)}%, now=${pnlPctNow.toFixed(1)}%`,
       );
       return;
+    }
+    // Small-peak reversal: any 5%+ profit peak that fully reverses into a loss.
+    // The trailing stop catches these eventually (~-7%), but this fires earlier at -5%.
+    if (this.peakPnlPct >= 5 && pnlPctNow <= -5) {
+      await this._executeExit(
+        `PEAK_REVERSAL_SMALL: peak=+${this.peakPnlPct.toFixed(1)}%, now=${pnlPctNow.toFixed(1)}% — profit reversed to loss`,
+      );
+      return;
+    }
+
+    // Hold-trap: position was profitable but has been consistently losing for 3+ ticks.
+    // Catches cases where the AI repeatedly HOLDs through a profit→loss transition.
+    // Only fires after 3+ ticks of sustained negative P&L from a previously profitable position.
+    if (this.peakPnlPct > 0 && pnlPctNow <= -3 && this.recentTickPnls.length >= 3) {
+      const last3 = this.recentTickPnls.slice(-3);
+      const allNegative = last3.every(p => p <= -2);
+      if (allNegative) {
+        await this._executeExit(
+          `HOLD_TRAP: position was profitable (peak=+${this.peakPnlPct.toFixed(1)}%)` +
+          ` but negative for 3 consecutive ticks — now=${pnlPctNow.toFixed(1)}%`,
+        );
+        return;
+      }
     }
 
     // Pre-emptive loss exit: exit at -10% before hard stop fires at ~-13%.
@@ -704,9 +770,13 @@ export class OrderAgent {
     }
 
     // ── 3. Periodic AI independent monitoring (adaptive frequency) ─────────
-    // Check every tick when price is declining (1+ ticks), every 2 ticks (1 min) normally.
-    // This ensures the AI can react quickly when a position deteriorates.
-    const shouldRunAI = this.consecutiveDeclines >= 1 || this.tickCount % AI_TICK_INTERVAL === 0;
+    // - Every tick when price is declining (1+ consecutive falls)
+    // - Every tick when pnl is negative and position was previously profitable (protect against hold trap)
+    // - Every 2 ticks (1 min) otherwise
+    const shouldRunAI =
+      this.consecutiveDeclines >= 1 ||
+      (this.peakPnlPct > 0 && pnlPctNow < 0) ||
+      this.tickCount % AI_TICK_INTERVAL === 0;
     if (shouldRunAI) {
       await this._runAIDecision(null, { currentPrice, stop, tp, qty, expiration });
     }
