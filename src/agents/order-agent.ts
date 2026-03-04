@@ -27,6 +27,7 @@ import { insertPosition, closePosition } from '../db/repositories/positions.js';
 import { insertOrder } from '../db/repositories/orders.js';
 import { insertEvaluation, getTickerEvaluations } from '../db/repositories/evaluations.js';
 import { insertAgentTick, getRecentAgentTicks } from '../db/repositories/order-agent-ticks.js';
+import { insertDispatch } from '../db/repositories/order-agent-dispatches.js';
 import { EvaluationAgent } from './evaluation-agent.js';
 import { notifyAlert, notifyOrderAgentDecision, notifyOrderAgentDispatch } from '../telegram/notifier.js';
 import { loadSkill } from '../utils/skill-loader.js';
@@ -87,6 +88,8 @@ export interface OrchestratorSuggestion {
   decisionType: 'EXIT' | 'REDUCE_EXPOSURE' | 'CONFIRM_HOLD' | 'WAIT' | 'ADD_POSITION' | 'REVERSE';
   reason: string;
   urgency: 'immediate' | 'standard' | 'low';
+  /** Orchestration confidence (0–1) — passed through so dispatch records prove low-confidence inputs reach agents */
+  confidence?: number;
 }
 
 /** AI recommendation from order-agent.md skill. */
@@ -323,6 +326,20 @@ export class OrderAgent {
     const ticker = this.cfg.decision.ticker;
     const symbol = this.cfg.candidate.contract.symbol;
 
+    // Persist every dispatch so the dashboard can prove all orchestrator decisions
+    // (including low-confidence WAIT/CONFIRM_HOLD) reach active order agents.
+    void insertDispatch({
+      positionId:           this.positionId,
+      ticker,
+      optionSymbol:         symbol,
+      orchestratorDecision: suggestion.decisionType,
+      confidence:           suggestion.confidence,
+      urgency:              suggestion.urgency,
+      reason:               suggestion.reason,
+    }).catch(err =>
+      console.warn(`[OrderAgent ${ticker}] Failed to persist dispatch:`, (err as Error).message),
+    );
+
     // CONFIRM_HOLD / WAIT — fall through to AI evaluation.
     // These are suggestions just like EXIT / REDUCE; the agent makes the final call.
     // (No special-case handling — _runAIDecision at the bottom covers them.)
@@ -335,9 +352,22 @@ export class OrderAgent {
       );
       if (suggestion.decisionType === 'EXIT' || suggestion.decisionType === 'REVERSE') {
         await this._executeExit(suggestion.reason);
+        // Persist the immediate-exit tick (bypasses _applyRecommendation)
+        void insertAgentTick({
+          positionId: this.positionId, tickCount: this.tickCount,
+          action: 'EXIT', reasoning: `IMMEDIATE: ${suggestion.reason}`,
+          pnlPct: 0, currentPrice: this.fillPrice ?? 0,
+          overridingOrchestrator: false, orchestratorSuggestion: suggestion.decisionType,
+        }).catch(() => {});
         return { action: 'EXIT', reasoning: suggestion.reason, overridingOrchestrator: false, optionSymbol: symbol };
       } else if (suggestion.decisionType === 'REDUCE_EXPOSURE') {
         await this._executeReduce(suggestion.reason);
+        void insertAgentTick({
+          positionId: this.positionId, tickCount: this.tickCount,
+          action: 'REDUCE', reasoning: `IMMEDIATE: ${suggestion.reason}`,
+          pnlPct: 0, currentPrice: this.fillPrice ?? 0,
+          overridingOrchestrator: false, orchestratorSuggestion: suggestion.decisionType,
+        }).catch(() => {});
         return { action: 'REDUCE', reasoning: suggestion.reason, overridingOrchestrator: false, optionSymbol: symbol };
       }
       // ADD_POSITION with immediate urgency — not actionable on existing position, fall through to AI

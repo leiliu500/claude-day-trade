@@ -14,6 +14,7 @@ const paging = {
   approvals:    { page: 1, limit: 50, total: 0 },
   interactions: { page: 1, limit: 50, total: 0 },
   analysis:     { page: 1, limit: 30, total: 0 },
+  dispatches:   { page: 1, limit: 100, total: 0 },
 };
 
 // ── Tab switching ──────────────────────────────────────────────────────────────
@@ -375,6 +376,28 @@ loaderMap['loadScheduler'] = loadScheduler;
 
 // ── Agent card renderers ───────────────────────────────────────────────────────
 
+function renderDispatchRows(dispatches) {
+  if (!dispatches || dispatches.length === 0) return '';
+  return `<div class="agent-ticks">
+    <div class="ticks-label">Orchestrator Dispatches (${dispatches.length})</div>
+    ${dispatches.map(d => {
+      const conf = d.confidence ? (parseFloat(d.confidence) * 100).toFixed(0) + '%' : '?%';
+      const confNum = d.confidence ? parseFloat(d.confidence) : 0;
+      const confCls = confNum >= 0.65 ? 'bullish' : confNum >= 0.45 ? 'neutral' : 'bearish';
+      const decCls = `decision-${d.orchestrator_decision}`;
+      const reason = (d.reason || '').slice(0, 80);
+      return `<div class="agent-tick">
+        <div>
+          <span class="${decCls}">${d.orchestrator_decision}</span>
+          <span class="tick-meta"> · conf <span class="${confCls}">${conf}</span> · ${d.urgency}</span>
+          <span class="tick-meta" style="float:right">${fmtTime(d.created_at)}</span>
+        </div>
+        ${reason ? `<div class="tick-reason">${reason}</div>` : ''}
+      </div>`;
+    }).join('')}
+  </div>`;
+}
+
 function renderTickRows(ticks, limit = 0) {
   if (!ticks || ticks.length === 0) return '';
   const displayed = limit > 0 ? ticks.slice(0, limit) : ticks;
@@ -539,6 +562,7 @@ function renderHistoryCard(p) {
         <span class="pos-id" title="${p.id}">…${posIdShort}</span>
       </div>
       ${p.entry_reasoning ? `<div class="agent-reasoning" title="${p.entry_reasoning}">${p.entry_reasoning.slice(0, 200)}</div>` : ''}
+      ${renderDispatchRows(p.dispatches)}
       ${renderTickRows(p.ticks)}
     </div>
   `;
@@ -575,6 +599,47 @@ async function loadAgents() {
       : histPositions.map(p => renderHistoryCard(p)).join('');
   }
 }
+
+async function loadDispatches() {
+  const s = paging.dispatches;
+  const data = await fetch(`${API}/api/dispatches?limit=${s.limit}&page=${s.page}`).then(r => r.json()).catch(() => ({ dispatches: [] }));
+  s.total = data.total ?? 0;
+
+  const countEl = document.getElementById('dispatches-count');
+  if (countEl) countEl.textContent = s.total > 0 ? `(${s.total} today)` : '';
+
+  const decisionCls = d => `decision-${d}`;
+  const confBadge = conf => {
+    if (!conf) return '—';
+    const n = parseFloat(conf);
+    const pct = (n * 100).toFixed(0) + '%';
+    const cls = n >= 0.65 ? 'bullish' : n >= 0.45 ? 'neutral' : 'bearish';
+    return `<span class="${cls}">${pct}</span>`;
+  };
+
+  const rows = (data.dispatches || []).map(d => {
+    const agentAction = d.agent_action
+      ? `<span class="tick-action tick-${d.agent_action}">${d.agent_action}${d.overriding_orchestrator ? ' <span class="tick-override">OVERRIDE</span>' : ''}</span>`
+      : '<span style="color:#8b949e">pending</span>';
+    const agentPnl = d.agent_pnl_pct != null ? ` ${parseFloat(d.agent_pnl_pct) >= 0 ? '+' : ''}${parseFloat(d.agent_pnl_pct).toFixed(1)}%` : '';
+    const reason = (d.reason || '').slice(0, 80);
+    return `<tr>
+      <td>${fmtTime(d.created_at)}</td>
+      <td><b>${d.ticker}</b></td>
+      <td><code>${d.option_symbol}</code></td>
+      <td><span class="${decisionCls(d.orchestrator_decision)}">${d.orchestrator_decision}</span></td>
+      <td>${confBadge(d.confidence)}</td>
+      <td>${d.urgency}</td>
+      <td>${agentAction}${agentPnl}</td>
+      <td>${d.overriding_orchestrator ? '<span class="tick-override">YES</span>' : '—'}</td>
+      <td style="max-width:220px;white-space:normal;font-size:0.78rem">${reason}</td>
+    </tr>`;
+  });
+
+  setRows('tbl-dispatches', rows);
+  renderPagination('dispatches', loadDispatches);
+}
+loaderMap['loadDispatches'] = loadDispatches;
 
 async function loadPnl() {
   const data = await fetch(`${API}/api/pnl/daily`).then(r => r.json()).catch(() => ({ daily: [] }));
@@ -1012,6 +1077,7 @@ function loadTab(tab) {
     case 'evaluations': loadEvaluations(); break;
     case 'orders':      loadOrders();      break;
     case 'agents':      loadAgents();      break;
+    case 'dispatches':  loadDispatches();  break;
     case 'scheduler':   loadScheduler();   break;
     case 'activity':    loadApprovals(); loadInteractions(); break;
     case 'alpaca':      loadAlpaca();      break;

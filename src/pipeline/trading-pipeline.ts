@@ -234,6 +234,7 @@ export async function runPipeline(
         const addOutcomes = await registry.notifyAddPosition(
           ticker,
           decision.reasoning.slice(0, 150),
+          decision.orchestrationConfidence,
         );
         if (addOutcomes.length) result.orderAgentOutcomes = addOutcomes;
 
@@ -270,6 +271,7 @@ export async function runPipeline(
         const confirmOutcomes = await registry.notifyConfirmHold(
           ticker,
           decision.reasoning.slice(0, 150),
+          decision.orchestrationConfidence,
         );
         if (confirmOutcomes.length) result.orderAgentOutcomes = confirmOutcomes;
         console.log(
@@ -286,6 +288,7 @@ export async function runPipeline(
           ticker,
           decision.reasoning.slice(0, 150),
           decision.urgency,
+          decision.orchestrationConfidence,
         );
         result.orderSubmitted = true;
         if (exitOutcomes.length) result.orderAgentOutcomes = exitOutcomes;
@@ -298,6 +301,7 @@ export async function runPipeline(
           ticker,
           decision.reasoning.slice(0, 150),
           decision.urgency,
+          decision.orchestrationConfidence,
         );
         result.orderSubmitted = true;
         if (reduceOutcomes.length) result.orderAgentOutcomes = reduceOutcomes;
@@ -315,6 +319,7 @@ export async function runPipeline(
           ticker,
           decision.reasoning.slice(0, 150),
           decision.urgency,
+          decision.orchestrationConfidence,
         );
         if (reverseOutcomes.length) result.orderAgentOutcomes = reverseOutcomes;
 
@@ -358,6 +363,7 @@ export async function runPipeline(
         const waitOutcomes = await registry.notifyWait(
           ticker,
           decision.reasoning.slice(0, 150),
+          decision.orchestrationConfidence,
         );
         if (waitOutcomes.length) result.orderAgentOutcomes = waitOutcomes;
         if (waitOutcomes.length) {

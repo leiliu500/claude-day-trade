@@ -57,7 +57,11 @@
       "Bash(curl -s -H \"APCA-API-KEY-ID: $KEY\" -H \"APCA-API-SECRET-KEY: $SECRET\" \"$BASE/v2/orders?status=open&limit=100\")",
       "Bash(curl -s http://localhost:3001/api/alpaca)",
       "Bash(python3 -c \":*)",
-      "Bash(curl -s -X POST http://localhost:3001/api/closeall -H 'Content-Type: application/json' -d '{}')"
+      "Bash(curl -s -X POST http://localhost:3001/api/closeall -H 'Content-Type: application/json' -d '{}')",
+      "Bash(docker exec day-trade-postgres psql -U trader -d trading -c \"\\\\d trading.order_agent_dispatches\")",
+      "Bash(docker exec day-trade-postgres psql -U trader -d trader -c \"\\\\d trading.order_agent_dispatches\")",
+      "Bash(docker exec day-trade-postgres psql -U postgres -c \"\\\\l\")",
+      "Bash(docker exec day-trade-postgres psql -U trader -d day_trade -c \"\\\\d trading.order_agent_dispatches\")"
     ],
     "additionalDirectories": [
       "/home/ec2-user/.claude/projects/-home-ec2-user-claude-day-trade"

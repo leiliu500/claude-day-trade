@@ -348,24 +348,40 @@ export function startDashboard(port: number): void {
       }
 
       const positionIds = positions.map(p => p.id);
-      const { rows: ticks } = await pool.query<{
-        position_id: string;
-        tick_count: number;
-        action: string;
-        pnl_pct: string | null;
-        current_price: string | null;
-        new_stop: string | null;
-        reasoning: string | null;
-        overriding_orchestrator: boolean;
-        orchestrator_suggestion: string | null;
-      }>(
-        `SELECT position_id, tick_count, action, pnl_pct::text, current_price::text,
-                new_stop::text, reasoning, overriding_orchestrator, orchestrator_suggestion
-           FROM trading.order_agent_ticks
-          WHERE position_id = ANY($1::uuid[])
-          ORDER BY position_id, tick_count DESC`,
-        [positionIds],
-      );
+      const [{ rows: ticks }, { rows: dispatches }] = await Promise.all([
+        pool.query<{
+          position_id: string;
+          tick_count: number;
+          action: string;
+          pnl_pct: string | null;
+          current_price: string | null;
+          new_stop: string | null;
+          reasoning: string | null;
+          overriding_orchestrator: boolean;
+          orchestrator_suggestion: string | null;
+        }>(
+          `SELECT position_id, tick_count, action, pnl_pct::text, current_price::text,
+                  new_stop::text, reasoning, overriding_orchestrator, orchestrator_suggestion
+             FROM trading.order_agent_ticks
+            WHERE position_id = ANY($1::uuid[])
+            ORDER BY position_id, tick_count DESC`,
+          [positionIds],
+        ),
+        pool.query<{
+          position_id: string;
+          orchestrator_decision: string;
+          confidence: string | null;
+          urgency: string;
+          reason: string | null;
+          created_at: string;
+        }>(
+          `SELECT position_id, orchestrator_decision, confidence::text, urgency, reason, created_at::text
+             FROM trading.order_agent_dispatches
+            WHERE position_id = ANY($1::uuid[])
+            ORDER BY position_id, created_at DESC`,
+          [positionIds],
+        ),
+      ]);
 
       const tickMap = new Map<string, typeof ticks>();
       for (const tick of ticks) {
@@ -373,8 +389,54 @@ export function startDashboard(port: number): void {
         tickMap.get(tick.position_id)!.push(tick);
       }
 
-      const enriched = positions.map(p => ({ ...p, ticks: tickMap.get(p.id) ?? [] }));
+      const dispatchMap = new Map<string, typeof dispatches>();
+      for (const d of dispatches) {
+        if (!dispatchMap.has(d.position_id)) dispatchMap.set(d.position_id, []);
+        dispatchMap.get(d.position_id)!.push(d);
+      }
+
+      const enriched = positions.map(p => ({
+        ...p,
+        ticks:      tickMap.get(p.id)      ?? [],
+        dispatches: dispatchMap.get(p.id)  ?? [],
+      }));
       res.json({ positions: enriched });
+    } catch (err) {
+      res.status(500).json({ error: (err as Error).message });
+    }
+  });
+
+  // Today's dispatches — proves orchestrator always reaches active agents (even low-confidence)
+  app.get('/api/dispatches', async (req, res) => {
+    try {
+      const pool = getPool();
+      const limit  = Math.min(parseInt(String(req.query['limit'] ?? '100')), 500);
+      const page   = Math.max(parseInt(String(req.query['page']  ?? '1')), 1);
+      const offset = (page - 1) * limit;
+      const [{ rows }, { rows: countRows }] = await Promise.all([
+        pool.query(
+          `SELECT d.id, d.position_id, d.ticker, d.option_symbol,
+                  d.orchestrator_decision, d.confidence::text, d.urgency,
+                  d.reason, d.created_at::text,
+                  oat.action AS agent_action, oat.pnl_pct::text AS agent_pnl_pct,
+                  oat.overriding_orchestrator, oat.reasoning AS agent_reasoning
+             FROM trading.order_agent_dispatches d
+             LEFT JOIN LATERAL (
+               SELECT action, pnl_pct, overriding_orchestrator, reasoning
+                 FROM trading.order_agent_ticks t
+                WHERE t.position_id = d.position_id
+                  AND t.created_at >= d.created_at
+                ORDER BY t.created_at ASC
+                LIMIT 1
+             ) oat ON true
+            WHERE d.created_at >= CURRENT_DATE
+            ORDER BY d.created_at DESC
+            LIMIT $1 OFFSET $2`,
+          [limit, offset],
+        ),
+        pool.query(`SELECT COUNT(*)::int AS total FROM trading.order_agent_dispatches WHERE created_at >= CURRENT_DATE`),
+      ]);
+      res.json({ dispatches: rows, total: countRows[0]?.total ?? 0, page, limit });
     } catch (err) {
       res.status(500).json({ error: (err as Error).message });
     }

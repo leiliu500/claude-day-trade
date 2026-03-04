@@ -52,6 +52,7 @@
       <button class="tab" data-tab="evaluations">Evaluations</button>
       <button class="tab" data-tab="orders">Orders</button>
       <button class="tab" data-tab="agents">Agent Team</button>
+      <button class="tab" data-tab="dispatches">Dispatches</button>
       <button class="tab" data-tab="analysis">Analysis</button>
       <button class="tab" data-tab="scheduler">Scheduler</button>
       <button class="tab" data-tab="activity">Human Activity</button>
@@ -165,6 +166,24 @@
         </div>
         <div id="agent-history-cards" class="agent-cards"></div>
       </div>
+    </section>
+
+    <section id="tab-dispatches" class="tab-content">
+      <div class="agents-section-header">
+        Today's Orchestrator → Agent Dispatches <small id="dispatches-count"></small>
+        <small style="float:right;color:#8b949e;font-weight:normal">Proves every decision (incl. low-confidence) reaches active agents</small>
+      </div>
+      <table id="tbl-dispatches">
+        <thead>
+          <tr>
+            <th>Time</th><th>Ticker</th><th>Symbol</th>
+            <th>Orchestrator Decision</th><th>Confidence</th><th>Urgency</th>
+            <th>Agent Response</th><th>Override?</th><th>Reason</th>
+          </tr>
+        </thead>
+        <tbody></tbody>
+      </table>
+      <div id="pagination-dispatches"></div>
     </section>
 
     <section id="tab-analysis" class="tab-content">
