@@ -204,7 +204,7 @@ export function startDashboard(port: number): void {
       const pool = getPool();
       const positionIds = agents.map(a => a.positionId).filter(Boolean);
 
-      const [{ rows: positions }, { rows: ticks }] = await Promise.all([
+      const [{ rows: positions }, { rows: ticks }, { rows: dispatches }] = await Promise.all([
         pool.query<{ id: string; current_stop: string | null; current_tp: string | null }>(
           `SELECT id, current_stop::text, current_tp::text
              FROM trading.position_journal
@@ -221,12 +221,28 @@ export function startDashboard(port: number): void {
           reasoning: string | null;
           overriding_orchestrator: boolean;
           orchestrator_suggestion: string | null;
+          created_at: string;
         }>(
           `SELECT position_id, tick_count, action, pnl_pct::text, current_price::text,
-                  new_stop::text, reasoning, overriding_orchestrator, orchestrator_suggestion
+                  new_stop::text, reasoning, overriding_orchestrator, orchestrator_suggestion,
+                  created_at::text
              FROM trading.order_agent_ticks
             WHERE position_id = ANY($1::uuid[])
             ORDER BY position_id, tick_count DESC`,
+          [positionIds],
+        ),
+        pool.query<{
+          position_id: string;
+          orchestrator_decision: string;
+          confidence: string | null;
+          urgency: string;
+          reason: string | null;
+          created_at: string;
+        }>(
+          `SELECT position_id, orchestrator_decision, confidence::text, urgency, reason, created_at::text
+             FROM trading.order_agent_dispatches
+            WHERE position_id = ANY($1::uuid[])
+            ORDER BY position_id, created_at DESC`,
           [positionIds],
         ),
       ]);
@@ -235,18 +251,24 @@ export function startDashboard(port: number): void {
         positions.map(p => [p.id, { currentStop: p.current_stop, currentTp: p.current_tp }]),
       );
 
-      // Keep the 3 most-recent ticks per position (already ordered DESC by tick_count)
+      // All ticks per position (already ordered DESC by tick_count)
       const tickMap = new Map<string, typeof ticks>();
       for (const tick of ticks) {
         if (!tickMap.has(tick.position_id)) tickMap.set(tick.position_id, []);
-        const arr = tickMap.get(tick.position_id)!;
-        if (arr.length < 3) arr.push(tick);
+        tickMap.get(tick.position_id)!.push(tick);
+      }
+
+      const dispatchMap = new Map<string, typeof dispatches>();
+      for (const d of dispatches) {
+        if (!dispatchMap.has(d.position_id)) dispatchMap.set(d.position_id, []);
+        dispatchMap.get(d.position_id)!.push(d);
       }
 
       const enriched = agents.map(a => ({
         ...a,
         ...(stopTpMap.get(a.positionId) ?? { currentStop: null, currentTp: null }),
         recentTicks: tickMap.get(a.positionId) ?? [],
+        dispatches:  dispatchMap.get(a.positionId) ?? [],
       }));
 
       res.json({ agents: enriched });

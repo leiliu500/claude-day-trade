@@ -482,7 +482,8 @@ function renderLiveAgentCard(a) {
         <span class="pos-id" title="${a.positionId}">…${posIdShort}</span>
       </div>
       <div class="agent-reasoning" title="${a.decisionReasoning || ''}">${(a.decisionReasoning || '—').slice(0, 200)}</div>
-      ${renderTickRows(a.recentTicks, 3)}
+      ${renderDispatchRows(a.dispatches)}
+      ${renderTickRows(a.recentTicks)}
     </div>
   `;
 }
