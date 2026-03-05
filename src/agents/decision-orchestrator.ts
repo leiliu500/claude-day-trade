@@ -83,6 +83,7 @@ export class DecisionOrchestrator {
       // Analysis
       confidence: analysis.confidence,
       confidence_breakdown: {
+        vwap_bonus: analysis.confidenceBreakdown.vwapBonus,
         price_position_adjustment: analysis.confidenceBreakdown.pricePositionAdjustment,
         price_half: signal.timeframes[2]?.priceStructure.priceHalf ?? signal.timeframes[0]?.priceStructure.priceHalf ?? 'lower',
         range_position: parseFloat((signal.timeframes[2]?.priceStructure.rangePosition ?? signal.timeframes[0]?.priceStructure.rangePosition ?? 0.5).toFixed(2)),
@@ -130,6 +131,7 @@ export class DecisionOrchestrator {
         obv_divergence: tf.obv.divergence,
         candle: tf.candlePattern,
         atr_pct: tf.atr.atrPct.toFixed(2),
+        price_vs_vwap: parseFloat(tf.vwap.priceVsVwap.toFixed(2)),
       })),
 
       // Position context

@@ -95,6 +95,15 @@ Each timeframe includes `atr_pct` (ATR as % of last close).
 - HTF atr_pct > 1.5% = elevated volatility — note in risk_notes
 - LTF atr_pct < 0.4% = compressed range — flag as potential breakout setup or insufficient momentum
 
+## VWAP Awareness
+Each timeframe includes `price_vs_vwap` (% distance of current price above/below VWAP; positive = above, negative = below).
+The `confidence_breakdown` includes `vwap_bonus` (−0.04 to +0.04) showing its net contribution to confidence.
+- For CALL setups: price above VWAP (price_vs_vwap > 0) on HTF and MTF is bullish confirmation; below VWAP is a headwind
+- For PUT setups: price below VWAP (price_vs_vwap < 0) on HTF and MTF is bearish confirmation; above VWAP is a headwind
+- vwap_bonus > 0.02: VWAP confirms signal direction — note as supporting evidence
+- vwap_bonus < −0.02: VWAP contradicts signal direction — add to risk_notes; treat as one additional reason for caution
+- VWAP alone does NOT override confidence or DMI-based decisions
+
 ## TD Countdown Awareness
 Each timeframe includes `td_countdown` (direction/count/completed) alongside `td_setup`.
 - td_countdown.completed = true in the signal direction → exhaustion signal; treat as increased risk for new entries in that direction; mention in risk_notes
