@@ -128,6 +128,7 @@ export interface OrderAgentOutcome {
 
 const TICK_INTERVAL_MS  = 30_000;
 const AI_TICK_INTERVAL  = 2;     // periodic AI check every N ticks (1 min)
+const FILL_TIMEOUT_MS   = 90_000; // cancel unfilled limit order after 90 s
 
 const openai            = new OpenAI({ apiKey: config.OPENAI_API_KEY });
 const ORDER_AGENT_SKILL = loadSkill('order-agent');
@@ -577,6 +578,24 @@ export class OrderAgent {
     // Already transitioned by the stream handler — nothing to do
     if (this.phase !== 'AWAITING_FILL') return;
     if (!this.alpacaOrderId) { this.phase = 'MONITORING'; return; }
+
+    // Cancel the limit order if it has been pending too long — prevents
+    // (1) blocking new entries and (2) a stale fill at a bad price.
+    const elapsedMs = Date.now() - new Date(this.openedAt).getTime();
+    if (elapsedMs > FILL_TIMEOUT_MS) {
+      const { decision, candidate } = this.cfg;
+      console.warn(
+        `[OrderAgent ${decision.ticker} ${candidate.contract.symbol}] ` +
+        `FILL_TIMEOUT — order unfilled after ${Math.round(elapsedMs / 1000)}s, cancelling`,
+      );
+      if (this.alpacaOrderId) AlpacaStreamManager.getInstance().unwatchOrder(this.alpacaOrderId);
+      await cancelOpenOrdersForSymbol(candidate.contract.symbol);
+      await this._voidPosition('fill_timeout');
+      this.phase = 'FAILED';
+      this._stopTick();
+      this._selfRemove();
+      return;
+    }
 
     const order = await getAlpacaOrder(this.alpacaOrderId);
     if (!order) return;
