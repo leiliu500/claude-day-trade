@@ -244,11 +244,13 @@ export class DecisionOrchestrator {
 
     // Stage 3 hard gate: AI is forbidden from blocking past confirmation_count >= 3,
     // UNLESS momentum indicators contradict the signal direction.
-    // Two blocking conditions:
-    //   1. OBV divergence on 2+ TFs — volume is not confirming the move
+    // Blocking conditions (any one suppresses the override):
+    //   1. OBV divergence on ANY TF — volume is not confirming the move (stricter than AI's 2+ rule)
     //   2. TD exhaustion on ANY TF — setup or countdown completion signals trend exhaustion
-    // Either condition suppresses the override.
+    //   3. Alignment is 'mixed' — no clear consensus across timeframes
+    //   4. HTF ADX < 20 — trend is too weak to justify a forced entry
     const STAGE3_MIN_CONFIDENCE = 0.72; // Higher bar than normal entry (0.65) — override needs conviction
+    const STAGE3_MIN_HTF_ADX = 20;      // Minimum HTF trend strength for a forced entry
 
     const adverseOBVCount = signal.timeframes.filter(tf => {
       if (signal.direction === 'bullish') return tf.obv.divergence === 'bearish';
@@ -269,14 +271,21 @@ export class DecisionOrchestrator {
       return false;
     }).length;
 
-    const stage3BlockedByOBV = adverseOBVCount >= 2;
+    // HTF is last element (timeframes ordered [LTF, MTF, HTF])
+    const htfTF = signal.timeframes[signal.timeframes.length - 1];
+
+    const stage3BlockedByOBV = adverseOBVCount >= 1;          // Any OBV divergence blocks forced override
     const stage3BlockedByTD = adverseTDCount >= 1;
     const stage3BlockedByConfidence = analysis.confidence < STAGE3_MIN_CONFIDENCE;
+    const stage3BlockedByMixedAlignment = signal.alignment === 'mixed'; // No TF consensus
+    const stage3BlockedByWeakHTF = htfTF !== undefined && htfTF.dmi.adx < STAGE3_MIN_HTF_ADX;
 
     if (
       rawOutput.decision_type === 'WAIT' &&
       rawOutput.confirmation_count >= 3 &&
       !stage3BlockedByConfidence &&
+      !stage3BlockedByMixedAlignment &&
+      !stage3BlockedByWeakHTF &&
       timeGateOk &&
       option.liquidityOk &&
       option.candidatePass &&
@@ -289,10 +298,12 @@ export class DecisionOrchestrator {
       rawOutput.decision_type = 'NEW_ENTRY';
       rawOutput.should_execute = true;
       if (rawOutput.urgency === 'low') rawOutput.urgency = 'standard';
-      rawOutput.reasoning = `[STAGE 3 OVERRIDE] confirmation_count=${rawOutput.confirmation_count} >= 3 with confidence=${analysis.confidence.toFixed(2)} — Stage 3 CONFIRMED_ENTRY enforced; OBV adverse TFs=${adverseOBVCount}/3, TD exhaustion TFs=${adverseTDCount}/3. ${rawOutput.reasoning}`;
+      rawOutput.reasoning = `[STAGE 3 OVERRIDE] confirmation_count=${rawOutput.confirmation_count} >= 3, confidence=${analysis.confidence.toFixed(2)}, alignment=${signal.alignment}, HTF ADX=${htfTF?.dmi.adx.toFixed(1)} — Stage 3 CONFIRMED_ENTRY enforced; OBV adverse TFs=${adverseOBVCount}/3, TD exhaustion TFs=${adverseTDCount}/3. ${rawOutput.reasoning}`;
     } else if (rawOutput.decision_type === 'WAIT' && rawOutput.confirmation_count >= 3) {
       const blockReasons: string[] = [];
       if (stage3BlockedByConfidence) blockReasons.push(`confidence ${analysis.confidence.toFixed(2)} < ${STAGE3_MIN_CONFIDENCE} (Stage 3 threshold)`);
+      if (stage3BlockedByMixedAlignment) blockReasons.push(`alignment=${signal.alignment} (need all_aligned or htf_mtf_aligned)`);
+      if (stage3BlockedByWeakHTF) blockReasons.push(`HTF ADX=${htfTF?.dmi.adx.toFixed(1)} < ${STAGE3_MIN_HTF_ADX} (trend too weak)`);
       if (stage3BlockedByOBV) blockReasons.push(`OBV divergence on ${adverseOBVCount}/3 TFs`);
       if (stage3BlockedByTD) blockReasons.push(`TD exhaustion on ${adverseTDCount}/3 TFs`);
       if (blockReasons.length > 0) {
