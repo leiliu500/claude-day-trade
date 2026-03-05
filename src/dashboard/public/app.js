@@ -921,15 +921,16 @@ function renderAnalysisCard(sig) {
   const cbHtml = cb.total != null ? `
     <div class="stats-section-label">Confidence Breakdown</div>
     <div class="conf-breakdown">
-      ${renderConfidenceBar('Base',        cb.base         ?? 0, 0.50, 'conf-bar-base')}
-      ${renderConfidenceBar('DI Spread',   cb.diSpreadBonus ?? 0, 0.25, 'conf-bar-bonus')}
-      ${renderConfidenceBar('ADX',         cb.adxBonus      ?? 0, 0.10, 'conf-bar-bonus')}
-      ${renderConfidenceBar('Alignment',   cb.alignmentBonus ?? 0, 0.10, 'conf-bar-bonus')}
-      ${renderConfidenceBar('TD Seq',       cb.tdAdjustment            ?? 0, 0.05, 'conf-bar-bonus')}
-      ${renderConfidenceBar('OBV',         cb.obvBonus                ?? 0, 0.03, 'conf-bar-bonus')}
-      ${renderConfidenceBar('VWAP',        cb.vwapBonus               ?? 0, 0.04, 'conf-bar-bonus')}
+      ${renderConfidenceBar('Base',        cb.base              ?? 0, 0.50, 'conf-bar-base')}
+      ${renderConfidenceBar('DI Spread',   cb.diSpreadBonus     ?? 0, 0.25, 'conf-bar-bonus')}
+      ${renderConfidenceBar('ADX',         cb.adxBonus          ?? 0, 0.10, 'conf-bar-bonus')}
+      ${renderConfidenceBar('DI Cross',    cb.diCrossBonus      ?? 0, 0.06, 'conf-bar-bonus')}
+      ${renderConfidenceBar('Alignment',   cb.alignmentBonus    ?? 0, 0.10, 'conf-bar-bonus')}
+      ${renderConfidenceBar('TD Seq',      cb.tdAdjustment      ?? 0, 0.05, 'conf-bar-bonus')}
+      ${renderConfidenceBar('OBV',         cb.obvBonus          ?? 0, 0.03, 'conf-bar-bonus')}
+      ${renderConfidenceBar('VWAP',        cb.vwapBonus         ?? 0, 0.08, 'conf-bar-bonus')}
       ${renderConfidenceBar('Price Pos',   cb.pricePositionAdjustment ?? 0, 0.10, 'conf-bar-bonus')}
-      ${renderConfidenceBar('OI/Volume',   cb.oiVolumeBonus           ?? 0, 0.05, 'conf-bar-bonus')}
+      ${renderConfidenceBar('OI/Volume',   cb.oiVolumeBonus     ?? 0, 0.05, 'conf-bar-bonus')}
       <div class="conf-total-row">
         <span>Total</span>
         <span class="${thresh ? 'bullish' : 'bearish'}" style="font-weight:700">${confPct}%${thresh ? ' ✅' : ' (below threshold)'}</span>
@@ -942,13 +943,14 @@ function renderAnalysisCard(sig) {
     <div class="stats-section-label">Timeframe Indicators</div>
     <table class="analysis-tf-table">
       <thead>
-        <tr><th>TF</th><th>DI+</th><th>DI-</th><th>ADX</th><th>Trend</th><th>TD Setup</th><th>Patterns</th></tr>
+        <tr><th>TF</th><th>DI+</th><th>DI-</th><th>ADX</th><th>Trend</th><th>DI Cross</th><th>VWAP Band</th><th>TD Setup</th><th>Patterns</th></tr>
       </thead>
       <tbody>
         ${tfs.map(tf => {
-          const dmi = tf.dmi || {};
-          const td  = tf.td?.setup || {};
-          const cp  = tf.allCandlePatterns || {};
+          const dmi  = tf.dmi || {};
+          const td   = tf.td?.setup || {};
+          const cp   = tf.allCandlePatterns || {};
+          const vwap = tf.vwap || {};
           const patterns = [
             cp.hammer?.present          ? 'Hammer' : null,
             cp.shootingStar?.present    ? 'ShootStar' : null,
@@ -959,12 +961,31 @@ function renderAnalysisCard(sig) {
           const tdStr = td.count != null
             ? `${td.direction === 'buy' ? '▲' : '▼'} ${td.count}${td.completed ? ' ✓' : ''}`
             : '—';
+          // DI cross indicator
+          const diCrossStr = dmi.crossedUp ? '<span class="bullish">▲ cross</span>'
+            : dmi.crossedDown ? '<span class="bearish">▼ cross</span>'
+            : '—';
+          // VWAP band position (computed from stored vwap fields)
+          let vwapBandStr = '—';
+          if (vwap.vwap && tf.currentPrice != null) {
+            const price = tf.currentPrice;
+            const upper = vwap.upperBand;
+            const lower = vwap.lowerBand;
+            const dev   = vwap.deviation;
+            if (price > upper)               vwapBandStr = '<span class="bearish">+2σ</span>';
+            else if (price > vwap.vwap + dev) vwapBandStr = '<span class="bearish">+1σ</span>';
+            else if (price < lower)           vwapBandStr = '<span class="bullish">−2σ</span>';
+            else if (price < vwap.vwap - dev) vwapBandStr = '<span class="bullish">−1σ</span>';
+            else                              vwapBandStr = 'near';
+          }
           return `<tr>
             <td><b>${tf.timeframe}</b></td>
             <td class="bullish">${dmi.plusDI != null ? dmi.plusDI.toFixed(1) : '—'}</td>
             <td class="bearish">${dmi.minusDI != null ? dmi.minusDI.toFixed(1) : '—'}</td>
             <td>${dmi.adx != null ? dmi.adx.toFixed(1) : '—'}</td>
             <td class="${trendCls}">${dmi.trend || '—'}</td>
+            <td style="font-size:0.75rem">${diCrossStr}</td>
+            <td style="font-size:0.75rem">${vwapBandStr}</td>
             <td>${tdStr}</td>
             <td style="font-size:0.75rem">${patterns}</td>
           </tr>`;
