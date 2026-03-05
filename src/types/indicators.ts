@@ -47,6 +47,14 @@ export type CandlePattern =
   | 'doji'
   | 'none';
 
+export interface VWAPResult {
+  vwap: number;        // cumulative VWAP since last day reset
+  upperBand: number;   // vwap + 2σ
+  lowerBand: number;   // vwap − 2σ
+  deviation: number;   // σ (volume-weighted standard deviation)
+  priceVsVwap: number; // (currentPrice − vwap) / vwap × 100 (%)
+}
+
 export interface PriceStructure {
   swingHigh: number;           // highest high in last N bars
   swingLow: number;            // lowest low in last N bars
@@ -73,6 +81,7 @@ export interface TimeframeIndicators {
   atr: ATRResult;
   obv: OBVResult;
   td: TDResult;
+  vwap: VWAPResult;
   candlePattern: CandlePattern;
   allCandlePatterns: AllCandlePatterns;  // all 4 patterns checked independently
   priceStructure: PriceStructure;
