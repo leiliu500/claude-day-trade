@@ -304,7 +304,10 @@ export async function runPipeline(
           decision.orchestrationConfidence,
           marketContext,
         );
-        result.orderSubmitted = true;
+        // Only mark submitted when at least one agent responded — empty outcomes
+        // means all agents were already CLOSED (position closed by the 30 s tick
+        // racing ahead of the pipeline), so nothing was actually dispatched.
+        result.orderSubmitted = exitOutcomes.length > 0;
         if (exitOutcomes.length) result.orderAgentOutcomes = exitOutcomes;
         break;
       }
@@ -318,7 +321,7 @@ export async function runPipeline(
           decision.orchestrationConfidence,
           marketContext,
         );
-        result.orderSubmitted = true;
+        result.orderSubmitted = reduceOutcomes.length > 0;
         if (reduceOutcomes.length) result.orderAgentOutcomes = reduceOutcomes;
         break;
       }

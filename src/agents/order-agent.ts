@@ -153,6 +153,12 @@ export class OrderAgent {
   private consecutiveDeclines: number = 0;
   /** Rolling buffer of last 5 pnlPctNow values — used to detect sustained-loss hold traps. */
   private recentTickPnls: number[] = [];
+  /**
+   * Mutex: true while an AI evaluation (_runAIDecision) is in-flight.
+   * Prevents concurrent calls from the 30 s tick and the orchestrator pipeline
+   * from both reaching _executeReduce / _executeExit simultaneously.
+   */
+  private isAIRunning = false;
 
   constructor(private readonly cfg: OrderAgentConfig | RestoredOrderAgentConfig) {
     if ('positionId' in cfg) {
@@ -816,6 +822,16 @@ export class OrderAgent {
     suggestion: OrchestratorSuggestion | null,
     state?: { currentPrice: number; stop: number | null; tp: number | null; qty: number; expiration: string | null },
   ): Promise<OrderAgentOutcome | null> {
+    // Mutex: prevent concurrent AI evaluations (e.g. 30 s tick + orchestrator pipeline firing simultaneously).
+    // Without this, two calls can both reach _executeReduce before either changes the phase,
+    // causing duplicate reduce orders to be submitted to Alpaca.
+    if (this.isAIRunning) {
+      console.log(`[OrderAgent ${this.cfg.decision.ticker}] AI already running — skipping concurrent call`);
+      return null;
+    }
+    this.isAIRunning = true;
+
+    try {
     // If called from processOrchestratorDecision, fetch live state ourselves
     let s = state;
     if (!s) {
@@ -974,6 +990,9 @@ export class OrderAgent {
         (err as Error).message,
       );
       return null;
+    }
+    } finally {
+      this.isAIRunning = false;
     }
   }
 
