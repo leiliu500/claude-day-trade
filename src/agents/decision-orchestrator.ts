@@ -243,37 +243,61 @@ export class DecisionOrchestrator {
     }
 
     // Stage 3 hard gate: AI is forbidden from blocking past confirmation_count >= 3,
-    // UNLESS multi-timeframe OBV divergence contradicts the signal direction.
-    // OBV divergence on 2+ timeframes is a genuine momentum warning that overrides the
-    // confirmation count — the market is not confirming the move with volume.
+    // UNLESS momentum indicators contradict the signal direction.
+    // Two blocking conditions:
+    //   1. OBV divergence on 2+ TFs — volume is not confirming the move
+    //   2. TD exhaustion on ANY TF — setup or countdown completion signals trend exhaustion
+    // Either condition suppresses the override.
+    const STAGE3_MIN_CONFIDENCE = 0.72; // Higher bar than normal entry (0.65) — override needs conviction
+
     const adverseOBVCount = signal.timeframes.filter(tf => {
       if (signal.direction === 'bullish') return tf.obv.divergence === 'bearish';
       if (signal.direction === 'bearish') return tf.obv.divergence === 'bullish';
       return false;
     }).length;
 
+    // TD exhaustion: a completed setup or countdown in the opposing direction signals trend exhaustion
+    const adverseTDCount = signal.timeframes.filter(tf => {
+      if (signal.direction === 'bullish') {
+        return (tf.td.setup.completed && tf.td.setup.direction === 'sell') ||
+               (tf.td.countdown.completed && tf.td.countdown.direction === 'sell');
+      }
+      if (signal.direction === 'bearish') {
+        return (tf.td.setup.completed && tf.td.setup.direction === 'buy') ||
+               (tf.td.countdown.completed && tf.td.countdown.direction === 'buy');
+      }
+      return false;
+    }).length;
+
+    const stage3BlockedByOBV = adverseOBVCount >= 2;
+    const stage3BlockedByTD = adverseTDCount >= 1;
+    const stage3BlockedByConfidence = analysis.confidence < STAGE3_MIN_CONFIDENCE;
+
     if (
       rawOutput.decision_type === 'WAIT' &&
       rawOutput.confirmation_count >= 3 &&
-      analysis.confidence >= config.MIN_CONFIDENCE &&
+      !stage3BlockedByConfidence &&
       timeGateOk &&
       option.liquidityOk &&
       option.candidatePass &&
       context.openPositions.length === 0 &&
       !isEodWindow &&
       !isFomcWindow &&
-      adverseOBVCount < 2 // Block override when 2+ TFs show OBV divergence against signal
+      !stage3BlockedByOBV &&
+      !stage3BlockedByTD
     ) {
       rawOutput.decision_type = 'NEW_ENTRY';
       rawOutput.should_execute = true;
       if (rawOutput.urgency === 'low') rawOutput.urgency = 'standard';
-      rawOutput.reasoning = `[STAGE 3 OVERRIDE] confirmation_count=${rawOutput.confirmation_count} >= 3 with confidence=${analysis.confidence.toFixed(2)} — Stage 3 CONFIRMED_ENTRY enforced; OBV adverse TFs=${adverseOBVCount}/3 (override blocked at ≥2). ${rawOutput.reasoning}`;
-    } else if (
-      rawOutput.decision_type === 'WAIT' &&
-      rawOutput.confirmation_count >= 3 &&
-      adverseOBVCount >= 2
-    ) {
-      rawOutput.reasoning = `[STAGE 3 BLOCKED] confirmation_count=${rawOutput.confirmation_count} >= 3 but OBV divergence detected on ${adverseOBVCount}/3 timeframes against ${signal.direction} signal — Stage 3 override suppressed. ${rawOutput.reasoning}`;
+      rawOutput.reasoning = `[STAGE 3 OVERRIDE] confirmation_count=${rawOutput.confirmation_count} >= 3 with confidence=${analysis.confidence.toFixed(2)} — Stage 3 CONFIRMED_ENTRY enforced; OBV adverse TFs=${adverseOBVCount}/3, TD exhaustion TFs=${adverseTDCount}/3. ${rawOutput.reasoning}`;
+    } else if (rawOutput.decision_type === 'WAIT' && rawOutput.confirmation_count >= 3) {
+      const blockReasons: string[] = [];
+      if (stage3BlockedByConfidence) blockReasons.push(`confidence ${analysis.confidence.toFixed(2)} < ${STAGE3_MIN_CONFIDENCE} (Stage 3 threshold)`);
+      if (stage3BlockedByOBV) blockReasons.push(`OBV divergence on ${adverseOBVCount}/3 TFs`);
+      if (stage3BlockedByTD) blockReasons.push(`TD exhaustion on ${adverseTDCount}/3 TFs`);
+      if (blockReasons.length > 0) {
+        rawOutput.reasoning = `[STAGE 3 BLOCKED] confirmation_count=${rawOutput.confirmation_count} >= 3 but blocked by: ${blockReasons.join('; ')}. ${rawOutput.reasoning}`;
+      }
     }
 
     return {
