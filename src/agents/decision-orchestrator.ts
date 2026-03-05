@@ -83,6 +83,7 @@ export class DecisionOrchestrator {
       // Analysis
       confidence: analysis.confidence,
       confidence_breakdown: {
+        di_cross_bonus: analysis.confidenceBreakdown.diCrossBonus,
         vwap_bonus: analysis.confidenceBreakdown.vwapBonus,
         price_position_adjustment: analysis.confidenceBreakdown.pricePositionAdjustment,
         price_half: signal.timeframes[2]?.priceStructure.priceHalf ?? signal.timeframes[0]?.priceStructure.priceHalf ?? 'lower',
@@ -119,20 +120,35 @@ export class DecisionOrchestrator {
         : null,
 
       // TF indicators summary
-      timeframes: signal.timeframes.map(tf => ({
-        tf: tf.timeframe,
-        trend: tf.dmi.trend,
-        adx: tf.dmi.adx.toFixed(1),
-        di_plus: tf.dmi.plusDI.toFixed(1),
-        di_minus: tf.dmi.minusDI.toFixed(1),
-        td_setup: tf.td.setup,
-        td_countdown: tf.td.countdown,
-        obv_trend: tf.obv.trend,
-        obv_divergence: tf.obv.divergence,
-        candle: tf.candlePattern,
-        atr_pct: tf.atr.atrPct.toFixed(2),
-        price_vs_vwap: parseFloat(tf.vwap.priceVsVwap.toFixed(2)),
-      })),
+      timeframes: signal.timeframes.map(tf => {
+        const { vwap: tfVwap, upperBand: tfUpper, lowerBand: tfLower, deviation: tfDev } = tf.vwap;
+        const tfPrice = tf.currentPrice;
+        const vwapBandPosition =
+          tfPrice > tfUpper          ? 'above_2sigma' :
+          tfPrice > tfVwap + tfDev   ? 'above_1sigma' :
+          tfPrice < tfLower          ? 'below_2sigma' :
+          tfPrice < tfVwap - tfDev   ? 'below_1sigma' : 'near_vwap';
+        const diCross =
+          tf.dmi.crossedUp   ? 'bullish' :
+          tf.dmi.crossedDown ? 'bearish' : 'none';
+        return {
+          tf: tf.timeframe,
+          trend: tf.dmi.trend,
+          adx: tf.dmi.adx.toFixed(1),
+          adx_strength: tf.dmi.adxStrength,
+          di_plus: tf.dmi.plusDI.toFixed(1),
+          di_minus: tf.dmi.minusDI.toFixed(1),
+          di_cross: diCross,
+          td_setup: tf.td.setup,
+          td_countdown: tf.td.countdown,
+          obv_trend: tf.obv.trend,
+          obv_divergence: tf.obv.divergence,
+          candle: tf.candlePattern,
+          atr_pct: tf.atr.atrPct.toFixed(2),
+          price_vs_vwap: parseFloat(tf.vwap.priceVsVwap.toFixed(2)),
+          vwap_band_position: vwapBandPosition,
+        };
+      }),
 
       // Position context
       open_positions: context.openPositions,
@@ -249,6 +265,7 @@ export class DecisionOrchestrator {
     //   2. TD exhaustion on ANY TF — setup or countdown completion signals trend exhaustion
     //   3. Alignment is 'mixed' — no clear consensus across timeframes
     //   4. HTF ADX < 20 — trend is too weak to justify a forced entry
+    //   5. HTF DI crossed adverse on last bar — momentum just flipped against the signal
     const STAGE3_MIN_CONFIDENCE = 0.72; // Higher bar than normal entry (0.65) — override needs conviction
     const STAGE3_MIN_HTF_ADX = 20;      // Minimum HTF trend strength for a forced entry
 
@@ -274,11 +291,18 @@ export class DecisionOrchestrator {
     // HTF is last element (timeframes ordered [LTF, MTF, HTF])
     const htfTF = signal.timeframes[signal.timeframes.length - 1];
 
+    // Adverse HTF DI cross: DI just crossed opposite to signal direction on the last bar
+    const htfAdverseCross = htfTF !== undefined && (
+      (signal.direction === 'bullish' && htfTF.dmi.crossedDown) ||
+      (signal.direction === 'bearish' && htfTF.dmi.crossedUp)
+    );
+
     const stage3BlockedByOBV = adverseOBVCount >= 1;          // Any OBV divergence blocks forced override
     const stage3BlockedByTD = adverseTDCount >= 1;
     const stage3BlockedByConfidence = analysis.confidence < STAGE3_MIN_CONFIDENCE;
     const stage3BlockedByMixedAlignment = signal.alignment === 'mixed'; // No TF consensus
     const stage3BlockedByWeakHTF = htfTF !== undefined && htfTF.dmi.adx < STAGE3_MIN_HTF_ADX;
+    const stage3BlockedByAdverseDICross = htfAdverseCross;     // Fresh cross against signal direction
 
     if (
       rawOutput.decision_type === 'WAIT' &&
@@ -286,6 +310,7 @@ export class DecisionOrchestrator {
       !stage3BlockedByConfidence &&
       !stage3BlockedByMixedAlignment &&
       !stage3BlockedByWeakHTF &&
+      !stage3BlockedByAdverseDICross &&
       timeGateOk &&
       option.liquidityOk &&
       option.candidatePass &&
@@ -304,6 +329,7 @@ export class DecisionOrchestrator {
       if (stage3BlockedByConfidence) blockReasons.push(`confidence ${analysis.confidence.toFixed(2)} < ${STAGE3_MIN_CONFIDENCE} (Stage 3 threshold)`);
       if (stage3BlockedByMixedAlignment) blockReasons.push(`alignment=${signal.alignment} (need all_aligned or htf_mtf_aligned)`);
       if (stage3BlockedByWeakHTF) blockReasons.push(`HTF ADX=${htfTF?.dmi.adx.toFixed(1)} < ${STAGE3_MIN_HTF_ADX} (trend too weak)`);
+      if (stage3BlockedByAdverseDICross) blockReasons.push(`HTF DI crossed ${signal.direction === 'bullish' ? 'bearish' : 'bullish'} on last bar (momentum flipped)`);
       if (stage3BlockedByOBV) blockReasons.push(`OBV divergence on ${adverseOBVCount}/3 TFs`);
       if (stage3BlockedByTD) blockReasons.push(`TD exhaustion on ${adverseTDCount}/3 TFs`);
       if (blockReasons.length > 0) {

@@ -2,10 +2,11 @@ export interface ConfidenceBreakdown {
   base: number;                    // 0.40-0.45 starting point
   diSpreadBonus: number;           // 0..0.25
   adxBonus: number;                // 0 or +0.05
+  diCrossBonus: number;            // -0.06..+0.06 — fresh DI crossover timing signal (HTF ±0.05, MTF ±0.03)
   alignmentBonus: number;          // 0, +0.02, +0.05, or +0.10
   tdAdjustment: number;            // -0.05..+0.03
   obvBonus: number;                // -0.03..+0.03 — OBV trend confirmation or divergence penalty
-  vwapBonus: number;               // -0.04..+0.04 — VWAP alignment confirmation (HTF+MTF)
+  vwapBonus: number;               // -0.08..+0.06 — VWAP alignment + band extension penalty (HTF+MTF)
   oiVolumeBonus: number;           // 0..0.05 — triggered when option volume is extremely high
   pricePositionAdjustment: number; // -0.10..0 — penalty for trading against range position
   total: number;                   // clamped 0..1

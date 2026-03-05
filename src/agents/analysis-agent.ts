@@ -15,7 +15,7 @@ function computeConfidence(signal: SignalPayload, option: OptionEvaluation): Con
   const tfs = signal.timeframes;
   const [ltf, mtf, htf] = tfs;
   if (!ltf || !mtf || !htf) {
-    return { base: 0.40, diSpreadBonus: 0, adxBonus: 0, alignmentBonus: 0, tdAdjustment: 0, obvBonus: 0, vwapBonus: 0, oiVolumeBonus: 0, pricePositionAdjustment: 0, total: 0.40 };
+    return { base: 0.40, diSpreadBonus: 0, adxBonus: 0, diCrossBonus: 0, alignmentBonus: 0, tdAdjustment: 0, obvBonus: 0, vwapBonus: 0, oiVolumeBonus: 0, pricePositionAdjustment: 0, total: 0.40 };
   }
 
   // Base: slight bullish bias
@@ -27,6 +27,23 @@ function computeConfidence(signal: SignalPayload, option: OptionEvaluation): Con
 
   // ADX bonus: HTF ADX > 25
   const adxBonus = htf.dmi.adx > 25 ? 0.05 : 0;
+
+  // DI cross bonus — fresh DI crossover on the most recent bar is a strong timing signal.
+  // HTF aligned cross: +0.05 | MTF aligned cross: +0.03  (cap +0.06 combined)
+  // HTF adverse cross: -0.05 | MTF adverse cross: -0.03  (cap -0.06 combined)
+  // Adverse cross means momentum just flipped opposite to signal direction.
+  let diCrossBonus = 0;
+  if (signal.direction !== 'neutral') {
+    const htfAligned = signal.direction === 'bullish' ? htf.dmi.crossedUp : htf.dmi.crossedDown;
+    const htfAdverse = signal.direction === 'bullish' ? htf.dmi.crossedDown : htf.dmi.crossedUp;
+    const mtfAligned = signal.direction === 'bullish' ? mtf.dmi.crossedUp : mtf.dmi.crossedDown;
+    const mtfAdverse = signal.direction === 'bullish' ? mtf.dmi.crossedDown : mtf.dmi.crossedUp;
+    if (htfAligned) diCrossBonus += 0.05;
+    if (mtfAligned) diCrossBonus += 0.03;
+    if (htfAdverse) diCrossBonus -= 0.05;
+    if (mtfAdverse) diCrossBonus -= 0.03;
+    diCrossBonus = Math.max(-0.06, Math.min(0.06, diCrossBonus));
+  }
 
   // Alignment bonus
   const alignmentBonusMap: Record<string, number> = {
@@ -69,10 +86,13 @@ function computeConfidence(signal: SignalPayload, option: OptionEvaluation): Con
     obvBonus = Math.max(-0.03, Math.min(0.03, obvBonus));
   }
 
-  // VWAP bonus — HTF and MTF only; confirms price side relative to VWAP.
-  // +0.02 per TF where priceVsVwap confirms signal direction (above VWAP for bullish, below for bearish)
-  // -0.02 per TF where price is significantly on the wrong side (|deviation| > 0.2%)
-  // Clamped -0.04..+0.04
+  // VWAP bonus — HTF and MTF direction alignment + HTF band extension penalty.
+  // Direction alignment (HTF + MTF): +0.02 per TF where price is on the correct VWAP side;
+  //   -0.02 per TF where price is significantly on the wrong side (|priceVsVwap| > 0.2%)
+  // Band extension penalty (HTF only — most reliable anchor):
+  //   Price beyond 2σ band in entry direction → -0.06 (overextended, mean-reversion risk)
+  //   Price beyond 1σ band in entry direction → -0.02 (somewhat extended)
+  // Clamped -0.08..+0.06
   let vwapBonus = 0;
   if (signal.direction !== 'neutral') {
     for (const tf of [htf, mtf]) {
@@ -85,7 +105,18 @@ function computeConfidence(signal: SignalPayload, option: OptionEvaluation): Con
         else if (pvv > 0.2) vwapBonus -= 0.02;
       }
     }
-    vwapBonus = Math.max(-0.04, Math.min(0.04, vwapBonus));
+    // Band extension check on HTF — entering when price is already beyond a VWAP band
+    // risks catching a mean-reversion move rather than a trend continuation.
+    const { vwap: htfVwap, upperBand: htfUpper, lowerBand: htfLower, deviation: htfDev } = htf.vwap;
+    const htfPrice = htf.currentPrice;
+    if (signal.direction === 'bullish') {
+      if (htfPrice > htfUpper)                 vwapBonus -= 0.06; // beyond 2σ — very overextended
+      else if (htfPrice > htfVwap + htfDev)    vwapBonus -= 0.02; // beyond 1σ — somewhat extended
+    } else {
+      if (htfPrice < htfLower)                 vwapBonus -= 0.06; // beyond 2σ below VWAP
+      else if (htfPrice < htfVwap - htfDev)    vwapBonus -= 0.02; // beyond 1σ below VWAP
+    }
+    vwapBonus = Math.max(-0.08, Math.min(0.06, vwapBonus));
   }
 
   // OI/Volume bonus — triggered only when option volume is extremely high.
@@ -128,9 +159,9 @@ function computeConfidence(signal: SignalPayload, option: OptionEvaluation): Con
     pricePositionAdjustment = Math.max(-0.10, -(htfRangePosition - 0.5) * 0.20);
   }
 
-  const total = Math.max(0, Math.min(1, base + diSpreadBonus + adxBonus + alignmentBonus + tdAdjustment + obvBonus + vwapBonus + oiVolumeBonus + pricePositionAdjustment));
+  const total = Math.max(0, Math.min(1, base + diSpreadBonus + adxBonus + diCrossBonus + alignmentBonus + tdAdjustment + obvBonus + vwapBonus + oiVolumeBonus + pricePositionAdjustment));
 
-  return { base, diSpreadBonus, adxBonus, alignmentBonus, tdAdjustment, obvBonus, vwapBonus, oiVolumeBonus, pricePositionAdjustment, total };
+  return { base, diSpreadBonus, adxBonus, diCrossBonus, alignmentBonus, tdAdjustment, obvBonus, vwapBonus, oiVolumeBonus, pricePositionAdjustment, total };
 }
 
 /**
@@ -171,16 +202,30 @@ async function generateExplanation(
         ? 'Price in lower half of range — puts preferred, calls are higher risk'
         : 'Price in upper half of range — calls preferred, puts are higher risk',
     },
-    timeframes: tfs.map(tf => ({
+    timeframes: tfs.map(tf => {
+      const { vwap: tfVwap, upperBand: tfUpper, lowerBand: tfLower, deviation: tfDev } = tf.vwap;
+      const tfPrice = tf.currentPrice;
+      const vwapBandPosition =
+        tfPrice > tfUpper             ? 'above_2sigma' :
+        tfPrice > tfVwap + tfDev      ? 'above_1sigma' :
+        tfPrice < tfLower             ? 'below_2sigma' :
+        tfPrice < tfVwap - tfDev      ? 'below_1sigma' : 'near_vwap';
+      const diCross =
+        tf.dmi.crossedUp   ? 'bullish' :
+        tf.dmi.crossedDown ? 'bearish' : 'none';
+      return {
       tf: tf.timeframe,
       diPlus: tf.dmi.plusDI.toFixed(1),
       diMinus: tf.dmi.minusDI.toFixed(1),
       adx: tf.dmi.adx.toFixed(1),
+      adxStrength: tf.dmi.adxStrength,
       trend: tf.dmi.trend,
+      di_cross: diCross,
       obv_trend: tf.obv.trend,
       obv_divergence: tf.obv.divergence,
       td_setup: tf.td.setup,
       td_countdown: tf.td.countdown,
+      vwap_band_position: vwapBandPosition,
       // Individual pattern flags for explicit formatting rules
       hammer: {
         present: tf.allCandlePatterns.hammer.present,
@@ -198,7 +243,8 @@ async function generateExplanation(
         present: tf.allCandlePatterns.bearishEngulfing.present,
         type: tf.allCandlePatterns.bearishEngulfing.present ? 'bearish_engulfing' : null,
       },
-    })),
+      };
+    }),
     option: option.winnerCandidate
       ? {
           side: option.winnerCandidate.contract.side,
