@@ -778,8 +778,26 @@ export class OrderAgent {
       );
       return;
     }
+    // Small-peak fully eroded: peak 5%+ but all gains are gone (pnl ≤ +1%).
+    // Fires before the position goes negative — earlier than PEAK_REVERSAL_SMALL.
+    // Catches the "held through peak back to zero" pattern deterministically.
+    if (this.peakPnlPct >= 5 && pnlPctNow <= 1.0) {
+      await this._executeExit(
+        `PEAK_GAINS_GONE: peak=+${this.peakPnlPct.toFixed(1)}%, now=${pnlPctNow >= 0 ? '+' : ''}${pnlPctNow.toFixed(1)}% — all gains surrendered`,
+      );
+      return;
+    }
+    // Profit-to-loss reversal: any position that peaked at 3%+ is now showing a loss.
+    // Removes AI discretion from a situation the AI repeatedly fails to handle correctly.
+    if (this.peakPnlPct >= 3 && pnlPctNow < 0) {
+      await this._executeExit(
+        `PROFIT_REVERSED: peak=+${this.peakPnlPct.toFixed(1)}%, now=${pnlPctNow.toFixed(1)}% — profitable position turned to loss`,
+      );
+      return;
+    }
     // Small-peak reversal: any 5%+ profit peak that fully reverses into a loss.
     // The trailing stop catches these eventually (~-7%), but this fires earlier at -5%.
+    // Now mostly superseded by PEAK_GAINS_GONE above, kept as a safety net.
     if (this.peakPnlPct >= 5 && pnlPctNow <= -5) {
       await this._executeExit(
         `PEAK_REVERSAL_SMALL: peak=+${this.peakPnlPct.toFixed(1)}%, now=${pnlPctNow.toFixed(1)}% — profit reversed to loss`,

@@ -87,7 +87,9 @@ The system fires these exits deterministically (no AI needed) before your evalua
 - **Peak erosion**: peak ≥ +20% AND current P&L ≤ +10% → auto EXIT
 - **Peak gone**: peak ≥ +12% AND current P&L ≤ +4% → auto EXIT
 - **Peak reversal**: peak ≥ +10% AND current P&L ≤ -3% → auto EXIT
-- **Small-peak reversal**: peak ≥ +5% AND current P&L ≤ -5% → auto EXIT
+- **Small-peak gains gone**: peak ≥ +5% AND current P&L ≤ +1% → auto EXIT (all gains surrendered)
+- **Profit reversed**: peak ≥ +3% AND current P&L < 0% → auto EXIT (profitable position turned to loss)
+- **Small-peak reversal**: peak ≥ +5% AND current P&L ≤ -5% → auto EXIT (now mostly superseded by above)
 - **Hold trap**: position was profitable (peak > 0%), last 3 ticks all showed P&L ≤ -2% → auto EXIT
 - **Pre-emptive loss**: P&L ≤ -10% AND held ≥ 3 min → auto EXIT
 
