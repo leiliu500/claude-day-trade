@@ -65,6 +65,29 @@ function computeEodWindow(): { isEodWindow: boolean; minutesToClose: number } {
   };
 }
 
+/**
+ * Server-side confirmation counter — counts consecutive same-direction decisions
+ * from recentDecisions (newest-first) where confidence >= MIN_CONFIDENCE.
+ * Returns 0 if no prior same-direction decisions found.
+ * The current cycle is NOT included (caller adds +1).
+ */
+function computeServerConfirmationCount(
+  recentDecisions: PositionContext['recentDecisions'],
+  direction: string,
+): number {
+  let count = 0;
+  for (const d of recentDecisions) {
+    // Only count decisions that are part of the same directional conviction run.
+    // Break on any non-actionable type (EXIT, REDUCE_EXPOSURE, REVERSE) or direction change.
+    const isActionable = d.decisionType === 'WAIT' || d.decisionType === 'NEW_ENTRY' ||
+                         d.decisionType === 'CONFIRM_HOLD' || d.decisionType === 'ADD_POSITION';
+    if (!isActionable) break;
+    if (d.direction !== direction) break;
+    count++;
+  }
+  return count;
+}
+
 export class DecisionOrchestrator {
   async run(input: OrchestratorInput): Promise<DecisionResult> {
     const { signal, option, analysis, context, timeGateOk } = input;
@@ -210,6 +233,14 @@ export class DecisionOrchestrator {
       console.error('[DecisionOrchestrator] OpenAI error:', err);
     }
 
+    // Server-side confirmation count — count consecutive same-direction decisions from DB.
+    // Use the max of AI-reported count and server count to guard against AI count drift/reset.
+    const serverCount = computeServerConfirmationCount(context.recentDecisions, signal.direction ?? '') + 1;
+    if (serverCount > rawOutput.confirmation_count) {
+      console.log(`[DecisionOrchestrator] Server count (${serverCount}) > AI count (${rawOutput.confirmation_count}) — using server count`);
+      rawOutput.confirmation_count = serverCount;
+    }
+
     // Hard gate: EXIT/REDUCE/REVERSE are meaningless without an open position — override to WAIT
     const isPositionDecision = rawOutput.decision_type === 'EXIT' || rawOutput.decision_type === 'REDUCE_EXPOSURE' || rawOutput.decision_type === 'REVERSE';
     if (isPositionDecision && context.openPositions.length === 0) {
@@ -261,12 +292,12 @@ export class DecisionOrchestrator {
     // Stage 3 hard gate: AI is forbidden from blocking past confirmation_count >= 3,
     // UNLESS momentum indicators contradict the signal direction.
     // Blocking conditions (any one suppresses the override):
-    //   1. OBV divergence on ANY TF — volume is not confirming the move (stricter than AI's 2+ rule)
+    //   1. OBV divergence on 2+ TFs — multi-TF volume failure (1-TF divergence only raises AI threshold by +1)
     //   2. TD exhaustion on ANY TF — setup or countdown completion signals trend exhaustion
     //   3. Alignment is 'mixed' — no clear consensus across timeframes
     //   4. HTF ADX < 20 — trend is too weak to justify a forced entry
     //   5. HTF DI crossed adverse on last bar — momentum just flipped against the signal
-    const STAGE3_MIN_CONFIDENCE = 0.72; // Higher bar than normal entry (0.65) — override needs conviction
+    const STAGE3_MIN_CONFIDENCE = config.MIN_CONFIDENCE; // Same as entry threshold — 3 confirmations IS the conviction
     const STAGE3_MIN_HTF_ADX = 20;      // Minimum HTF trend strength for a forced entry
 
     const adverseOBVCount = signal.timeframes.filter(tf => {
@@ -297,7 +328,7 @@ export class DecisionOrchestrator {
       (signal.direction === 'bearish' && htfTF.dmi.crossedUp)
     );
 
-    const stage3BlockedByOBV = adverseOBVCount >= 1;          // Any OBV divergence blocks forced override
+    const stage3BlockedByOBV = adverseOBVCount >= 2;          // 2+ TF OBV divergence blocks override (matches AI prompt: 1 TF only raises threshold)
     const stage3BlockedByTD = adverseTDCount >= 1;
     const stage3BlockedByConfidence = analysis.confidence < STAGE3_MIN_CONFIDENCE;
     const stage3BlockedByMixedAlignment = signal.alignment === 'mixed'; // No TF consensus
@@ -330,7 +361,7 @@ export class DecisionOrchestrator {
       if (stage3BlockedByMixedAlignment) blockReasons.push(`alignment=${signal.alignment} (need all_aligned or htf_mtf_aligned)`);
       if (stage3BlockedByWeakHTF) blockReasons.push(`HTF ADX=${htfTF?.dmi.adx.toFixed(1)} < ${STAGE3_MIN_HTF_ADX} (trend too weak)`);
       if (stage3BlockedByAdverseDICross) blockReasons.push(`HTF DI crossed ${signal.direction === 'bullish' ? 'bearish' : 'bullish'} on last bar (momentum flipped)`);
-      if (stage3BlockedByOBV) blockReasons.push(`OBV divergence on ${adverseOBVCount}/3 TFs`);
+      if (stage3BlockedByOBV) blockReasons.push(`multi-TF OBV divergence on ${adverseOBVCount}/3 TFs (need < 2)`);
       if (stage3BlockedByTD) blockReasons.push(`TD exhaustion on ${adverseTDCount}/3 TFs`);
       if (blockReasons.length > 0) {
         rawOutput.reasoning = `[STAGE 3 BLOCKED] confirmation_count=${rawOutput.confirmation_count} >= 3 but blocked by: ${blockReasons.join('; ')}. ${rawOutput.reasoning}`;

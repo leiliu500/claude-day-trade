@@ -26,6 +26,7 @@ export interface PositionContext {
   recentDecisions: Array<{
     decisionType: DecisionType;
     ticker: string;
+    direction: string | null;
     confirmationCount: number;
     createdAt: string;
     reasoning: string;

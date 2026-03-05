@@ -88,10 +88,11 @@ export async function buildContext(ticker: string): Promise<PositionContext> {
       [ticker]
     ),
     pool.query(
-      `SELECT decision_type, ticker, confirmation_count, orchestration_confidence,
+      `SELECT decision_type, ticker, direction, confirmation_count, orchestration_confidence,
               reasoning, created_at
        FROM trading.trading_decisions
        WHERE ticker = $1 AND trade_date = CURRENT_DATE
+         AND created_at >= NOW() - INTERVAL '30 minutes'
        ORDER BY created_at DESC LIMIT 10`,
       [ticker]
     ),
@@ -144,6 +145,7 @@ export async function buildContext(ticker: string): Promise<PositionContext> {
     recentDecisions: recentDecisions.rows.map(r => ({
       decisionType: r.decision_type,
       ticker: r.ticker,
+      direction: r.direction ?? null,
       confirmationCount: r.confirmation_count,
       createdAt: r.created_at,
       reasoning: r.reasoning ?? '',

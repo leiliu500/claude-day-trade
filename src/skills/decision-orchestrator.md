@@ -18,9 +18,10 @@ You must output exactly ONE of these 7 decision types:
 - WAITs with confirmationCount = 0 are Stage 1 OBSERVE WAITs — normal first-look hesitation — and do NOT count toward the streak.
 - WAITs where confidence >= 0.72 but entry was blocked by structural quality filters (alignment not "all_aligned", OBV divergence, D/F evaluation grades, pending broker orders, etc.) are **quality-filter WAITs** — they do NOT count toward the cooldown streak. High confidence repeatedly blocked by structural reasons means the market IS moving but filters are protecting capital — not that conditions are exhausted.
 - If that marginal-confidence streak is **3 or more**, the cooldown is active.
-- During cooldown, NEW_ENTRY requires **confidence >= 0.80 AND alignment = "all_aligned" AND confirmationCount >= 3** — the normal 0.65 / 2-confirmation threshold is NOT sufficient.
-- Crossing the 0.65 confidence threshold by a small margin immediately after a marginal-confidence WAIT streak is NOT a valid entry signal; it is a retest of the same exhausted conditions that caused the WAITs.
-- State clearly: "WAIT streak of N (marginal-confidence WAITs only) detected — elevated entry threshold applies." Or if no cooldown: "No cooldown active — recent WAITs were quality-filter blocks, not exhaustion."
+- During cooldown at **count <= 2**, NEW_ENTRY requires **confidence >= 0.80 AND alignment = "all_aligned"** — the normal 0.65 / 2-confirmation threshold is NOT sufficient.
+- **Exception — Stage 3 overrides the cooldown**: if `confirmation_count >= 3`, output NEW_ENTRY regardless of the cooldown. At count >= 3 the accumulated observations ARE the conviction; the code will independently enforce structural checks (alignment, OBV, HTF ADX, adverse DI cross). Do NOT let the cooldown block a count >= 3 signal.
+- Crossing the 0.65 confidence threshold by a small margin immediately after a marginal-confidence WAIT streak is NOT a valid entry signal at count <= 2; it is a retest of the same exhausted conditions that caused the WAITs.
+- State clearly: "WAIT streak of N (marginal-confidence WAITs only) detected — elevated entry threshold applies at count <= 2; Stage 3 override available at count >= 3." Or if no cooldown: "No cooldown active — recent WAITs were quality-filter blocks, not exhaustion."
 
 ## Confirmation Strategy
 
@@ -31,7 +32,7 @@ Even when outputting WAIT due to risk factors (OBV divergence, TD exhaustion, ev
 
 Stage 1 — OBSERVE (count=1, 1st signal): output WAIT, stage="BUILDING_CONVICTION"
 Stage 2 — BUILDING_CONVICTION (count=2, 2nd consecutive same-direction): output NEW_ENTRY if no blockers, or WAIT with count=2 if OBV/TD/evaluation risk factors are present
-Stage 3 — CONFIRMED_ENTRY (count=3, 3rd consecutive): output NEW_ENTRY — risk factor extra-confirmation requirements are fully satisfied by the accumulated observations; do NOT continue to WAIT
+Stage 3 — CONFIRMED_ENTRY (count=3, 3rd consecutive): output NEW_ENTRY — risk factor extra-confirmation requirements are fully satisfied by the accumulated observations; do NOT continue to WAIT. This applies even during the marginal-confidence WAIT streak cooldown — Stage 3 always overrides the cooldown.
 
 **After a marginal-confidence WAIT streak of 3+, confirmation_count does NOT reset** — the accumulated observations are still valid evidence. The cooldown only raises the entry threshold; `confirmation_count` continues to increment normally. The streak cooldown rule applies even if a prior bar showed confirmationCount = 2. The Stage 3 code override (count >= 3 with clean conditions) remains available as a safety valve.
 Override to immediate NEW_ENTRY only if: confidence >= 0.85 AND alignment = "all_aligned" AND no recent D/F grades for similar setups AND marginal-confidence WAIT streak < 3.
