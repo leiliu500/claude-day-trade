@@ -865,6 +865,7 @@ function renderAnalysisCard(sig) {
       ${renderConfidenceBar('Alignment',   cb.alignmentBonus ?? 0, 0.10, 'conf-bar-bonus')}
       ${renderConfidenceBar('TD Seq',       cb.tdAdjustment            ?? 0, 0.05, 'conf-bar-bonus')}
       ${renderConfidenceBar('OBV',         cb.obvBonus                ?? 0, 0.03, 'conf-bar-bonus')}
+      ${renderConfidenceBar('VWAP',        cb.vwapBonus               ?? 0, 0.04, 'conf-bar-bonus')}
       ${renderConfidenceBar('Price Pos',   cb.pricePositionAdjustment ?? 0, 0.10, 'conf-bar-bonus')}
       ${renderConfidenceBar('OI/Volume',   cb.oiVolumeBonus           ?? 0, 0.05, 'conf-bar-bonus')}
       <div class="conf-total-row">

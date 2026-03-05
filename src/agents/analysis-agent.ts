@@ -15,7 +15,7 @@ function computeConfidence(signal: SignalPayload, option: OptionEvaluation): Con
   const tfs = signal.timeframes;
   const [ltf, mtf, htf] = tfs;
   if (!ltf || !mtf || !htf) {
-    return { base: 0.40, diSpreadBonus: 0, adxBonus: 0, alignmentBonus: 0, tdAdjustment: 0, obvBonus: 0, oiVolumeBonus: 0, pricePositionAdjustment: 0, total: 0.40 };
+    return { base: 0.40, diSpreadBonus: 0, adxBonus: 0, alignmentBonus: 0, tdAdjustment: 0, obvBonus: 0, vwapBonus: 0, oiVolumeBonus: 0, pricePositionAdjustment: 0, total: 0.40 };
   }
 
   // Base: slight bullish bias
@@ -69,6 +69,25 @@ function computeConfidence(signal: SignalPayload, option: OptionEvaluation): Con
     obvBonus = Math.max(-0.03, Math.min(0.03, obvBonus));
   }
 
+  // VWAP bonus — HTF and MTF only; confirms price side relative to VWAP.
+  // +0.02 per TF where priceVsVwap confirms signal direction (above VWAP for bullish, below for bearish)
+  // -0.02 per TF where price is significantly on the wrong side (|deviation| > 0.2%)
+  // Clamped -0.04..+0.04
+  let vwapBonus = 0;
+  if (signal.direction !== 'neutral') {
+    for (const tf of [htf, mtf]) {
+      const pvv = tf.vwap.priceVsVwap;
+      if (signal.direction === 'bullish') {
+        if (pvv > 0) vwapBonus += 0.02;
+        else if (pvv < -0.2) vwapBonus -= 0.02;
+      } else {
+        if (pvv < 0) vwapBonus += 0.02;
+        else if (pvv > 0.2) vwapBonus -= 0.02;
+      }
+    }
+    vwapBonus = Math.max(-0.04, Math.min(0.04, vwapBonus));
+  }
+
   // OI/Volume bonus — triggered only when option volume is extremely high.
   // High volume relative to open interest signals fresh speculative momentum.
   //   volume >= 1000 AND vol/OI >= 1.0  → +0.05 (volume exceeds all existing OI)
@@ -109,9 +128,9 @@ function computeConfidence(signal: SignalPayload, option: OptionEvaluation): Con
     pricePositionAdjustment = Math.max(-0.10, -(htfRangePosition - 0.5) * 0.20);
   }
 
-  const total = Math.max(0, Math.min(1, base + diSpreadBonus + adxBonus + alignmentBonus + tdAdjustment + obvBonus + oiVolumeBonus + pricePositionAdjustment));
+  const total = Math.max(0, Math.min(1, base + diSpreadBonus + adxBonus + alignmentBonus + tdAdjustment + obvBonus + vwapBonus + oiVolumeBonus + pricePositionAdjustment));
 
-  return { base, diSpreadBonus, adxBonus, alignmentBonus, tdAdjustment, obvBonus, oiVolumeBonus, pricePositionAdjustment, total };
+  return { base, diSpreadBonus, adxBonus, alignmentBonus, tdAdjustment, obvBonus, vwapBonus, oiVolumeBonus, pricePositionAdjustment, total };
 }
 
 /**
