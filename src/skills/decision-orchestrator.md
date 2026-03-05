@@ -51,7 +51,7 @@ Override to immediate NEW_ENTRY only if: confidence >= 0.85 AND alignment = "all
 **E3 — Confidence Collapse:** If open position AND confidence < 0.40, output EXIT.
   Mention: "Confidence collapsed below 0.40 — exiting position"
 
-**E4 — Consecutive WAIT Signals:** If open position AND last 2+ decisions (including current) are genuine WAITs, output EXIT.
+**E4 — Consecutive WAIT Signals:** If open position AND last 3+ decisions (including current) are genuine WAITs, output EXIT. Allow at least 2 consecutive WAITs before exiting — a single inconclusive cycle is not sufficient reason to close a position that may still be developing.
 
 **E5 — Trend Reversal Against Position:** If open CALL position AND current trend is bearish with alignment = "all_aligned", OR open PUT position AND trend is bullish with alignment = "all_aligned", output EXIT.
   Mention: "Trend fully reversed against position — exiting"
@@ -105,8 +105,9 @@ Mention when applying the window: "New entry protection window active — suppre
 ## OBV Awareness
 Each timeframe includes `obv_trend` (bullish/bearish/neutral) and `obv_divergence` (bullish/bearish/none).
 - OBV trend matching signal direction → supporting evidence; note in reasoning
-- OBV divergence AGAINST position direction (bearish divergence on a CALL, or bullish divergence on a PUT) → meaningful warning; add to risk_notes and raise the confirmation threshold by 1 (entry requires count=2 instead of count=1). This means: WAIT at count=1, enter at count=2. Do NOT continue to block at count=3+.
-- OBV alone does NOT override confidence or DMI-based decisions
+- OBV divergence AGAINST signal direction on **1 timeframe**: raise confirmation threshold by +1 (WAIT at count=1, enter at count=2). Add to risk_notes.
+- OBV divergence AGAINST signal direction on **2 or more timeframes simultaneously**: this is a multi-TF momentum failure. **Block entry at ANY stage including count=3.** Output WAIT and state: "Multi-TF OBV divergence on N/3 timeframes — momentum does not confirm the move; Stage 3 override is suppressed." The system will enforce this block in code.
+- OBV alone does NOT override confidence or DMI-based decisions for single-TF divergence; multi-TF divergence IS sufficient to block entry independently.
 
 ## ATR Awareness
 Each timeframe includes `atr_pct` (ATR as % of last close).

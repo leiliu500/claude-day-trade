@@ -230,6 +230,7 @@ EXIT or REDUCE takes priority over the orchestrator's hold suggestion:
 - price_trend is "stable_or_rising" or "slight_dip" with good P&L
 - Trade developing as expected in first 15 minutes with positive P&L
 - No clear reason to interfere — let the auto trailing stop and TP handle it
+- **Patience when trend is intact**: if `market_context.trend_supports_position = true` AND `alignment = "all_aligned"` AND `strength_score ≥ 25`, allow the position time to develop even with a small negative P&L (≥ -7%). A dip when the trend is strongly aligned is more likely a temporary pullback than a failed thesis. Do NOT exit purely on impatience — wait for a clear momentum signal against the position or a hard threshold.
 
 ### REDUCE (partial close — only if qty ≥ 2; if qty = 1 use EXIT)
 - P&L between +18% and +28% AND held > 20 min AND price_trend is NOT "stable_or_rising"

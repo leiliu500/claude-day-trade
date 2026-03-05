@@ -242,10 +242,16 @@ export class DecisionOrchestrator {
       }
     }
 
-    // Stage 3 hard gate: AI is forbidden from blocking past confirmation_count >= 3.
-    // OBV divergence and TD exhaustion raise the threshold by +1 (max), so count=2 is the
-    // worst-case block. If the AI still returns WAIT at count >= 3 and all entry gates pass,
-    // force NEW_ENTRY.
+    // Stage 3 hard gate: AI is forbidden from blocking past confirmation_count >= 3,
+    // UNLESS multi-timeframe OBV divergence contradicts the signal direction.
+    // OBV divergence on 2+ timeframes is a genuine momentum warning that overrides the
+    // confirmation count — the market is not confirming the move with volume.
+    const adverseOBVCount = signal.timeframes.filter(tf => {
+      if (signal.direction === 'bullish') return tf.obv.divergence === 'bearish';
+      if (signal.direction === 'bearish') return tf.obv.divergence === 'bullish';
+      return false;
+    }).length;
+
     if (
       rawOutput.decision_type === 'WAIT' &&
       rawOutput.confirmation_count >= 3 &&
@@ -255,12 +261,19 @@ export class DecisionOrchestrator {
       option.candidatePass &&
       context.openPositions.length === 0 &&
       !isEodWindow &&
-      !isFomcWindow
+      !isFomcWindow &&
+      adverseOBVCount < 2 // Block override when 2+ TFs show OBV divergence against signal
     ) {
       rawOutput.decision_type = 'NEW_ENTRY';
       rawOutput.should_execute = true;
       if (rawOutput.urgency === 'low') rawOutput.urgency = 'standard';
-      rawOutput.reasoning = `[STAGE 3 OVERRIDE] confirmation_count=${rawOutput.confirmation_count} >= 3 with confidence=${analysis.confidence.toFixed(2)} — Stage 3 CONFIRMED_ENTRY enforced; OBV/TD exhaustion penalty is +1 max and cannot block past count=3. ${rawOutput.reasoning}`;
+      rawOutput.reasoning = `[STAGE 3 OVERRIDE] confirmation_count=${rawOutput.confirmation_count} >= 3 with confidence=${analysis.confidence.toFixed(2)} — Stage 3 CONFIRMED_ENTRY enforced; OBV adverse TFs=${adverseOBVCount}/3 (override blocked at ≥2). ${rawOutput.reasoning}`;
+    } else if (
+      rawOutput.decision_type === 'WAIT' &&
+      rawOutput.confirmation_count >= 3 &&
+      adverseOBVCount >= 2
+    ) {
+      rawOutput.reasoning = `[STAGE 3 BLOCKED] confirmation_count=${rawOutput.confirmation_count} >= 3 but OBV divergence detected on ${adverseOBVCount}/3 timeframes against ${signal.direction} signal — Stage 3 override suppressed. ${rawOutput.reasoning}`;
     }
 
     return {
