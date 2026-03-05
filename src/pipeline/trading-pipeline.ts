@@ -152,6 +152,17 @@ export async function runPipeline(
 
     await insertDecision(decision);
 
+    // ── Market context forwarded to order agents ────────────────────────────
+    // Structured indicator data so agents can judge whether a P&L dip is
+    // temporary (trend still intact) or terminal (trend reversed / confidence collapsed).
+    const marketContext = {
+      direction:     signal.direction,
+      alignment:     signal.alignment,
+      strengthScore: signal.strengthScore,
+      keyFactors:    analysis.keyFactors.slice(0, 3),
+      risks:         analysis.risks.slice(0, 2),
+    } as const;
+
     // ── Phase 9: Execute via OrderAgentRegistry ────────────────────────────
     const result: PipelineResult = {
       ticker,
@@ -235,6 +246,7 @@ export async function runPipeline(
           ticker,
           decision.reasoning.slice(0, 150),
           decision.orchestrationConfidence,
+          marketContext,
         );
         if (addOutcomes.length) result.orderAgentOutcomes = addOutcomes;
 
@@ -272,6 +284,7 @@ export async function runPipeline(
           ticker,
           decision.reasoning.slice(0, 150),
           decision.orchestrationConfidence,
+          marketContext,
         );
         if (confirmOutcomes.length) result.orderAgentOutcomes = confirmOutcomes;
         console.log(
@@ -289,6 +302,7 @@ export async function runPipeline(
           decision.reasoning.slice(0, 150),
           decision.urgency,
           decision.orchestrationConfidence,
+          marketContext,
         );
         result.orderSubmitted = true;
         if (exitOutcomes.length) result.orderAgentOutcomes = exitOutcomes;
@@ -302,6 +316,7 @@ export async function runPipeline(
           decision.reasoning.slice(0, 150),
           decision.urgency,
           decision.orchestrationConfidence,
+          marketContext,
         );
         result.orderSubmitted = true;
         if (reduceOutcomes.length) result.orderAgentOutcomes = reduceOutcomes;
@@ -320,6 +335,7 @@ export async function runPipeline(
           decision.reasoning.slice(0, 150),
           decision.urgency,
           decision.orchestrationConfidence,
+          marketContext,
         );
         if (reverseOutcomes.length) result.orderAgentOutcomes = reverseOutcomes;
 
@@ -364,6 +380,7 @@ export async function runPipeline(
           ticker,
           decision.reasoning.slice(0, 150),
           decision.orchestrationConfidence,
+          marketContext,
         );
         if (waitOutcomes.length) result.orderAgentOutcomes = waitOutcomes;
         if (waitOutcomes.length) {

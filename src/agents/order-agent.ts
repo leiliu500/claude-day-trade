@@ -90,6 +90,23 @@ export interface OrchestratorSuggestion {
   urgency: 'immediate' | 'standard' | 'low';
   /** Orchestration confidence (0–1) — passed through so dispatch records prove low-confidence inputs reach agents */
   confidence?: number;
+  /**
+   * Live market context from the orchestrator pipeline — structured indicator data used to
+   * predict whether a P&L dip is temporary (trend still intact) or terminal (trend reversed).
+   * Only omitted when the pipeline encounters an error before signal/analysis are available.
+   */
+  marketContext?: {
+    /** Trend direction synthesized across all timeframes. */
+    direction: 'bullish' | 'bearish' | 'neutral';
+    /** Timeframe agreement: all_aligned | htf_mtf_aligned | mtf_ltf_aligned | mixed. */
+    alignment: string;
+    /** ADX-based trend strength 0–100 (≥30 = strong, 20–29 = moderate, <20 = weak). */
+    strengthScore: number;
+    /** Top factors driving the signal (from AnalysisAgent). */
+    keyFactors: string[];
+    /** Current risks flagged by AnalysisAgent. */
+    risks: string[];
+  };
 }
 
 /** AI recommendation from order-agent.md skill. */
@@ -911,6 +928,22 @@ export class OrderAgent {
         risk_management_quality: e.riskManagementQuality,
         lessons_learned:         e.lessonsLearned.slice(0, 150),
       })),
+      // Current market context from the orchestrator — predicts whether P&L dip is temporary or terminal.
+      // Null on periodic self-checks (no orchestrator input). Use to assess trend staying power.
+      market_context: suggestion?.marketContext
+        ? {
+            direction:     suggestion.marketContext.direction,
+            alignment:     suggestion.marketContext.alignment,
+            strength_score: suggestion.marketContext.strengthScore,
+            key_factors:   suggestion.marketContext.keyFactors,
+            risks:         suggestion.marketContext.risks,
+            // Derived: does the current trend support THIS position's direction?
+            // A call benefits from bullish; a put benefits from bearish.
+            trend_supports_position:
+              (candidate.contract.side === 'call' && suggestion.marketContext.direction === 'bullish') ||
+              (candidate.contract.side === 'put'  && suggestion.marketContext.direction === 'bearish'),
+          }
+        : null,
     };
 
     try {

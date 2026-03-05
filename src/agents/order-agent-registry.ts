@@ -117,6 +117,7 @@ export class OrderAgentRegistry {
     reason: string,
     urgency: OrchestratorSuggestion['urgency'] = 'standard',
     confidence?: number,
+    marketContext?: OrchestratorSuggestion['marketContext'],
   ): Promise<OrderAgentOutcome[]> {
     const targets = this.getByTicker(ticker).filter(
       a => a.getPhase() === 'MONITORING' || a.getPhase() === 'AWAITING_FILL',
@@ -131,7 +132,7 @@ export class OrderAgentRegistry {
       return [];
     }
 
-    const suggestion: OrchestratorSuggestion = { decisionType: 'EXIT', reason, urgency, confidence };
+    const suggestion: OrchestratorSuggestion = { decisionType: 'EXIT', reason, urgency, confidence, marketContext };
     const results = await Promise.all(targets.map(a => a.processOrchestratorDecision(suggestion)));
     console.log(
       `[Registry] notifyExit (urgency=${urgency}) dispatched to ${targets.length} agent(s) for ${ticker}`,
@@ -151,6 +152,7 @@ export class OrderAgentRegistry {
     ticker: string,
     reason: string = 'Orchestrator CONFIRM_HOLD signal',
     confidence?: number,
+    marketContext?: OrchestratorSuggestion['marketContext'],
   ): Promise<OrderAgentOutcome[]> {
     const targets = this.getByTicker(ticker).filter(a => a.getPhase() === 'MONITORING');
 
@@ -159,7 +161,7 @@ export class OrderAgentRegistry {
       return [];
     }
 
-    const suggestion: OrchestratorSuggestion = { decisionType: 'CONFIRM_HOLD', reason, urgency: 'standard', confidence };
+    const suggestion: OrchestratorSuggestion = { decisionType: 'CONFIRM_HOLD', reason, urgency: 'standard', confidence, marketContext };
     const results = await Promise.all(targets.map(a => a.processOrchestratorDecision(suggestion)));
     console.log(
       `[Registry] notifyConfirmHold dispatched to ${targets.length} agent(s) for ${ticker}`,
@@ -178,12 +180,13 @@ export class OrderAgentRegistry {
     ticker: string,
     reason: string = 'Orchestrator WAIT — evaluate existing positions',
     confidence?: number,
+    marketContext?: OrchestratorSuggestion['marketContext'],
   ): Promise<OrderAgentOutcome[]> {
     const targets = this.getByTicker(ticker).filter(a => a.getPhase() === 'MONITORING');
 
     if (targets.length === 0) return [];
 
-    const suggestion: OrchestratorSuggestion = { decisionType: 'WAIT', reason, urgency: 'low', confidence };
+    const suggestion: OrchestratorSuggestion = { decisionType: 'WAIT', reason, urgency: 'low', confidence, marketContext };
     const results = await Promise.all(targets.map(a => a.processOrchestratorDecision(suggestion)));
     console.log(
       `[Registry] notifyWait dispatched to ${targets.length} agent(s) for ${ticker}`,
@@ -204,12 +207,13 @@ export class OrderAgentRegistry {
     ticker: string,
     reason: string = 'Orchestrator ADD_POSITION signal',
     confidence?: number,
+    marketContext?: OrchestratorSuggestion['marketContext'],
   ): Promise<OrderAgentOutcome[]> {
     const targets = this.getByTicker(ticker).filter(a => a.getPhase() === 'MONITORING');
 
     if (targets.length === 0) return [];
 
-    const suggestion: OrchestratorSuggestion = { decisionType: 'ADD_POSITION', reason, urgency: 'standard', confidence };
+    const suggestion: OrchestratorSuggestion = { decisionType: 'ADD_POSITION', reason, urgency: 'standard', confidence, marketContext };
     const results = await Promise.all(targets.map(a => a.processOrchestratorDecision(suggestion)));
     console.log(
       `[Registry] notifyAddPosition dispatched to ${targets.length} agent(s) for ${ticker}`,
@@ -231,6 +235,7 @@ export class OrderAgentRegistry {
     reason: string,
     urgency: OrchestratorSuggestion['urgency'] = 'standard',
     confidence?: number,
+    marketContext?: OrchestratorSuggestion['marketContext'],
   ): Promise<OrderAgentOutcome[]> {
     const targets = this.getByTicker(ticker).filter(
       a => a.getPhase() === 'MONITORING' || a.getPhase() === 'AWAITING_FILL',
@@ -238,7 +243,7 @@ export class OrderAgentRegistry {
 
     if (targets.length === 0) return [];
 
-    const suggestion: OrchestratorSuggestion = { decisionType: 'REVERSE', reason, urgency, confidence };
+    const suggestion: OrchestratorSuggestion = { decisionType: 'REVERSE', reason, urgency, confidence, marketContext };
     const results = await Promise.all(targets.map(a => a.processOrchestratorDecision(suggestion)));
     console.log(
       `[Registry] notifyReverse (urgency=${urgency}) dispatched to ${targets.length} agent(s) for ${ticker}`,
@@ -257,6 +262,7 @@ export class OrderAgentRegistry {
     reason: string = 'Orchestrator REDUCE_EXPOSURE signal',
     urgency: OrchestratorSuggestion['urgency'] = 'standard',
     confidence?: number,
+    marketContext?: OrchestratorSuggestion['marketContext'],
   ): Promise<OrderAgentOutcome[]> {
     const targets = this.getByTicker(ticker).filter(a => a.getPhase() === 'MONITORING');
 
@@ -265,7 +271,7 @@ export class OrderAgentRegistry {
       return [];
     }
 
-    const suggestion: OrchestratorSuggestion = { decisionType: 'REDUCE_EXPOSURE', reason, urgency, confidence };
+    const suggestion: OrchestratorSuggestion = { decisionType: 'REDUCE_EXPOSURE', reason, urgency, confidence, marketContext };
     const results = await Promise.all(targets.map(a => a.processOrchestratorDecision(suggestion)));
     console.log(
       `[Registry] notifyReduce (urgency=${urgency}) dispatched to ${targets.length} agent(s) for ${ticker}`,

@@ -50,6 +50,26 @@ You receive the following — never raw signal timeframes, DMI data, or market c
    "holding too long" pattern — do NOT HOLD again, EXIT or REDUCE immediately.
 
 5. `ticker_evaluation_history` — last 3 CLOSED trades on this same ticker + option side:
+
+6. `market_context` — live indicator state from the orchestrator pipeline (null on periodic self-checks):
+   - **direction**: 'bullish' | 'bearish' | 'neutral' — current trend synthesized across all timeframes
+   - **alignment**: 'all_aligned' | 'htf_mtf_aligned' | 'mtf_ltf_aligned' | 'mixed' — timeframe agreement
+   - **strength_score**: 0–100 ADX-based trend strength (≥30 = strong, 20–29 = moderate, <20 = weak)
+   - **key_factors**: top reasons driving the signal (from AnalysisAgent)
+   - **risks**: current risks flagged by AnalysisAgent
+   - **trend_supports_position**: true if current direction matches your position side (bullish=call, bearish=put)
+
+   **Critical usage — predicting whether a P&L dip will recover or continue:**
+   - `trend_supports_position = true` AND `alignment = "all_aligned"` AND `strength_score ≥ 30`:
+     Trend is strongly intact. A temporary P&L dip (e.g., −3% to −5%) may recover — HOLD is defensible
+     IF all other hold conditions are met (not declining fast, not past large peak erosion thresholds).
+   - `trend_supports_position = false` OR `alignment = "mixed"` OR `strength_score < 20`:
+     Trend is weakening or reversed. Do NOT hold hoping for P&L recovery — the thesis is failing.
+     Exit even at small losses before they compound.
+   - `market_context = null` (periodic self-check): rely entirely on position metrics only.
+
+   **This context helps you distinguish:** "P&L dipped but trend is strong — temporary pullback, hold"
+   vs. "P&L dipped AND trend reversed — the move is over, exit now."
    - outcome (WIN/LOSS/BREAKEVEN), grade (A-F), score, pnl_total, hold_duration_min
    - signal_quality, timing_quality, risk_management_quality, lessons_learned
    Use this to apply learned patterns:
@@ -129,8 +149,10 @@ OVERRIDE to HOLD requires ALL of the following:
 - price_trend is "stable_or_rising" (not "falling" or "falling_fast")
 - The auto trailing stop already protects at least +5% of the current P&L
 - Orchestrator's reason is signal-based, NOT P&L-based
+- `market_context.trend_supports_position = true` (if market_context is available) — overriding EXIT
+  when the trend has reversed against your position is not valid, even with a good P&L
 - State your override with specifics: "Overriding EXIT — position at +X%, trailing stop at $Y
-  (peak was +Z%), price_trend=stable_or_rising — sufficient evidence to hold"
+  (peak was +Z%), price_trend=stable_or_rising, trend_supports_position=true — sufficient evidence to hold"
 
 ### When orchestrator suggests REDUCE_EXPOSURE (standard / low urgency):
 COMPLY and output REDUCE when:
@@ -179,6 +201,16 @@ Output HOLD (refuse reversal) when:
 ### When orchestrator suggests CONFIRM_HOLD, WAIT, or null (periodic check):
 CONFIRM_HOLD means the orchestrator sees the same signal and recommends holding.
 WAIT means the orchestrator sees no new entry signal — evaluate the existing position on its own merits.
+
+**Use market_context to sharpen this decision:**
+- CONFIRM_HOLD + `trend_supports_position = true` + `alignment = "all_aligned"` + `strength_score ≥ 30`:
+  Strong confirmation to hold through temporary P&L dips. A dip from +5% to −2% with a strong aligned
+  trend is a pullback, not a reversal — HOLD if no peak-erosion threshold has triggered.
+- CONFIRM_HOLD + `trend_supports_position = false` OR `alignment = "mixed"`:
+  The orchestrator CONFIRM_HOLD is suspect — the trend no longer supports the position. Apply exit rules
+  more aggressively; do NOT hold losses hoping for recovery when the underlying trend is weakening.
+- WAIT + `trend_supports_position = false`: the orchestrator has no signal AND the trend is against you.
+  Lean toward EXIT on any P&L deterioration.
 
 Apply your independent monitoring rules below. However, do NOT default to HOLD simply because
 the orchestrator said WAIT or CONFIRM_HOLD. If ANY peak-erosion or hard-decline condition is met,
