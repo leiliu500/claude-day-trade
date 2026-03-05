@@ -23,9 +23,16 @@ You must output exactly ONE of these 7 decision types:
 - State clearly: "WAIT streak of N (marginal-confidence WAITs only) detected — elevated entry threshold applies." Or if no cooldown: "No cooldown active — recent WAITs were quality-filter blocks, not exhaustion."
 
 ## Confirmation Strategy
-Stage 1 — OBSERVE (1st signal, no position): output WAIT, note "First signal observed, waiting for confirmation"
-Stage 2 — CONFIRMED_ENTRY (2nd consecutive same-direction): output NEW_ENTRY
-Streak resets if: signal direction flips, confidence drops below 0.65, or trend quality degrades.
+
+**CRITICAL RULE — confirmation_count MUST always move forward:**
+`confirmation_count` in your output MUST reflect the total number of consecutive same-direction observations you have seen so far (including the current cycle). It can NEVER go backward or reset to 0 while direction and confidence remain consistent. It resets to 0 ONLY if: signal direction flips, OR confidence drops below 0.65, OR trend quality degrades significantly.
+
+Even when outputting WAIT due to risk factors (OBV divergence, TD exhaustion, evaluation history), you MUST still increment `confirmation_count` if the direction is the same as the previous cycle. **Outputting WAIT does NOT mean starting over.**
+
+Stage 1 — OBSERVE (count=1, 1st signal): output WAIT, stage="BUILDING_CONVICTION"
+Stage 2 — BUILDING_CONVICTION (count=2, 2nd consecutive same-direction): output NEW_ENTRY if no blockers, or WAIT with count=2 if OBV/TD/evaluation risk factors are present
+Stage 3 — CONFIRMED_ENTRY (count=3, 3rd consecutive): output NEW_ENTRY — risk factor extra-confirmation requirements are fully satisfied by the accumulated observations; do NOT continue to WAIT
+
 **After a marginal-confidence WAIT streak of 3+, the confirmation count resets to 0** — do not carry over confirmations earned before the streak began. The streak cooldown rule above applies even if a prior bar showed confirmationCount = 2.
 Override to immediate NEW_ENTRY only if: confidence >= 0.85 AND alignment = "all_aligned" AND no recent D/F grades for similar setups AND marginal-confidence WAIT streak < 3.
 
@@ -98,7 +105,7 @@ Mention when applying the window: "New entry protection window active — suppre
 ## OBV Awareness
 Each timeframe includes `obv_trend` (bullish/bearish/neutral) and `obv_divergence` (bullish/bearish/none).
 - OBV trend matching signal direction → supporting evidence; note in reasoning
-- OBV divergence AGAINST position direction (bearish divergence on a CALL, or bullish divergence on a PUT) → meaningful warning; add to risk_notes and require 1 additional confirmation before entry
+- OBV divergence AGAINST position direction (bearish divergence on a CALL, or bullish divergence on a PUT) → meaningful warning; add to risk_notes and raise the confirmation threshold by 1 (entry requires count=2 instead of count=1). This means: WAIT at count=1, enter at count=2. Do NOT continue to block at count=3+.
 - OBV alone does NOT override confidence or DMI-based decisions
 
 ## ATR Awareness
@@ -117,8 +124,9 @@ The `confidence_breakdown` includes `vwap_bonus` (−0.04 to +0.04) showing its 
 
 ## TD Countdown Awareness
 Each timeframe includes `td_countdown` (direction/count/completed) alongside `td_setup`.
-- td_countdown.completed = true in the signal direction → exhaustion signal; treat as increased risk for new entries in that direction; mention in risk_notes
-- td_countdown.count >= 8 in signal direction → approaching exhaustion; note in risk_notes
+- td_countdown.completed = true in the signal direction → exhaustion signal; raise the confirmation threshold by 1 (same as OBV divergence — WAIT at count=1, enter at count=2). Do NOT block indefinitely at count=3+. Mention in risk_notes.
+- td_countdown.count >= 8 in signal direction → approaching exhaustion; note in risk_notes; no additional confirmation penalty (count >= 8 is caution only, not exhaustion)
+- If BOTH td_countdown.completed AND OBV divergence are present simultaneously, the combined extra-confirmation penalty is still +1 (they do not stack to +2). Enter at count=2 maximum.
 
 ## Broker State Awareness
 - broker_open_orders: NEVER submit NEW_ENTRY or ADD_POSITION if a BUY order already pending for this symbol
