@@ -217,7 +217,11 @@ export async function runPipeline(
           decision, candidate: optionEval.winnerCandidate, sizing: newSizing, sessionId,
           entryConfidence: analysis.confidence, entryAlignment: signal.alignment, entryDirection: signal.direction,
         });
-        result.orderSubmitted = !!newPositionId;
+        if (!newPositionId) {
+          console.warn(`[Pipeline] NEW_ENTRY: registry.createAndStart returned empty — position cap reached or agent.start() failed for ${ticker}`);
+          break;
+        }
+        result.orderSubmitted = true;
         result.orderSymbol    = optionEval.winnerCandidate.contract.symbol;
         result.orderQty       = newSizing.qty;
         result.orderPrice     = newSizing.limitPrice;
@@ -268,7 +272,11 @@ export async function runPipeline(
           decision, candidate: optionEval.winnerCandidate, sizing: addSizing, sessionId,
           entryConfidence: analysis.confidence, entryAlignment: signal.alignment, entryDirection: signal.direction,
         });
-        result.orderSubmitted = !!addPositionId;
+        if (!addPositionId) {
+          console.warn(`[Pipeline] ADD_POSITION: registry.createAndStart returned empty — position cap reached or agent.start() failed for ${ticker}`);
+          break;
+        }
+        result.orderSubmitted = true;
         result.orderSymbol    = optionEval.winnerCandidate.contract.symbol;
         result.orderQty       = addSizing.qty;
         result.orderPrice     = addSizing.limitPrice;

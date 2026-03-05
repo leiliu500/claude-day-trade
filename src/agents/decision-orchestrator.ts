@@ -286,6 +286,13 @@ export class DecisionOrchestrator {
         rawOutput.decision_type = 'WAIT';
         rawOutput.should_execute = false;
         rawOutput.reasoning = `[GATE OVERRIDE] Confidence ${analysis.confidence.toFixed(2)} < ${config.MIN_CONFIDENCE}. ${rawOutput.reasoning}`;
+      } else {
+        // All gates passed — ensure shouldExecute is true regardless of what the AI returned.
+        // Guards against AI returning should_execute: false for a valid NEW_ENTRY/ADD_POSITION.
+        if (!rawOutput.should_execute) {
+          console.warn(`[DecisionOrchestrator] ${rawOutput.decision_type}: AI returned should_execute=false but all gates passed — correcting to true`);
+          rawOutput.should_execute = true;
+        }
       }
     }
 
