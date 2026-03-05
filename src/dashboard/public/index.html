@@ -60,6 +60,25 @@
       <button class="tab" data-tab="database">Database</button>
     </nav>
 
+    <!-- Filter bar (shown only for filterable tabs) -->
+    <div id="filter-bar" class="filter-bar" style="display:none">
+      <div class="filter-group">
+        <label for="filter-ticker">Symbol</label>
+        <select id="filter-ticker" onchange="applyFilters()">
+          <option value="">All</option>
+        </select>
+      </div>
+      <div class="filter-group">
+        <label for="filter-time-from">From</label>
+        <input type="time" id="filter-time-from" onchange="applyFilters()">
+      </div>
+      <div class="filter-group">
+        <label for="filter-time-to">To</label>
+        <input type="time" id="filter-time-to" onchange="applyFilters()">
+      </div>
+      <button class="filter-clear" id="filter-clear" onclick="clearFilters()" style="display:none">✕ Clear</button>
+    </div>
+
     <!-- Tab content -->
     <section id="tab-positions" class="tab-content active">
       <div class="agents-section-header">

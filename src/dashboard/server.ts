@@ -29,6 +29,19 @@ export function startDashboard(port: number): void {
     }
   });
 
+  // Distinct tickers for filter dropdown
+  app.get('/api/tickers', async (_req, res) => {
+    try {
+      const pool = getPool();
+      const { rows } = await pool.query(
+        `SELECT DISTINCT ticker FROM trading.signal_snapshots ORDER BY ticker`
+      );
+      res.json({ tickers: rows.map((r: { ticker: string }) => r.ticker) });
+    } catch (err) {
+      res.status(500).json({ error: (err as Error).message });
+    }
+  });
+
   // Recent signals (paginated)
   app.get('/api/signals', async (req, res) => {
     try {
@@ -36,6 +49,34 @@ export function startDashboard(port: number): void {
       const limit = Math.min(parseInt(String(req.query['limit'] ?? '50')), 500);
       const page  = Math.max(parseInt(String(req.query['page']  ?? '1')), 1);
       const offset = (page - 1) * limit;
+
+      const tickerRaw  = req.query['ticker'];
+      const timeFromRaw = req.query['time_from'];
+      const timeToRaw   = req.query['time_to'];
+      const ticker   = typeof tickerRaw   === 'string' && /^[A-Z]{1,10}$/.test(tickerRaw)          ? tickerRaw   : null;
+      const timeFrom = typeof timeFromRaw === 'string' && /^\d{2}:\d{2}$/.test(timeFromRaw)        ? timeFromRaw : null;
+      const timeTo   = typeof timeToRaw   === 'string' && /^\d{2}:\d{2}$/.test(timeToRaw)          ? timeToRaw   : null;
+
+      const filterParams: (string | number)[] = [];
+      let tickerFilter   = '';
+      let timeFromFilter = '';
+      let timeToFilter   = '';
+      if (ticker) {
+        filterParams.push(ticker);
+        tickerFilter = `AND ticker = $${filterParams.length}`;
+      }
+      if (timeFrom) {
+        filterParams.push(timeFrom);
+        timeFromFilter = `AND (created_at AT TIME ZONE 'America/New_York')::time >= $${filterParams.length}::time`;
+      }
+      if (timeTo) {
+        filterParams.push(timeTo);
+        timeToFilter = `AND (created_at AT TIME ZONE 'America/New_York')::time <= $${filterParams.length}::time`;
+      }
+      const whereClause = `WHERE trade_date >= CURRENT_DATE - INTERVAL '7 days' ${tickerFilter} ${timeFromFilter} ${timeToFilter}`;
+      const limitN = filterParams.length + 1;
+      const offsetN = filterParams.length + 2;
+
       const [{ rows }, { rows: countRows }, { rows: todayRows }] = await Promise.all([
         pool.query(
           `SELECT id, ticker, profile, direction, alignment, confidence,
@@ -43,13 +84,14 @@ export function startDashboard(port: number): void {
                   entry_premium, stop_premium, tp_premium, risk_reward,
                   option_liquidity_ok, spread_pct, triggered_by, created_at
            FROM trading.signal_snapshots
-           WHERE trade_date >= CURRENT_DATE - INTERVAL '7 days'
+           ${whereClause}
            ORDER BY created_at DESC
-           LIMIT $1 OFFSET $2`,
-          [limit, offset]
+           LIMIT $${limitN} OFFSET $${offsetN}`,
+          [...filterParams, limit, offset]
         ),
         pool.query(
-          `SELECT COUNT(*)::int AS total FROM trading.signal_snapshots WHERE trade_date >= CURRENT_DATE - INTERVAL '7 days'`
+          `SELECT COUNT(*)::int AS total FROM trading.signal_snapshots ${whereClause}`,
+          filterParams
         ),
         pool.query(
           `SELECT COUNT(*)::int AS total FROM trading.signal_snapshots WHERE trade_date = (CURRENT_TIMESTAMP AT TIME ZONE 'America/New_York')::date`
@@ -68,18 +110,36 @@ export function startDashboard(port: number): void {
       const limit = Math.min(parseInt(String(req.query['limit'] ?? '50')), 500);
       const page  = Math.max(parseInt(String(req.query['page']  ?? '1')), 1);
       const offset = (page - 1) * limit;
+
+      const tickerRaw   = req.query['ticker'];
+      const timeFromRaw = req.query['time_from'];
+      const timeToRaw   = req.query['time_to'];
+      const ticker   = typeof tickerRaw   === 'string' && /^[A-Z]{1,10}$/.test(tickerRaw)   ? tickerRaw   : null;
+      const timeFrom = typeof timeFromRaw === 'string' && /^\d{2}:\d{2}$/.test(timeFromRaw) ? timeFromRaw : null;
+      const timeTo   = typeof timeToRaw   === 'string' && /^\d{2}:\d{2}$/.test(timeToRaw)   ? timeToRaw   : null;
+
+      const filterParams: (string | number)[] = [];
+      let tickerFilter = '', timeFromFilter = '', timeToFilter = '';
+      if (ticker)   { filterParams.push(ticker);   tickerFilter   = `AND ticker = $${filterParams.length}`; }
+      if (timeFrom) { filterParams.push(timeFrom); timeFromFilter = `AND (created_at AT TIME ZONE 'America/New_York')::time >= $${filterParams.length}::time`; }
+      if (timeTo)   { filterParams.push(timeTo);   timeToFilter   = `AND (created_at AT TIME ZONE 'America/New_York')::time <= $${filterParams.length}::time`; }
+      const whereClause = `WHERE trade_date >= CURRENT_DATE - INTERVAL '7 days' ${tickerFilter} ${timeFromFilter} ${timeToFilter}`;
+      const limitN = filterParams.length + 1;
+      const offsetN = filterParams.length + 2;
+
       const [{ rows }, { rows: countRows }] = await Promise.all([
         pool.query(
           `SELECT id, ticker, profile, direction, decision_type, confirmation_count,
                   orchestration_confidence, urgency, should_execute, reasoning, created_at
            FROM trading.trading_decisions
-           WHERE trade_date >= CURRENT_DATE - INTERVAL '7 days'
+           ${whereClause}
            ORDER BY created_at DESC
-           LIMIT $1 OFFSET $2`,
-          [limit, offset]
+           LIMIT $${limitN} OFFSET $${offsetN}`,
+          [...filterParams, limit, offset]
         ),
         pool.query(
-          `SELECT COUNT(*)::int AS total FROM trading.trading_decisions WHERE trade_date >= CURRENT_DATE - INTERVAL '7 days'`
+          `SELECT COUNT(*)::int AS total FROM trading.trading_decisions ${whereClause}`,
+          filterParams
         ),
       ]);
       res.json({ decisions: rows, total: countRows[0]?.total ?? 0, page, limit });
@@ -95,6 +155,23 @@ export function startDashboard(port: number): void {
       const limit = Math.min(parseInt(String(req.query['limit'] ?? '50')), 500);
       const page  = Math.max(parseInt(String(req.query['page']  ?? '1')), 1);
       const offset = (page - 1) * limit;
+
+      const tickerRaw   = req.query['ticker'];
+      const timeFromRaw = req.query['time_from'];
+      const timeToRaw   = req.query['time_to'];
+      const ticker   = typeof tickerRaw   === 'string' && /^[A-Z]{1,10}$/.test(tickerRaw)   ? tickerRaw   : null;
+      const timeFrom = typeof timeFromRaw === 'string' && /^\d{2}:\d{2}$/.test(timeFromRaw) ? timeFromRaw : null;
+      const timeTo   = typeof timeToRaw   === 'string' && /^\d{2}:\d{2}$/.test(timeToRaw)   ? timeToRaw   : null;
+
+      const filterParams: (string | number)[] = [];
+      let tickerFilter = '', timeFromFilter = '', timeToFilter = '';
+      if (ticker)   { filterParams.push(ticker);   tickerFilter   = `AND ticker = $${filterParams.length}`; }
+      if (timeFrom) { filterParams.push(timeFrom); timeFromFilter = `AND (evaluated_at AT TIME ZONE 'America/New_York')::time >= $${filterParams.length}::time`; }
+      if (timeTo)   { filterParams.push(timeTo);   timeToFilter   = `AND (evaluated_at AT TIME ZONE 'America/New_York')::time <= $${filterParams.length}::time`; }
+      const whereClause = `WHERE evaluated_at >= NOW() - INTERVAL '30 days' ${tickerFilter} ${timeFromFilter} ${timeToFilter}`;
+      const limitN = filterParams.length + 1;
+      const offsetN = filterParams.length + 2;
+
       const [{ rows }, { rows: countRows }] = await Promise.all([
         pool.query(
           `SELECT id, ticker, option_symbol, outcome, evaluation_grade, evaluation_score,
@@ -102,13 +179,14 @@ export function startDashboard(port: number): void {
                   signal_quality, timing_quality, risk_management_quality, evaluated_at,
                   entry_price, exit_price
            FROM trading.trade_evaluations
-           WHERE evaluated_at > NOW() - INTERVAL '30 days'
+           ${whereClause}
            ORDER BY evaluated_at DESC
-           LIMIT $1 OFFSET $2`,
-          [limit, offset]
+           LIMIT $${limitN} OFFSET $${offsetN}`,
+          [...filterParams, limit, offset]
         ),
         pool.query(
-          `SELECT COUNT(*)::int AS total FROM trading.trade_evaluations WHERE evaluated_at > NOW() - INTERVAL '30 days'`
+          `SELECT COUNT(*)::int AS total FROM trading.trade_evaluations ${whereClause}`,
+          filterParams
         ),
       ]);
       res.json({ evaluations: rows, total: countRows[0]?.total ?? 0, page, limit });
@@ -147,16 +225,34 @@ export function startDashboard(port: number): void {
       const limit = Math.min(parseInt(String(req.query['limit'] ?? '50')), 500);
       const page  = Math.max(parseInt(String(req.query['page']  ?? '1')), 1);
       const offset = (page - 1) * limit;
+
+      const tickerRaw   = req.query['ticker'];
+      const timeFromRaw = req.query['time_from'];
+      const timeToRaw   = req.query['time_to'];
+      const ticker   = typeof tickerRaw   === 'string' && /^[A-Z]{1,10}$/.test(tickerRaw)   ? tickerRaw   : null;
+      const timeFrom = typeof timeFromRaw === 'string' && /^\d{2}:\d{2}$/.test(timeFromRaw) ? timeFromRaw : null;
+      const timeTo   = typeof timeToRaw   === 'string' && /^\d{2}:\d{2}$/.test(timeToRaw)   ? timeToRaw   : null;
+
+      const filterParams: (string | number)[] = [];
+      let tickerFilter = '', timeFromFilter = '', timeToFilter = '';
+      if (ticker)   { filterParams.push(ticker);   tickerFilter   = `AND ticker = $${filterParams.length}`; }
+      if (timeFrom) { filterParams.push(timeFrom); timeFromFilter = `AND (submitted_at AT TIME ZONE 'America/New_York')::time >= $${filterParams.length}::time`; }
+      if (timeTo)   { filterParams.push(timeTo);   timeToFilter   = `AND (submitted_at AT TIME ZONE 'America/New_York')::time <= $${filterParams.length}::time`; }
+      const whereClause = `WHERE submitted_at >= NOW() - INTERVAL '7 days' ${tickerFilter} ${timeFromFilter} ${timeToFilter}`;
+      const limitN = filterParams.length + 1;
+      const offsetN = filterParams.length + 2;
+
       const [{ rows }, { rows: countRows }] = await Promise.all([
         pool.query(
           `SELECT * FROM trading.v_recent_executions
-           WHERE submitted_at >= NOW() - INTERVAL '7 days'
+           ${whereClause}
            ORDER BY submitted_at DESC
-           LIMIT $1 OFFSET $2`,
-          [limit, offset]
+           LIMIT $${limitN} OFFSET $${offsetN}`,
+          [...filterParams, limit, offset]
         ),
         pool.query(
-          `SELECT COUNT(*)::int AS total FROM trading.v_recent_executions WHERE submitted_at >= NOW() - INTERVAL '7 days'`
+          `SELECT COUNT(*)::int AS total FROM trading.v_recent_executions ${whereClause}`,
+          filterParams
         ),
       ]);
       res.json({ orders: rows, total: countRows[0]?.total ?? 0, page, limit });
@@ -435,6 +531,27 @@ export function startDashboard(port: number): void {
       const limit  = Math.min(parseInt(String(req.query['limit'] ?? '100')), 500);
       const page   = Math.max(parseInt(String(req.query['page']  ?? '1')), 1);
       const offset = (page - 1) * limit;
+
+      const tickerRaw   = req.query['ticker'];
+      const timeFromRaw = req.query['time_from'];
+      const timeToRaw   = req.query['time_to'];
+      const ticker   = typeof tickerRaw   === 'string' && /^[A-Z]{1,10}$/.test(tickerRaw)   ? tickerRaw   : null;
+      const timeFrom = typeof timeFromRaw === 'string' && /^\d{2}:\d{2}$/.test(timeFromRaw) ? timeFromRaw : null;
+      const timeTo   = typeof timeToRaw   === 'string' && /^\d{2}:\d{2}$/.test(timeToRaw)   ? timeToRaw   : null;
+
+      const filterParams: (string | number)[] = [];
+      let tickerFilter = '', timeFromFilter = '', timeToFilter = '';
+      if (ticker)   { filterParams.push(ticker);   tickerFilter   = `AND d.ticker = $${filterParams.length}`; }
+      if (timeFrom) { filterParams.push(timeFrom); timeFromFilter = `AND (d.created_at AT TIME ZONE 'America/New_York')::time >= $${filterParams.length}::time`; }
+      if (timeTo)   { filterParams.push(timeTo);   timeToFilter   = `AND (d.created_at AT TIME ZONE 'America/New_York')::time <= $${filterParams.length}::time`; }
+      const limitN = filterParams.length + 1;
+      const offsetN = filterParams.length + 2;
+
+      // count query uses plain column references (no alias)
+      const cTickerFilter   = ticker   ? `AND ticker = $${filterParams.indexOf(ticker)   + 1}` : '';
+      const cTimeFromFilter = timeFrom ? `AND (created_at AT TIME ZONE 'America/New_York')::time >= $${filterParams.indexOf(timeFrom) + 1}::time` : '';
+      const cTimeToFilter   = timeTo   ? `AND (created_at AT TIME ZONE 'America/New_York')::time <= $${filterParams.indexOf(timeTo)   + 1}::time` : '';
+
       const [{ rows }, { rows: countRows }] = await Promise.all([
         pool.query(
           `SELECT d.id, d.position_id, d.ticker, d.option_symbol,
@@ -451,12 +568,16 @@ export function startDashboard(port: number): void {
                 ORDER BY t.created_at ASC
                 LIMIT 1
              ) oat ON true
-            WHERE d.created_at >= CURRENT_DATE
+            WHERE d.created_at >= CURRENT_DATE ${tickerFilter} ${timeFromFilter} ${timeToFilter}
             ORDER BY d.created_at DESC
-            LIMIT $1 OFFSET $2`,
-          [limit, offset],
+            LIMIT $${limitN} OFFSET $${offsetN}`,
+          [...filterParams, limit, offset],
         ),
-        pool.query(`SELECT COUNT(*)::int AS total FROM trading.order_agent_dispatches WHERE created_at >= CURRENT_DATE`),
+        pool.query(
+          `SELECT COUNT(*)::int AS total FROM trading.order_agent_dispatches
+            WHERE created_at >= CURRENT_DATE ${cTickerFilter} ${cTimeFromFilter} ${cTimeToFilter}`,
+          filterParams,
+        ),
       ]);
       res.json({ dispatches: rows, total: countRows[0]?.total ?? 0, page, limit });
     } catch (err) {
@@ -608,6 +729,23 @@ export function startDashboard(port: number): void {
       const limit = Math.min(parseInt(String(req.query['limit'] ?? '30')), 200);
       const page  = Math.max(parseInt(String(req.query['page']  ?? '1')), 1);
       const offset = (page - 1) * limit;
+
+      const tickerRaw   = req.query['ticker'];
+      const timeFromRaw = req.query['time_from'];
+      const timeToRaw   = req.query['time_to'];
+      const ticker   = typeof tickerRaw   === 'string' && /^[A-Z]{1,10}$/.test(tickerRaw)   ? tickerRaw   : null;
+      const timeFrom = typeof timeFromRaw === 'string' && /^\d{2}:\d{2}$/.test(timeFromRaw) ? timeFromRaw : null;
+      const timeTo   = typeof timeToRaw   === 'string' && /^\d{2}:\d{2}$/.test(timeToRaw)   ? timeToRaw   : null;
+
+      const filterParams: (string | number)[] = [];
+      let tickerFilter = '', timeFromFilter = '', timeToFilter = '';
+      if (ticker)   { filterParams.push(ticker);   tickerFilter   = `AND ticker = $${filterParams.length}`; }
+      if (timeFrom) { filterParams.push(timeFrom); timeFromFilter = `AND (created_at AT TIME ZONE 'America/New_York')::time >= $${filterParams.length}::time`; }
+      if (timeTo)   { filterParams.push(timeTo);   timeToFilter   = `AND (created_at AT TIME ZONE 'America/New_York')::time <= $${filterParams.length}::time`; }
+      const whereClause = `WHERE trade_date >= CURRENT_DATE - INTERVAL '7 days' ${tickerFilter} ${timeFromFilter} ${timeToFilter}`;
+      const limitN = filterParams.length + 1;
+      const offsetN = filterParams.length + 2;
+
       const [{ rows }, { rows: countRows }] = await Promise.all([
         pool.query(
           `SELECT id, ticker, profile, direction, alignment, confidence,
@@ -616,13 +754,14 @@ export function startDashboard(port: number): void {
                   option_liquidity_ok, spread_pct, triggered_by, created_at,
                   analysis_payload, signal_payload
            FROM trading.signal_snapshots
-           WHERE trade_date >= CURRENT_DATE - INTERVAL '7 days'
+           ${whereClause}
            ORDER BY created_at DESC
-           LIMIT $1 OFFSET $2`,
-          [limit, offset]
+           LIMIT $${limitN} OFFSET $${offsetN}`,
+          [...filterParams, limit, offset]
         ),
         pool.query(
-          `SELECT COUNT(*)::int AS total FROM trading.signal_snapshots WHERE trade_date >= CURRENT_DATE - INTERVAL '7 days'`
+          `SELECT COUNT(*)::int AS total FROM trading.signal_snapshots ${whereClause}`,
+          filterParams
         ),
       ]);
       res.json({ signals: rows, total: countRows[0]?.total ?? 0, page, limit });

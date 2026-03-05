@@ -44,6 +44,68 @@ main { padding: 24px; max-width: 1400px; margin: 0 auto; }
 .card-value.green { color: #3fb950; }
 .card-value.red   { color: #f85149; }
 
+/* Filter bar */
+.filter-bar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 12px;
+  background: #161b22;
+  border: 1px solid #30363d;
+  border-radius: 6px;
+  margin-bottom: 12px;
+}
+
+.filter-group {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.filter-group label {
+  font-size: 12px;
+  color: #8b949e;
+  white-space: nowrap;
+}
+
+.filter-group select,
+.filter-group input[type="time"] {
+  background: #0d1117;
+  color: #e6edf3;
+  border: 1px solid #30363d;
+  border-radius: 4px;
+  padding: 4px 8px;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.filter-group select:focus,
+.filter-group input[type="time"]:focus {
+  outline: none;
+  border-color: #58a6ff;
+}
+
+.filter-group input[type="time"]::-webkit-calendar-picker-indicator {
+  filter: invert(0.7);
+  cursor: pointer;
+}
+
+.filter-clear {
+  background: none;
+  border: 1px solid #30363d;
+  color: #8b949e;
+  border-radius: 4px;
+  padding: 4px 10px;
+  font-size: 12px;
+  cursor: pointer;
+  margin-left: auto;
+}
+
+.filter-clear:hover {
+  color: #e6edf3;
+  border-color: #8b949e;
+}
+
 /* Tabs */
 .tabs {
   display: flex;

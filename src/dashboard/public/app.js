@@ -4,6 +4,66 @@ const API = '';
 let currentTab = 'positions';
 let refreshInterval = null;
 
+// ── Filter state ───────────────────────────────────────────────────────────────
+const filters = { ticker: '', timeFrom: '', timeTo: '' };
+const FILTERABLE_TABS = new Set(['signals', 'decisions', 'evaluations', 'orders', 'dispatches', 'analysis']);
+
+function applyFilters() {
+  const tickerEl   = document.getElementById('filter-ticker');
+  const timeFromEl = document.getElementById('filter-time-from');
+  const timeToEl   = document.getElementById('filter-time-to');
+  filters.ticker   = tickerEl   ? tickerEl.value   : '';
+  filters.timeFrom = timeFromEl ? timeFromEl.value : '';
+  filters.timeTo   = timeToEl   ? timeToEl.value   : '';
+
+  // Reset to page 1 for all filtered tabs
+  for (const key of Object.keys(paging)) paging[key].page = 1;
+
+  const clearBtn = document.getElementById('filter-clear');
+  if (clearBtn) clearBtn.style.display = (filters.ticker || filters.timeFrom || filters.timeTo) ? '' : 'none';
+
+  loadTab(currentTab);
+}
+
+function clearFilters() {
+  filters.ticker   = '';
+  filters.timeFrom = '';
+  filters.timeTo   = '';
+  const tickerEl   = document.getElementById('filter-ticker');
+  const timeFromEl = document.getElementById('filter-time-from');
+  const timeToEl   = document.getElementById('filter-time-to');
+  if (tickerEl)   tickerEl.value   = '';
+  if (timeFromEl) timeFromEl.value = '';
+  if (timeToEl)   timeToEl.value   = '';
+  for (const key of Object.keys(paging)) paging[key].page = 1;
+  const clearBtn = document.getElementById('filter-clear');
+  if (clearBtn) clearBtn.style.display = 'none';
+  loadTab(currentTab);
+}
+
+function filterQuery() {
+  const params = new URLSearchParams();
+  if (filters.ticker)   params.set('ticker',     filters.ticker);
+  if (filters.timeFrom) params.set('time_from',  filters.timeFrom);
+  if (filters.timeTo)   params.set('time_to',    filters.timeTo);
+  return params.toString();
+}
+
+async function initFilters() {
+  try {
+    const data = await fetch(`${API}/api/tickers`).then(r => r.json()).catch(() => ({ tickers: [] }));
+    const sel = document.getElementById('filter-ticker');
+    if (sel && data.tickers?.length) {
+      data.tickers.forEach(t => {
+        const opt = document.createElement('option');
+        opt.value = t;
+        opt.textContent = t;
+        sel.appendChild(opt);
+      });
+    }
+  } catch (_) { /* ignore */ }
+}
+
 // ── Pagination state ──────────────────────────────────────────────────────────
 const paging = {
   signals:      { page: 1, limit: 50, total: 0 },
@@ -25,6 +85,8 @@ document.querySelectorAll('.tab').forEach(btn => {
     btn.classList.add('active');
     currentTab = btn.dataset.tab;
     document.getElementById(`tab-${currentTab}`).classList.add('active');
+    const filterBar = document.getElementById('filter-bar');
+    if (filterBar) filterBar.style.display = FILTERABLE_TABS.has(currentTab) ? '' : 'none';
     loadTab(currentTab);
   });
 });
@@ -230,7 +292,7 @@ loaderMap['loadPositions'] = loadPositions;
 
 async function loadSignals() {
   const s = paging.signals;
-  const data = await fetch(`${API}/api/signals?limit=${s.limit}&page=${s.page}`).then(r => r.json()).catch(() => ({ signals: [] }));
+  const data = await fetch(`${API}/api/signals?limit=${s.limit}&page=${s.page}&${filterQuery()}`).then(r => r.json()).catch(() => ({ signals: [] }));
   s.total = data.total ?? 0;
   const rows = (data.signals || []).map(sig => `
     <tr>
@@ -260,7 +322,7 @@ loaderMap['loadSignals'] = loadSignals;
 
 async function loadDecisions() {
   const s = paging.decisions;
-  const data = await fetch(`${API}/api/decisions?limit=${s.limit}&page=${s.page}`).then(r => r.json()).catch(() => ({ decisions: [] }));
+  const data = await fetch(`${API}/api/decisions?limit=${s.limit}&page=${s.page}&${filterQuery()}`).then(r => r.json()).catch(() => ({ decisions: [] }));
   s.total = data.total ?? 0;
   const rows = (data.decisions || []).map(d => `
     <tr>
@@ -283,7 +345,7 @@ loaderMap['loadDecisions'] = loadDecisions;
 
 async function loadEvaluations() {
   const s = paging.evaluations;
-  const data = await fetch(`${API}/api/evaluations?limit=${s.limit}&page=${s.page}`).then(r => r.json()).catch(() => ({ evaluations: [] }));
+  const data = await fetch(`${API}/api/evaluations?limit=${s.limit}&page=${s.page}&${filterQuery()}`).then(r => r.json()).catch(() => ({ evaluations: [] }));
   s.total = data.total ?? 0;
   const rows = (data.evaluations || []).map(e => `
     <tr>
@@ -319,7 +381,7 @@ loaderMap['loadEvaluations'] = loadEvaluations;
 
 async function loadOrders() {
   const s = paging.orders;
-  const data = await fetch(`${API}/api/orders?limit=${s.limit}&page=${s.page}`).then(r => r.json()).catch(() => ({ orders: [] }));
+  const data = await fetch(`${API}/api/orders?limit=${s.limit}&page=${s.page}&${filterQuery()}`).then(r => r.json()).catch(() => ({ orders: [] }));
   s.total = data.total ?? 0;
   const rows = (data.orders || []).map(o => `
     <tr>
@@ -603,7 +665,7 @@ async function loadAgents() {
 
 async function loadDispatches() {
   const s = paging.dispatches;
-  const data = await fetch(`${API}/api/dispatches?limit=${s.limit}&page=${s.page}`).then(r => r.json()).catch(() => ({ dispatches: [] }));
+  const data = await fetch(`${API}/api/dispatches?limit=${s.limit}&page=${s.page}&${filterQuery()}`).then(r => r.json()).catch(() => ({ dispatches: [] }));
   s.total = data.total ?? 0;
 
   const countEl = document.getElementById('dispatches-count');
@@ -972,7 +1034,7 @@ function renderAnalysisCard(sig) {
 
 async function loadAnalysis() {
   const s = paging.analysis;
-  const data = await fetch(`${API}/api/analysis?limit=${s.limit}&page=${s.page}`).then(r => r.json()).catch(() => ({ signals: [] }));
+  const data = await fetch(`${API}/api/analysis?limit=${s.limit}&page=${s.page}&${filterQuery()}`).then(r => r.json()).catch(() => ({ signals: [] }));
   s.total = data.total ?? 0;
 
   const signals = data.signals || [];
@@ -1100,5 +1162,6 @@ async function refreshAll() {
 }
 
 // ── Boot ──────────────────────────────────────────────────────────────────────
+initFilters();
 refreshAll();
 refreshInterval = setInterval(refreshAll, 30_000);  // 30 second auto-refresh
