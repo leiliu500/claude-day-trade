@@ -300,7 +300,8 @@ export class OrderAgent {
       const dbStop    = parseFloat(current_stop);
       const entry     = this.fillPrice ?? this.cfg.candidate.entryPremium;
       // Derive implied peak from stored stop (lower bound; real peak may have been higher)
-      const impliedPeak = parseFloat((dbStop / 0.85).toFixed(2));
+      // Must match the trailing stop formula: stop = highestPrice * 0.87 → highestPrice = stop / 0.87
+      const impliedPeak = parseFloat((dbStop / 0.87).toFixed(2));
       this.highestPrice = Math.max(impliedPeak, entry);
       if (entry > 0) {
         this.peakPnlPct = Math.max(0, ((this.highestPrice - entry) / entry) * 100);
@@ -511,7 +512,7 @@ export class OrderAgent {
       `Stream trade_update: event=${event.event} status=${order.status}`,
     );
 
-    if (event.event === 'fill' || event.event === 'partial_fill') {
+    if (event.event === 'fill') {
       const filledQty = parseInt(order.filled_qty ?? '0');
       const fillPrice = order.filled_avg_price ? parseFloat(order.filled_avg_price) : null;
       const filledAt  = order.filled_at ?? new Date().toISOString();
@@ -535,6 +536,24 @@ export class OrderAgent {
       console.log(
         `[OrderAgent ${decision.ticker} ${candidate.contract.symbol}] ` +
         `[STREAM] Filled qty=${filledQty} @ $${fillPrice ?? 'n/a'} → Phase: MONITORING`,
+      );
+
+    } else if (event.event === 'partial_fill') {
+      // Update DB record with the partial fill details but remain in AWAITING_FILL.
+      // A subsequent 'fill' event will arrive when the order completes.
+      const filledQty = parseInt(order.filled_qty ?? '0');
+      const fillPrice = order.filled_avg_price ? parseFloat(order.filled_avg_price) : null;
+      const filledAt  = order.filled_at ?? new Date().toISOString();
+      const pool = getPool();
+      await pool.query(
+        `UPDATE trading.order_executions
+           SET filled_qty=$1, fill_price=$2, alpaca_status=$3, filled_at=$4
+         WHERE position_id=$5 AND order_side='buy'`,
+        [filledQty, fillPrice, order.status, filledAt, this.positionId],
+      );
+      console.log(
+        `[OrderAgent ${decision.ticker} ${candidate.contract.symbol}] ` +
+        `[STREAM] Partial fill qty=${filledQty} @ $${fillPrice ?? 'n/a'} — still AWAITING_FILL`,
       );
 
     } else if (['canceled', 'expired', 'rejected'].includes(event.event)) {
@@ -1190,14 +1209,16 @@ export class OrderAgent {
       if (exitFill) {
         console.log(`[OrderAgent ${ticker} ${symbol}] Polled sell fill: $${exitFill}`);
       } else {
-        console.warn(`[OrderAgent ${ticker} ${symbol}] Sell fill not confirmed within 15s — using entry price as fallback`);
+        console.warn(`[OrderAgent ${ticker} ${symbol}] Sell fill not confirmed within 15s — recording as fill_pending`);
       }
     }
 
     // Always derive both prices from confirmed fills, never from the stale DB column.
     // If Alpaca had no position (code 42210000), record exit at $0 (full loss).
+    // If sell fill was not confirmed within 15 s, exitPrice stays null so evaluation
+    // is skipped rather than recording a misleading 0% P&L.
     const entryPrice = this.fillPrice ?? candidate.entryPremium;
-    const exitPrice  = positionGoneFromAlpaca ? 0 : (exitFill ?? entryPrice);
+    const exitPrice: number | null = positionGoneFromAlpaca ? 0 : (exitFill ?? null);
 
     // Record sell order and close position in DB.
     // Errors here are non-fatal — evaluation must still run regardless.
@@ -1209,7 +1230,7 @@ export class OrderAgent {
         ticker,
         optionSymbol:  symbol,
         alpacaOrderId,
-        alpacaStatus:  error ? 'error' : (exitFill ? 'filled' : 'submitted'),
+        alpacaStatus:  error ? 'error' : (exitFill ? 'filled' : 'fill_pending'),
         orderSide:     'sell',
         orderType:     'market',
         positionIntent: 'sell_to_close',
@@ -1220,7 +1241,8 @@ export class OrderAgent {
         submittedAt:   new Date().toISOString(),
         filledAt:      exitFill ? new Date().toISOString() : undefined,
       });
-      await closePosition({ positionId: this.positionId, exitPrice, entryPrice, closeReason: reason });
+      // Pass 0 when fill unconfirmed — closePosition treats 0 as "look up fill from order_executions"
+      await closePosition({ positionId: this.positionId, exitPrice: exitPrice ?? 0, entryPrice, closeReason: reason });
     } catch (dbErr) {
       console.error(
         `[OrderAgent ${ticker} ${symbol}] Exit DB error (non-fatal):`,
@@ -1228,8 +1250,11 @@ export class OrderAgent {
       );
     }
 
-    const pnl = (exitPrice - entryPrice) * currentQty * 100;
-    const pnlStr = pnl >= 0 ? `+$${pnl.toFixed(2)}` : `-$${Math.abs(pnl).toFixed(2)}`;
+    const displayExit = exitPrice ?? entryPrice;
+    const pnl = (displayExit - entryPrice) * currentQty * 100;
+    const pnlStr = exitPrice != null
+      ? (pnl >= 0 ? `+$${pnl.toFixed(2)}` : `-$${Math.abs(pnl).toFixed(2)}`)
+      : '(fill pending)';
     const emoji  = reason.startsWith('STOP')       ? '🛑'
                  : reason.startsWith('TP')         ? '🎯'
                  : reason.startsWith('EXPIRY')     ? '⚠️'
@@ -1247,11 +1272,16 @@ export class OrderAgent {
       `${emoji} <b>Exit: ${ticker}</b> — ${sourceLabel}\n` +
       `<code>${symbol}</code>\n` +
       `${reason.slice(0, 120)}\n` +
-      `Entry: $${entryPrice.toFixed(2)} → Exit: $${exitPrice.toFixed(2)}\n` +
+      `Entry: $${entryPrice.toFixed(2)} → Exit: ${exitPrice != null ? `$${exitPrice.toFixed(2)}` : '(fill pending)'}\n` +
       `P&L: <b>${pnlStr}</b> | Qty: ${currentQty}`,
     ).catch(err => console.warn(`[OrderAgent ${ticker}] Notify error:`, (err as Error).message));
 
-    await this._triggerEvaluation(exitPrice, reason);
+    // Skip evaluation when fill price wasn't confirmed — a 0% P&L record would corrupt AI history
+    if (exitPrice != null) {
+      await this._triggerEvaluation(exitPrice, reason);
+    } else {
+      console.warn(`[OrderAgent ${ticker} ${symbol}] Skipping evaluation — sell fill unconfirmed`);
+    }
     this.phase = 'CLOSED';
     console.log(`[OrderAgent ${ticker} ${symbol}] Phase: CLOSED`);
     this._selfRemove();
