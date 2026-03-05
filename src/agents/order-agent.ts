@@ -324,11 +324,27 @@ export class OrderAgent {
    */
   async processOrchestratorDecision(suggestion: OrchestratorSuggestion): Promise<OrderAgentOutcome | null> {
     if (this.phase === 'CLOSING' || this.phase === 'CLOSED' || this.phase === 'FAILED') return null;
+
+    const ticker = this.cfg.decision.ticker;
+    const symbol = this.cfg.candidate.contract.symbol;
+
+    // Persist every dispatch so the dashboard can prove all orchestrator decisions
+    // (including AWAITING_FILL agents and low-confidence WAIT/CONFIRM_HOLD) reach active order agents.
+    void insertDispatch({
+      positionId:           this.positionId,
+      ticker,
+      optionSymbol:         symbol,
+      orchestratorDecision: suggestion.decisionType,
+      confidence:           suggestion.confidence,
+      urgency:              suggestion.urgency,
+      reason:               suggestion.reason,
+    }).catch(err =>
+      console.warn(`[OrderAgent ${ticker}] Failed to persist dispatch:`, (err as Error).message),
+    );
+
     if (this.phase === 'AWAITING_FILL') {
       // Order hasn't filled yet — only honour immediate exits
       if (suggestion.urgency === 'immediate') {
-        const symbol = this.cfg.candidate.contract.symbol;
-        const ticker = this.cfg.decision.ticker;
         const reason = `UNFILLED_CANCELLED: ${suggestion.reason}`;
 
         // Cancel the pending buy order so it never fills and creates an orphaned position.
@@ -349,23 +365,6 @@ export class OrderAgent {
       }
       return null;
     }
-
-    const ticker = this.cfg.decision.ticker;
-    const symbol = this.cfg.candidate.contract.symbol;
-
-    // Persist every dispatch so the dashboard can prove all orchestrator decisions
-    // (including low-confidence WAIT/CONFIRM_HOLD) reach active order agents.
-    void insertDispatch({
-      positionId:           this.positionId,
-      ticker,
-      optionSymbol:         symbol,
-      orchestratorDecision: suggestion.decisionType,
-      confidence:           suggestion.confidence,
-      urgency:              suggestion.urgency,
-      reason:               suggestion.reason,
-    }).catch(err =>
-      console.warn(`[OrderAgent ${ticker}] Failed to persist dispatch:`, (err as Error).message),
-    );
 
     // CONFIRM_HOLD / WAIT — fall through to AI evaluation.
     // These are suggestions just like EXIT / REDUCE; the agent makes the final call.

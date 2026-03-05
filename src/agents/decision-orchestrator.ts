@@ -242,6 +242,27 @@ export class DecisionOrchestrator {
       }
     }
 
+    // Stage 3 hard gate: AI is forbidden from blocking past confirmation_count >= 3.
+    // OBV divergence and TD exhaustion raise the threshold by +1 (max), so count=2 is the
+    // worst-case block. If the AI still returns WAIT at count >= 3 and all entry gates pass,
+    // force NEW_ENTRY.
+    if (
+      rawOutput.decision_type === 'WAIT' &&
+      rawOutput.confirmation_count >= 3 &&
+      analysis.confidence >= config.MIN_CONFIDENCE &&
+      timeGateOk &&
+      option.liquidityOk &&
+      option.candidatePass &&
+      context.openPositions.length === 0 &&
+      !isEodWindow &&
+      !isFomcWindow
+    ) {
+      rawOutput.decision_type = 'NEW_ENTRY';
+      rawOutput.should_execute = true;
+      if (rawOutput.urgency === 'low') rawOutput.urgency = 'standard';
+      rawOutput.reasoning = `[STAGE 3 OVERRIDE] confirmation_count=${rawOutput.confirmation_count} >= 3 with confidence=${analysis.confidence.toFixed(2)} — Stage 3 CONFIRMED_ENTRY enforced; OBV/TD exhaustion penalty is +1 max and cannot block past count=3. ${rawOutput.reasoning}`;
+    }
+
     return {
       id: uuidv4(),
       signalId: signal.id,
