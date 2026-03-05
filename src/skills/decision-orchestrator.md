@@ -58,8 +58,19 @@ Override to immediate NEW_ENTRY only if: confidence >= 0.85 AND alignment = "all
   Output WAIT and mention: "FOMC event in {fomc_minutes_to_event} min — holding off on new entries until volatility settles"
   Note: this is a pre-detected hard constraint enforced by the system; you do not need to verify it.
 
+## New Entry Protection Window
+If the most recent entry in `recent_decisions` has `decision_type = "NEW_ENTRY"` or `"ADD_POSITION"`, the position was just entered this scheduler cycle. **For the first 2 scheduler cycles after entry (~6 minutes), suppress REDUCE_EXPOSURE triggers R1 and R2** (alignment degradation and moderate confidence drop). A minor P&L dip or small confidence fluctuation in the first few minutes is normal price noise — do NOT exit on it.
+
+During the protection window, only hard stops apply:
+- E1: broker P&L ≤ −30%
+- E3: confidence collapses below 0.40
+- E5: full trend reversal with alignment = "all_aligned" against the position
+
+Mention when applying the window: "New entry protection window active — suppressing minor-fluctuation reduce triggers for the first 2 cycles."
+
 ## REDUCE_EXPOSURE TRIGGERS — Fire when conditions met AND no EXIT trigger applies AND virtual_qty >= 2
 (If virtual_qty = 1, use EXIT instead of REDUCE)
+(R1 and R2 do NOT apply during the new entry protection window — see above)
 
 **R1 — Alignment Degradation:** Position opened when alignment was "all_aligned" but current alignment is "mixed" or worse → REDUCE_EXPOSURE.
   Mention: "Alignment degraded from all_aligned to mixed — reducing exposure"
