@@ -343,8 +343,18 @@ export class OrderAgent {
     );
 
     if (this.phase === 'AWAITING_FILL') {
-      // Order hasn't filled yet — only honour immediate exits
-      if (suggestion.urgency === 'immediate') {
+      // Order hasn't filled yet.
+      // Cancel when:
+      //   (a) immediate urgency — EOD / hard P&L stop, non-negotiable, OR
+      //   (b) standard urgency EXIT/REDUCE with high confidence (>= MIN_CONFIDENCE) —
+      //       market has turned while we waited; filling into a losing trade is worse than missing the entry.
+      const isExitOrReduce = suggestion.decisionType === 'EXIT' || suggestion.decisionType === 'REDUCE_EXPOSURE';
+      const isHighConfidence = (suggestion.confidence ?? 0) >= config.MIN_CONFIDENCE;
+      const shouldCancel =
+        suggestion.urgency === 'immediate' ||
+        (isExitOrReduce && suggestion.urgency === 'standard' && isHighConfidence);
+
+      if (shouldCancel) {
         const reason = `UNFILLED_CANCELLED: ${suggestion.reason}`;
 
         // Cancel the pending buy order so it never fills and creates an orphaned position.
@@ -358,7 +368,10 @@ export class OrderAgent {
         );
         await this._voidPosition(reason);
         this.phase = 'FAILED';
-        console.log(`[OrderAgent ${ticker} ${symbol}] Phase: FAILED — buy order cancelled (${reason})`);
+        console.log(
+          `[OrderAgent ${ticker} ${symbol}] Phase: FAILED — buy order cancelled` +
+          ` (urgency=${suggestion.urgency}, confidence=${suggestion.confidence?.toFixed(2) ?? 'n/a'}, reason=${reason})`,
+        );
         this._selfRemove();
 
         return { action: 'EXIT', reasoning: suggestion.reason, overridingOrchestrator: false, optionSymbol: symbol };
