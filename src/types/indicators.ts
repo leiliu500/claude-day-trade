@@ -9,6 +9,7 @@ export interface DMIResult {
   adxStrength: 'strong' | 'moderate' | 'weak'; // >30 strong, >20 moderate
   crossedUp: boolean;    // DI+ crossed above DI- on last bar
   crossedDown: boolean;  // DI- crossed above DI+ on last bar
+  adxBarsAbove25: number; // consecutive recent bars where ADX > 25 (trend maturity)
 }
 
 export interface ATRResult {

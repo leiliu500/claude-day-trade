@@ -6,9 +6,10 @@ export interface ConfidenceBreakdown {
   alignmentBonus: number;          // 0, +0.02, +0.05, or +0.10
   tdAdjustment: number;            // -0.05..+0.03
   obvBonus: number;                // -0.03..+0.03 — OBV trend confirmation or divergence penalty
-  vwapBonus: number;               // -0.08..+0.06 — VWAP alignment + band extension penalty (HTF+MTF)
+  vwapBonus: number;               // -0.12..+0.06 — VWAP alignment + band extension penalty (HTF+MTF)
   oiVolumeBonus: number;           // 0..0.05 — triggered when option volume is extremely high
   pricePositionAdjustment: number; // -0.10..0 — penalty for trading against range position
+  adxMaturityPenalty: number;      // -0.08..0 — penalty when HTF ADX has been above 25 for many bars
   total: number;                   // clamped 0..1
 }
 

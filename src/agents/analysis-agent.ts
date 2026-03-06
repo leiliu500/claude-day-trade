@@ -15,7 +15,7 @@ function computeConfidence(signal: SignalPayload, option: OptionEvaluation): Con
   const tfs = signal.timeframes;
   const [ltf, mtf, htf] = tfs;
   if (!ltf || !mtf || !htf) {
-    return { base: 0.40, diSpreadBonus: 0, adxBonus: 0, diCrossBonus: 0, alignmentBonus: 0, tdAdjustment: 0, obvBonus: 0, vwapBonus: 0, oiVolumeBonus: 0, pricePositionAdjustment: 0, total: 0.40 };
+    return { base: 0.40, diSpreadBonus: 0, adxBonus: 0, diCrossBonus: 0, alignmentBonus: 0, tdAdjustment: 0, obvBonus: 0, vwapBonus: 0, oiVolumeBonus: 0, pricePositionAdjustment: 0, adxMaturityPenalty: 0, total: 0.40 };
   }
 
   // Base: slight bullish bias
@@ -119,13 +119,13 @@ function computeConfidence(signal: SignalPayload, option: OptionEvaluation): Con
     const { vwap: htfVwap, upperBand: htfUpper, lowerBand: htfLower, deviation: htfDev } = htf.vwap;
     const htfPrice = htf.currentPrice;
     if (signal.direction === 'bullish') {
-      if (htfPrice > htfUpper)                 vwapBonus -= 0.06; // beyond 2σ — very overextended
-      else if (htfPrice > htfVwap + htfDev)    vwapBonus -= 0.02; // beyond 1σ — somewhat extended
+      if (htfPrice > htfUpper)                 vwapBonus -= 0.10; // beyond 2σ — very overextended
+      else if (htfPrice > htfVwap + htfDev)    vwapBonus -= 0.05; // beyond 1σ — somewhat extended
     } else {
-      if (htfPrice < htfLower)                 vwapBonus -= 0.06; // beyond 2σ below VWAP
-      else if (htfPrice < htfVwap - htfDev)    vwapBonus -= 0.02; // beyond 1σ below VWAP
+      if (htfPrice < htfLower)                 vwapBonus -= 0.10; // beyond 2σ below VWAP
+      else if (htfPrice < htfVwap - htfDev)    vwapBonus -= 0.05; // beyond 1σ below VWAP
     }
-    vwapBonus = Math.max(-0.08, Math.min(0.06, vwapBonus));
+    vwapBonus = Math.max(-0.12, Math.min(0.06, vwapBonus));
   }
 
   // OI/Volume bonus — triggered only when option volume is extremely high.
@@ -168,9 +168,22 @@ function computeConfidence(signal: SignalPayload, option: OptionEvaluation): Con
     pricePositionAdjustment = Math.max(-0.10, -(0.5 - htfRangePosition) * 0.20);
   }
 
-  const total = Math.max(0, Math.min(1, base + diSpreadBonus + adxBonus + diCrossBonus + alignmentBonus + tdAdjustment + obvBonus + vwapBonus + oiVolumeBonus + pricePositionAdjustment));
+  // ADX maturity penalty — penalizes entering a trend that has already been running strong for many bars.
+  // Skipped when a fresh DI cross is present on HTF (cross signals new momentum regardless of maturity).
+  // HTF adxBarsAbove25 >= 10 bars: trend is very mature → -0.08
+  // HTF adxBarsAbove25 >= 5 bars:  trend is mature      → -0.04
+  // Clamped -0.08..0
+  let adxMaturityPenalty = 0;
+  const htfFreshCross = signal.direction === 'bullish' ? htf.dmi.crossedUp : htf.dmi.crossedDown;
+  if (!htfFreshCross && htf.dmi.adxBarsAbove25 >= 10) {
+    adxMaturityPenalty = -0.08;
+  } else if (!htfFreshCross && htf.dmi.adxBarsAbove25 >= 5) {
+    adxMaturityPenalty = -0.04;
+  }
 
-  return { base, diSpreadBonus, adxBonus, diCrossBonus, alignmentBonus, tdAdjustment, obvBonus, vwapBonus, oiVolumeBonus, pricePositionAdjustment, total };
+  const total = Math.max(0, Math.min(1, base + diSpreadBonus + adxBonus + diCrossBonus + alignmentBonus + tdAdjustment + obvBonus + vwapBonus + oiVolumeBonus + pricePositionAdjustment + adxMaturityPenalty));
+
+  return { base, diSpreadBonus, adxBonus, diCrossBonus, alignmentBonus, tdAdjustment, obvBonus, vwapBonus, oiVolumeBonus, pricePositionAdjustment, adxMaturityPenalty, total };
 }
 
 /**

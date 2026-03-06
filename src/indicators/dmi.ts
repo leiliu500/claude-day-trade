@@ -9,7 +9,7 @@ import type { DMIResult } from '../types/indicators.js';
  */
 export function computeDMI(bars: OHLCVBar[], period = 14, skipSessionGaps = false): DMIResult {
   if (bars.length < period + 1) {
-    return { plusDI: 0, minusDI: 0, adx: 0, trend: 'neutral', adxStrength: 'weak', crossedUp: false, crossedDown: false };
+    return { plusDI: 0, minusDI: 0, adx: 0, trend: 'neutral', adxStrength: 'weak', crossedUp: false, crossedDown: false, adxBarsAbove25: 0 };
   }
 
   const n = bars.length;
@@ -75,10 +75,20 @@ export function computeDMI(bars: OHLCVBar[], period = 14, skipSessionGaps = fals
     return sum > 0 ? (Math.abs(dp - dm) / sum) * 100 : 0;
   });
 
-  // ADX = Wilder's smoothing of DX
+  // ADX = Wilder's smoothing of DX — track history to measure trend maturity
+  const adxHistory: number[] = [];
   let adx = dxArr.slice(0, period).reduce((a, b) => a + b, 0) / period;
+  adxHistory.push(adx);
   for (let i = period; i < dxArr.length; i++) {
     adx = (adx * (period - 1) + (dxArr[i] ?? 0)) / period;
+    adxHistory.push(adx);
+  }
+
+  // Count consecutive recent bars where ADX > 25 (trend maturity lookback)
+  let adxBarsAbove25 = 0;
+  for (let i = adxHistory.length - 1; i >= 0; i--) {
+    if ((adxHistory[i] ?? 0) > 25) adxBarsAbove25++;
+    else break;
   }
 
   const plusDI = diPlusArr[diPlusArr.length - 1] ?? 0;
@@ -91,5 +101,5 @@ export function computeDMI(bars: OHLCVBar[], period = 14, skipSessionGaps = fals
   const crossedUp = plusDI > minusDI && prevPlusDI <= prevMinusDI;
   const crossedDown = minusDI > plusDI && prevMinusDI <= prevPlusDI;
 
-  return { plusDI, minusDI, adx, trend, adxStrength, crossedUp, crossedDown };
+  return { plusDI, minusDI, adx, trend, adxStrength, crossedUp, crossedDown, adxBarsAbove25 };
 }
