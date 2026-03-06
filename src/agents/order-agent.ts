@@ -128,7 +128,7 @@ export interface OrderAgentOutcome {
 }
 
 const TICK_INTERVAL_MS       = 30_000;
-const AI_TICK_INTERVAL       = 2;     // periodic AI check every N ticks (1 min)
+const AI_TICK_INTERVAL       = 1;     // periodic AI check every N ticks (30 s)
 const FILL_TIMEOUT_MS        = 90_000; // cancel unfilled limit order after 90 s
 const FILL_STALE_CHECK_MS    = 45_000; // check for adverse price move at 45 s
 const FILL_STALE_ABORT_PCT   = 0.15;  // cancel if current mid dropped > 15% below limit price
