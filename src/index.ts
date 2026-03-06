@@ -35,6 +35,11 @@ async function main(): Promise<void> {
   AlpacaStreamManager.getInstance().connect(AUTO_TICKERS);
   console.log(`[Boot] Alpaca stream connecting — tickers: ${AUTO_TICKERS.join(',')}`);
 
+  // Seed cache with 2 trading days of historical 1-min bars so indicators
+  // have warmup data from boot (rather than waiting for stream to fill up).
+  await AlpacaStreamManager.getInstance().seedHistoricalBars(AUTO_TICKERS);
+  console.log('[Boot] Historical bar seed complete');
+
   // ── AUTO Scheduler ──────────────────────────────────────────────────────
   startScheduler();
 

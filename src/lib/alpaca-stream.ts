@@ -21,8 +21,8 @@ import type { OHLCVBar, Timeframe } from '../types/market.js';
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
-/** 1-min bars to keep per ticker (≈11 trading hours) */
-const BAR_CACHE_SIZE = 700;
+/** 1-min bars to keep per ticker — 800 covers ~2 full regular-session trading days (390 bars each) */
+const BAR_CACHE_SIZE = 800;
 
 /** Cache is stale when newest bar is older than this many seconds.
  *  90 s allows one missed bar before falling back to REST. */
@@ -255,6 +255,9 @@ export class AlpacaStreamManager extends EventEmitter {
       vwap:      bar.vw,
     };
 
+    // Drop pre-market / after-hours bars — regular session only (9:30–16:00 ET)
+    if (!this._isRegularSession(ohlcv.timestamp)) return;
+
     let cache = this.barCache.get(bar.S);
     if (!cache) { cache = []; this.barCache.set(bar.S, cache); }
 
@@ -266,6 +269,90 @@ export class AlpacaStreamManager extends EventEmitter {
 
     this.emit('bar', bar.S, ohlcv);
     console.log(`[AlpacaStream] 1m bar: ${bar.S} c=$${bar.c} t=${bar.t}`);
+  }
+
+  /**
+   * Fetch 2 trading days of 1-min historical bars from Alpaca REST and
+   * prepend them to the cache for each ticker.  Call once at startup after
+   * connect() so indicators have enough warmup data immediately.
+   */
+  async seedHistoricalBars(tickers: string[]): Promise<void> {
+    // 4 calendar days back safely covers 2 trading days (handles weekends)
+    const start = new Date(Date.now() - 4 * 24 * 60 * 60 * 1000).toISOString();
+    await Promise.all(tickers.map(async (ticker) => {
+      try {
+        const bars = await this._fetchHistoricalOneMins(ticker, start);
+        this._seedCache(ticker, bars);
+        console.log(`[AlpacaStream] Seeded ${bars.length} historical 1m bars for ${ticker}`);
+      } catch (err) {
+        console.error(`[AlpacaStream] Failed to seed historical bars for ${ticker}:`, (err as Error).message);
+      }
+    }));
+  }
+
+  private async _fetchHistoricalOneMins(ticker: string, start: string): Promise<OHLCVBar[]> {
+    const headers = {
+      'APCA-API-KEY-ID':     config.ALPACA_API_KEY,
+      'APCA-API-SECRET-KEY': config.ALPACA_SECRET_KEY,
+    };
+    const url = new URL(`${config.ALPACA_DATA_URL}/v2/stocks/${ticker}/bars`);
+    url.searchParams.set('timeframe', '1Min');
+    url.searchParams.set('start',     start);
+    url.searchParams.set('limit',     '1000');
+    url.searchParams.set('adjustment','raw');
+    url.searchParams.set('feed',      'sip');
+
+    const res = await fetch(url.toString(), { headers, signal: AbortSignal.timeout(30_000) });
+    if (!res.ok) throw new Error(`Alpaca bars error ${res.status} for ${ticker}`);
+
+    const data = await res.json() as {
+      bars: Array<{ t: string; o: number; h: number; l: number; c: number; v: number; vw?: number }>;
+    };
+    return (data.bars ?? []).map(b => ({
+      timestamp: b.t,
+      open:      b.o,
+      high:      b.h,
+      low:       b.l,
+      close:     b.c,
+      volume:    b.v,
+      vwap:      b.vw,
+    }));
+  }
+
+  /**
+   * Merge historical bars (already filtered to regular session) into the
+   * cache.  Historical bars go first; any live bars already in cache are
+   * kept at the end.  Trims to BAR_CACHE_SIZE (newest bars kept).
+   */
+  private _seedCache(ticker: string, historicalBars: OHLCVBar[]): void {
+    const filtered = historicalBars.filter(b => this._isRegularSession(b.timestamp));
+    if (filtered.length === 0) return;
+
+    const existing  = this.barCache.get(ticker) ?? [];
+    const existingTs = new Set(existing.map(b => b.timestamp));
+    const newBars   = filtered.filter(b => !existingTs.has(b.timestamp));
+    const merged    = [...newBars, ...existing];
+    const trimmed   = merged.length > BAR_CACHE_SIZE
+      ? merged.slice(merged.length - BAR_CACHE_SIZE)
+      : merged;
+    this.barCache.set(ticker, trimmed);
+  }
+
+  /**
+   * Returns true when `timestamp` falls within the regular trading session
+   * (9:30 AM – 3:59 PM US/Eastern, DST-aware).
+   */
+  private _isRegularSession(timestamp: string): boolean {
+    const parts = new Intl.DateTimeFormat('en-US', {
+      timeZone: 'America/New_York',
+      hour:     '2-digit',
+      minute:   '2-digit',
+      hour12:   false,
+    }).formatToParts(new Date(timestamp));
+    const hour   = parseInt(parts.find(p => p.type === 'hour')!.value,   10);
+    const minute = parseInt(parts.find(p => p.type === 'minute')!.value, 10);
+    const mins   = hour * 60 + minute;
+    return mins >= 9 * 60 + 30 && mins < 16 * 60;
   }
 
   private _scheduleDataReconnect(): void {
