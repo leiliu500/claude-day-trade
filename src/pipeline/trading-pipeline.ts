@@ -56,11 +56,13 @@ function deterministicWait(
 }
 
 /** True when AI orchestration is required */
-function needsAIOrchestration(analysis: AnalysisResult, context: PositionContext, timeGateOk: boolean): boolean {
+function needsAIOrchestration(analysis: AnalysisResult, context: PositionContext, timeGateOk: boolean, hasActiveAgents: boolean): boolean {
   const hasOpenPositions = context.openPositions.length > 0;
   const hasActiveStreak  = context.confirmationStreaks.length > 0;
-  // When market is closed, only run AI if there are positions to manage — not for potential new entries
-  return (analysis.meetsEntryThreshold && timeGateOk) || hasOpenPositions || hasActiveStreak;
+  // When market is closed, only run AI if there are positions to manage — not for potential new entries.
+  // hasActiveAgents guards against DB lag: if the in-memory registry already has a MONITORING/AWAITING_FILL
+  // agent, we must always run AI so every new signal reaches that agent regardless of confidence level.
+  return (analysis.meetsEntryThreshold && timeGateOk) || hasOpenPositions || hasActiveStreak || hasActiveAgents;
 }
 
 export interface PipelineResult {
@@ -144,7 +146,11 @@ export async function runPipeline(
     const context = await buildContext(ticker);
 
     // ── Phase 7: Decision Orchestrator (or deterministic bypass) ──────────
-    const useAI = needsAIOrchestration(analysis, context, timeGateOk);
+    const registry = OrderAgentRegistry.getInstance();
+    const hasActiveAgents = registry.getByTicker(ticker).some(
+      a => a.getPhase() === 'MONITORING' || a.getPhase() === 'AWAITING_FILL',
+    );
+    const useAI = needsAIOrchestration(analysis, context, timeGateOk, hasActiveAgents);
     const decision = useAI
       ? await decisionOrchestrator.run({ signal, option: optionEval, analysis, context, timeGateOk })
       : deterministicWait(signal, analysis, ticker, profile);
@@ -178,8 +184,6 @@ export async function runPipeline(
       analysis,
       decisionResult: decision,
     };
-
-    const registry = OrderAgentRegistry.getInstance();
 
     switch (decision.decisionType) {
 

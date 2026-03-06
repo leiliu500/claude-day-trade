@@ -568,14 +568,14 @@ export function startDashboard(port: number): void {
                 ORDER BY t.created_at ASC
                 LIMIT 1
              ) oat ON true
-            WHERE d.created_at >= CURRENT_DATE ${tickerFilter} ${timeFromFilter} ${timeToFilter}
+            WHERE d.created_at >= NOW() - INTERVAL '24 hours' ${tickerFilter} ${timeFromFilter} ${timeToFilter}
             ORDER BY d.created_at DESC
             LIMIT $${limitN} OFFSET $${offsetN}`,
           [...filterParams, limit, offset],
         ),
         pool.query(
           `SELECT COUNT(*)::int AS total FROM trading.order_agent_dispatches
-            WHERE created_at >= CURRENT_DATE ${cTickerFilter} ${cTimeFromFilter} ${cTimeToFilter}`,
+            WHERE created_at >= NOW() - INTERVAL '24 hours' ${cTickerFilter} ${cTimeFromFilter} ${cTimeToFilter}`,
           filterParams,
         ),
       ]);
