@@ -31,7 +31,7 @@ async function main(): Promise<void> {
   //   1. Data stream  — real-time 1-min bars for signal-agent bar cache
   //   2. Trading stream — real-time order fill notifications for order-agents
   // The 3-min scheduler and 30 s polling remain as fallbacks.
-  const AUTO_TICKERS = ['SPY', 'MSFT'];
+  const AUTO_TICKERS = ['SPY', 'AAPL'];
   AlpacaStreamManager.getInstance().connect(AUTO_TICKERS);
   console.log(`[Boot] Alpaca stream connecting — tickers: ${AUTO_TICKERS.join(',')}`);
 

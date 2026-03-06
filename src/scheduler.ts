@@ -14,7 +14,7 @@ import {
 // Default AUTO tickers — can be extended via config
 const AUTO_TICKERS: Array<{ ticker: string; profile: 'S' | 'M' | 'L' }> = [
   { ticker: 'SPY', profile: 'S' },
-  { ticker: 'MSFT', profile: 'S' },
+  { ticker: 'AAPL', profile: 'S' },
 ];
 
 const TRADING_INTERVAL_MS = 3 * 60 * 1000; // 3 minutes
