@@ -232,14 +232,6 @@ export class DecisionOrchestrator {
       console.error('[DecisionOrchestrator] OpenAI error:', err);
     }
 
-    // Server-side confirmation count — count consecutive same-direction decisions from DB.
-    // Use the max of AI-reported count and server count to guard against AI count drift/reset.
-    const serverCount = computeServerConfirmationCount(context.recentDecisions, signal.direction ?? '') + 1;
-    if (serverCount > rawOutput.confirmation_count) {
-      console.log(`[DecisionOrchestrator] Server count (${serverCount}) > AI count (${rawOutput.confirmation_count}) — using server count`);
-      rawOutput.confirmation_count = serverCount;
-    }
-
     // Hard gate: EXIT/REDUCE/REVERSE are meaningless without an open position — override to WAIT
     const isPositionDecision = rawOutput.decision_type === 'EXIT' || rawOutput.decision_type === 'REDUCE_EXPOSURE' || rawOutput.decision_type === 'REVERSE';
     if (isPositionDecision && context.openPositions.length === 0) {
@@ -293,6 +285,19 @@ export class DecisionOrchestrator {
           rawOutput.should_execute = true;
         }
       }
+    }
+
+    // Server-side confirmation count — computed after all gate overrides so WAIT decisions
+    // do not inflate the count. Only add +1 when the final decision is an actual confirmation.
+    // Always use server count as the source of truth — never let AI count drift upward unchecked.
+    const isConfirmDecision = rawOutput.decision_type === 'NEW_ENTRY' ||
+                              rawOutput.decision_type === 'CONFIRM_HOLD' ||
+                              rawOutput.decision_type === 'ADD_POSITION';
+    const priorCount = computeServerConfirmationCount(context.recentDecisions, signal.direction ?? '');
+    const serverCount = priorCount + (isConfirmDecision ? 1 : 0);
+    if (serverCount !== rawOutput.confirmation_count) {
+      console.log(`[DecisionOrchestrator] Overriding AI count (${rawOutput.confirmation_count}) with server count (${serverCount})`);
+      rawOutput.confirmation_count = serverCount;
     }
 
     return {
