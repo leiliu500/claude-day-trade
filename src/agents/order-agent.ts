@@ -551,10 +551,15 @@ export class OrderAgent {
       }
 
       this.phase = 'MONITORING';
+      this._forceNextAI = true;
       console.log(
         `[OrderAgent ${decision.ticker} ${candidate.contract.symbol}] ` +
         `[STREAM] Filled qty=${filledQty} @ $${fillPrice ?? 'n/a'} → Phase: MONITORING`,
       );
+      // Immediately run the first monitor tick instead of waiting up to 30 s
+      // for the next setInterval fire (which would then also delay the AI check
+      // by another 30 s due to AI_TICK_INTERVAL = 2).
+      void this._monitorPosition();
 
     } else if (event.event === 'partial_fill') {
       // Update DB record with the partial fill details but remain in AWAITING_FILL.
@@ -675,10 +680,13 @@ export class OrderAgent {
       }
 
       this.phase = 'MONITORING';
+      this._forceNextAI = true;
       console.log(
         `[OrderAgent ${decision.ticker} ${candidate.contract.symbol}] ` +
         `[POLL] Filled qty=${filledQty} @ $${fillPrice ?? 'n/a'} → Phase: MONITORING`,
       );
+      // Immediately run the first monitor tick instead of waiting for the next interval.
+      void this._monitorPosition();
 
     } else if (['canceled', 'expired', 'rejected'].includes(order.status)) {
       if (this.alpacaOrderId) AlpacaStreamManager.getInstance().unwatchOrder(this.alpacaOrderId);
@@ -693,13 +701,30 @@ export class OrderAgent {
     }
   }
 
+  private _monitorRunning = false;
+  /** Set when transitioning to MONITORING so the immediate post-fill tick always runs AI. */
+  private _forceNextAI = false;
+
   /**
    * Every tick:
    *   1. Fetch live price and DB state
    *   2. Hard stop / TP / expiry (deterministic — always fires first)
    *   3. Periodic AI check (no orchestrator input) every AI_TICK_INTERVAL ticks
+   *
+   * Re-entrant guard (_monitorRunning) prevents overlap between the immediate
+   * post-fill call and the next setInterval tick.
    */
   private async _monitorPosition(): Promise<void> {
+    if (this._monitorRunning) return;
+    this._monitorRunning = true;
+    try {
+      await this._doMonitorPosition();
+    } finally {
+      this._monitorRunning = false;
+    }
+  }
+
+  private async _doMonitorPosition(): Promise<void> {
     const { decision, candidate } = this.cfg;
     const symbol = candidate.contract.symbol;
     const ticker = decision.ticker;
@@ -905,7 +930,10 @@ export class OrderAgent {
     // - Every tick when price is declining (1+ consecutive falls)
     // - Every tick when pnl is negative and position was previously profitable (protect against hold trap)
     // - Every 2 ticks (1 min) otherwise
+    const forceAI = this._forceNextAI;
+    this._forceNextAI = false;
     const shouldRunAI =
+      forceAI ||
       this.consecutiveDeclines >= 1 ||
       (this.peakPnlPct > 0 && pnlPctNow < 0) ||
       this.tickCount % AI_TICK_INTERVAL === 0;
