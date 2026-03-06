@@ -77,11 +77,10 @@ function computeServerConfirmationCount(
 ): number {
   let count = 0;
   for (const d of recentDecisions) {
-    // Only count decisions that are part of the same directional conviction run.
-    // Break on any non-actionable type (EXIT, REDUCE_EXPOSURE, REVERSE) or direction change.
-    const isActionable = d.decisionType === 'WAIT' || d.decisionType === 'NEW_ENTRY' ||
-                         d.decisionType === 'CONFIRM_HOLD' || d.decisionType === 'ADD_POSITION';
-    if (!isActionable) break;
+    // Only count decisions that actively confirm direction (not WAIT — that breaks the streak).
+    const isConfirmation = d.decisionType === 'NEW_ENTRY' ||
+                           d.decisionType === 'CONFIRM_HOLD' || d.decisionType === 'ADD_POSITION';
+    if (!isConfirmation) break;
     if (d.direction !== direction) break;
     count++;
   }
