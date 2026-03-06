@@ -70,6 +70,25 @@ export async function updateHumanApprovalStatus(
   );
 }
 
+/** Mark an approved request as aborted because the option quote went stale before order placement. */
+export async function markApprovalStaleQuote(
+  id: string,
+  originalPrice: number,
+  freshMid: number,
+  devPct: number,
+): Promise<void> {
+  const pool = getPool();
+  await pool.query(
+    `UPDATE trading.human_approvals
+     SET status               = 'STALE_QUOTE_ABORT',
+         abort_original_price = $2,
+         abort_fresh_price    = $3,
+         abort_dev_pct        = $4
+     WHERE id = $1`,
+    [id, originalPrice, freshMid, devPct],
+  );
+}
+
 export async function getRecentHumanApprovals(limit = 20) {
   const pool = getPool();
   const { rows } = await pool.query(

@@ -14,6 +14,12 @@ const APPROVAL_TIMEOUT_MS = 2 * 60 * 1000; // 2 minutes
 
 export type ApprovalOutcome = 'approved' | 'denied' | 'timeout';
 
+export interface ApprovalResult {
+  outcome: ApprovalOutcome;
+  /** DB ID of the human_approvals record — use to update status after the fact (e.g. STALE_QUOTE_ABORT). */
+  approvalId: string;
+}
+
 export interface TelegramUser {
   id: number;
   first_name?: string;
@@ -57,7 +63,7 @@ export class ApprovalService {
    * Send approval request to Telegram and wait for human response.
    * Resolves with 'approved' | 'denied' | 'timeout'.
    */
-  async requestApproval(req: ApprovalRequest): Promise<ApprovalOutcome> {
+  async requestApproval(req: ApprovalRequest): Promise<ApprovalResult> {
     const approvalId = uuidv4();
     const expiresAt = new Date(Date.now() + APPROVAL_TIMEOUT_MS);
     const { decision, candidate, sizing, confidence } = req;
@@ -131,7 +137,7 @@ export class ApprovalService {
     console.log(`[ApprovalService] Waiting for human approval: ${approvalId} (${decision.ticker} ${decision.decisionType})`);
 
     // Block pipeline until approved / denied / timeout
-    return new Promise<ApprovalOutcome>((resolve) => {
+    const outcome = await new Promise<ApprovalOutcome>((resolve) => {
       const timer = setTimeout(async () => {
         this.pending.delete(approvalId);
         await updateHumanApprovalStatus(approvalId, 'TIMEOUT').catch(() => {});
@@ -151,6 +157,7 @@ export class ApprovalService {
 
       this.pending.set(approvalId, { resolve, timer });
     });
+    return { outcome, approvalId };
   }
 
   /**

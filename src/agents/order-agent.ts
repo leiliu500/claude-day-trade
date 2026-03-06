@@ -29,7 +29,7 @@ import { insertEvaluation, getTickerEvaluations } from '../db/repositories/evalu
 import { insertAgentTick, getRecentAgentTicks } from '../db/repositories/order-agent-ticks.js';
 import { insertDispatch } from '../db/repositories/order-agent-dispatches.js';
 import { EvaluationAgent } from './evaluation-agent.js';
-import { notifyAlert, notifyOrderAgentDecision, notifyOrderAgentDispatch } from '../telegram/notifier.js';
+import { notifyAlert, notifyOrderAgentDecision, notifyOrderAgentDispatch, notifyFillStale } from '../telegram/notifier.js';
 import { loadSkill } from '../utils/skill-loader.js';
 import {
   submitLimitBuyOrder,
@@ -38,6 +38,7 @@ import {
   getAlpacaOrder,
   getAlpacaPositionPrices,
   cancelOpenOrdersForSymbol,
+  fetchOptionMid,
 } from '../lib/alpaca-api.js';
 import { AlpacaStreamManager } from '../lib/alpaca-stream.js';
 import type { TradeUpdateEvent } from '../lib/alpaca-stream.js';
@@ -126,9 +127,11 @@ export interface OrderAgentOutcome {
   pnlPct?: number;
 }
 
-const TICK_INTERVAL_MS  = 30_000;
-const AI_TICK_INTERVAL  = 2;     // periodic AI check every N ticks (1 min)
-const FILL_TIMEOUT_MS   = 90_000; // cancel unfilled limit order after 90 s
+const TICK_INTERVAL_MS       = 30_000;
+const AI_TICK_INTERVAL       = 2;     // periodic AI check every N ticks (1 min)
+const FILL_TIMEOUT_MS        = 90_000; // cancel unfilled limit order after 90 s
+const FILL_STALE_CHECK_MS    = 45_000; // check for adverse price move at 45 s
+const FILL_STALE_ABORT_PCT   = 0.15;  // cancel if current mid dropped > 15% below limit price
 
 const openai            = new OpenAI({ apiKey: config.OPENAI_API_KEY });
 const ORDER_AGENT_SKILL = loadSkill('order-agent');
@@ -154,6 +157,8 @@ export class OrderAgent {
   private consecutiveDeclines: number = 0;
   /** Rolling buffer of last 5 pnlPctNow values — used to detect sustained-loss hold traps. */
   private recentTickPnls: number[] = [];
+  /** True once the 45 s stale-price fill check has run (runs at most once per order). */
+  private fillStaleChecked = false;
   /**
    * Mutex: true while an AI evaluation (_runAIDecision) is in-flight.
    * Prevents concurrent calls from the 30 s tick and the orchestrator pipeline
@@ -607,6 +612,41 @@ export class OrderAgent {
       this._stopTick();
       this._selfRemove();
       return;
+    }
+
+    // Mid-wait stale-price guard: if the underlying has moved against us significantly
+    // since the order was placed, cancel rather than risk filling into a losing entry.
+    // Only checked once at the FILL_STALE_CHECK_MS mark (first tick after 45 s).
+    if (elapsedMs >= FILL_STALE_CHECK_MS && !this.fillStaleChecked) {
+      this.fillStaleChecked = true;
+      const { decision, candidate } = this.cfg;
+      const currentMid = await fetchOptionMid(candidate.contract.symbol);
+      if (currentMid !== null) {
+        const dropPct = (this.cfg.sizing.limitPrice - currentMid) / this.cfg.sizing.limitPrice;
+        if (dropPct > FILL_STALE_ABORT_PCT) {
+          const elapsedSec = Math.round(elapsedMs / 1000);
+          console.warn(
+            `[OrderAgent ${decision.ticker} ${candidate.contract.symbol}] ` +
+            `FILL_STALE — mid dropped ${(dropPct * 100).toFixed(1)}% from limit ` +
+            `$${this.cfg.sizing.limitPrice} to $${currentMid.toFixed(2)} after ${elapsedSec}s, cancelling`,
+          );
+          if (this.alpacaOrderId) AlpacaStreamManager.getInstance().unwatchOrder(this.alpacaOrderId);
+          await cancelOpenOrdersForSymbol(candidate.contract.symbol);
+          await this._voidPosition('fill_stale');
+          this.phase = 'FAILED';
+          this._stopTick();
+          notifyFillStale({
+            ticker: decision.ticker,
+            optionSymbol: candidate.contract.symbol,
+            limitPrice: this.cfg.sizing.limitPrice,
+            currentMid,
+            dropPct,
+            elapsedSec,
+          }).catch(() => {});
+          this._selfRemove();
+          return;
+        }
+      }
     }
 
     const order = await getAlpacaOrder(this.alpacaOrderId);

@@ -613,6 +613,50 @@ export async function notifyAlert(text: string): Promise<void> {
   await sendMessage(`⚠️ <b>Alert</b>\n${text}`);
 }
 
+/**
+ * Sent when a human-approved NEW_ENTRY or ADD_POSITION is aborted because the option
+ * quote moved >15% between signal evaluation and order placement.
+ */
+export async function notifyStaleQuoteAbort(params: {
+  ticker: string;
+  decisionType: string;
+  optionSymbol: string;
+  originalPrice: number;
+  freshMid: number;
+  devPct: number;
+}): Promise<void> {
+  const { ticker, decisionType, optionSymbol, originalPrice, freshMid, devPct } = params;
+  const direction = devPct < 0 ? '▼ dropped' : '▲ spiked';
+  const msg =
+    `🚫 <b>Entry Aborted — Stale Quote</b>\n` +
+    `${ticker} ${decisionType} | <code>${optionSymbol}</code>\n` +
+    `Original limit: $${originalPrice.toFixed(2)} → Fresh mid: $${freshMid.toFixed(2)}\n` +
+    `Price ${direction} <b>${Math.abs(devPct * 100).toFixed(1)}%</b> during approval wait — order not placed.`;
+  await sendMessage(msg);
+}
+
+/**
+ * Sent when a pending limit buy order is cancelled because the option mid dropped
+ * >15% below the limit price during the fill wait, signalling the underlying moved against the signal.
+ */
+export async function notifyFillStale(params: {
+  ticker: string;
+  optionSymbol: string;
+  limitPrice: number;
+  currentMid: number;
+  dropPct: number;
+  elapsedSec: number;
+}): Promise<void> {
+  const { ticker, optionSymbol, limitPrice, currentMid, dropPct, elapsedSec } = params;
+  const msg =
+    `🚫 <b>Fill Cancelled — Price Moved Against Entry</b>\n` +
+    `${ticker} | <code>${optionSymbol}</code>\n` +
+    `Limit: $${limitPrice.toFixed(2)} → Current mid: $${currentMid.toFixed(2)}\n` +
+    `Option dropped <b>${(dropPct * 100).toFixed(1)}%</b> below limit after ${elapsedSec}s — underlying moved against signal.\n` +
+    `Order cancelled to avoid filling into a losing entry.`;
+  await sendMessage(msg);
+}
+
 /** Daily DB cleanup notification */
 export async function notifyDailyCleanup(
   success: boolean,

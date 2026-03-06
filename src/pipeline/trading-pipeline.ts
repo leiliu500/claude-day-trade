@@ -6,6 +6,9 @@ import { ExecutionAgent } from '../agents/execution-agent.js';
 import { OrderAgentRegistry } from '../agents/order-agent-registry.js';
 import type { OrderAgentOutcome } from '../agents/order-agent.js';
 import { ApprovalService } from '../telegram/approval-service.js';
+import { fetchOptionMid } from '../lib/alpaca-api.js';
+import { markApprovalStaleQuote } from '../db/repositories/human-approvals.js';
+import { notifyStaleQuoteAbort } from '../telegram/notifier.js';
 import { buildContext } from './context-builder.js';
 import { checkMarketOpen } from './safety-gates.js';
 import { getOrCreateSession } from '../db/repositories/sessions.js';
@@ -20,6 +23,9 @@ import type { OptionEvaluation } from '../types/options.js';
 import type { AnalysisResult } from '../types/analysis.js';
 import type { SizeResult } from '../types/trade.js';
 import type { ApprovalOutcome } from '../telegram/approval-service.js';
+
+/** Abort entry if the option mid deviated more than this fraction from the original limit price. */
+const STALE_QUOTE_ABORT_PCT = 0.15;
 
 /**
  * Returns a fully-formed WAIT without calling any AI.
@@ -209,12 +215,43 @@ export async function runPipeline(
           result.failedGates = newFailed; break;
         }
 
-        const newApproval = await ApprovalService.getInstance().requestApproval({
+        const { outcome: newOutcome, approvalId: newApprovalId } = await ApprovalService.getInstance().requestApproval({
           decision, candidate: optionEval.winnerCandidate, sizing: newSizing, confidence: analysis.confidence,
         });
-        result.humanApprovalOutcome = newApproval;
-        if (newApproval !== 'approved') {
-          console.log(`[Pipeline] NEW_ENTRY blocked by human (${newApproval}) for ${ticker}`); break;
+        result.humanApprovalOutcome = newOutcome;
+        if (newOutcome !== 'approved') {
+          console.log(`[Pipeline] NEW_ENTRY blocked by human (${newOutcome}) for ${ticker}`); break;
+        }
+
+        // Re-quote after approval — the quote may be up to 2 minutes stale.
+        // If price deviated > STALE_QUOTE_ABORT_PCT, abort to avoid a bad entry.
+        const newFreshMid = await fetchOptionMid(optionEval.winnerCandidate.contract.symbol);
+        if (newFreshMid !== null) {
+          const newDev = (newFreshMid - newSizing.limitPrice) / newSizing.limitPrice;
+          if (Math.abs(newDev) > STALE_QUOTE_ABORT_PCT) {
+            const originalPrice = newSizing.limitPrice;
+            console.warn(
+              `[Pipeline] NEW_ENTRY aborted — quote stale after approval: ` +
+              `limit=$${originalPrice} mid=$${newFreshMid.toFixed(2)} ` +
+              `dev=${(newDev * 100).toFixed(1)}%`,
+            );
+            result.failedGates = [`STALE_QUOTE: price moved ${(newDev * 100).toFixed(1)}% since signal`];
+            // Persist abort in DB and notify Telegram
+            markApprovalStaleQuote(newApprovalId, originalPrice, newFreshMid, newDev).catch(() => {});
+            notifyStaleQuoteAbort({
+              ticker,
+              decisionType: decision.decisionType,
+              optionSymbol: optionEval.winnerCandidate.contract.symbol,
+              originalPrice,
+              freshMid: newFreshMid,
+              devPct: newDev,
+            }).catch(() => {});
+            break;
+          }
+          newSizing.limitPrice = Math.round(newFreshMid * 100) / 100;
+          console.log(
+            `[Pipeline] NEW_ENTRY quote refreshed: $${newSizing.limitPrice} (dev=${(newDev * 100).toFixed(1)}%)`,
+          );
         }
 
         const newPositionId = await registry.createAndStart({
@@ -264,12 +301,41 @@ export async function runPipeline(
           break;
         }
 
-        const addApproval = await ApprovalService.getInstance().requestApproval({
+        const { outcome: addOutcome, approvalId: addApprovalId } = await ApprovalService.getInstance().requestApproval({
           decision, candidate: optionEval.winnerCandidate, sizing: addSizing, confidence: analysis.confidence,
         });
-        result.humanApprovalOutcome = addApproval;
-        if (addApproval !== 'approved') {
-          console.log(`[Pipeline] ADD_POSITION blocked by human (${addApproval}) for ${ticker}`); break;
+        result.humanApprovalOutcome = addOutcome;
+        if (addOutcome !== 'approved') {
+          console.log(`[Pipeline] ADD_POSITION blocked by human (${addOutcome}) for ${ticker}`); break;
+        }
+
+        // Re-quote after approval — the quote may be up to 2 minutes stale.
+        const addFreshMid = await fetchOptionMid(optionEval.winnerCandidate.contract.symbol);
+        if (addFreshMid !== null) {
+          const addDev = (addFreshMid - addSizing.limitPrice) / addSizing.limitPrice;
+          if (Math.abs(addDev) > STALE_QUOTE_ABORT_PCT) {
+            const addOriginalPrice = addSizing.limitPrice;
+            console.warn(
+              `[Pipeline] ADD_POSITION aborted — quote stale after approval: ` +
+              `limit=$${addOriginalPrice} mid=$${addFreshMid.toFixed(2)} ` +
+              `dev=${(addDev * 100).toFixed(1)}%`,
+            );
+            result.failedGates = [`STALE_QUOTE: price moved ${(addDev * 100).toFixed(1)}% since signal`];
+            markApprovalStaleQuote(addApprovalId, addOriginalPrice, addFreshMid, addDev).catch(() => {});
+            notifyStaleQuoteAbort({
+              ticker,
+              decisionType: decision.decisionType,
+              optionSymbol: optionEval.winnerCandidate.contract.symbol,
+              originalPrice: addOriginalPrice,
+              freshMid: addFreshMid,
+              devPct: addDev,
+            }).catch(() => {});
+            break;
+          }
+          addSizing.limitPrice = Math.round(addFreshMid * 100) / 100;
+          console.log(
+            `[Pipeline] ADD_POSITION quote refreshed: $${addSizing.limitPrice} (dev=${(addDev * 100).toFixed(1)}%)`,
+          );
         }
 
         const addPositionId = await registry.createAndStart({

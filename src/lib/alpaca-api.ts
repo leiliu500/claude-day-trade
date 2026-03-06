@@ -234,6 +234,33 @@ export async function closeAllPositions(): Promise<{ closed: number; errors: str
   return { closed, errors };
 }
 
+/**
+ * Fetch the current mid price (bid+ask)/2 for a single option symbol via the OPRA snapshot feed.
+ * Returns null on error, missing quote, or zero bid/ask.
+ */
+export async function fetchOptionMid(symbol: string): Promise<number | null> {
+  try {
+    const url = new URL(`${config.ALPACA_DATA_URL}/v1beta1/options/snapshots`);
+    url.searchParams.set('symbols', symbol);
+    url.searchParams.set('feed', 'opra');
+    const res = await fetch(url.toString(), {
+      headers: authHeaders(),
+      signal: AbortSignal.timeout(10_000),
+    });
+    if (!res.ok) return null;
+    const data = (await res.json()) as {
+      snapshots?: Record<string, { latestQuote?: { bp?: number; ap?: number } }>;
+    };
+    const snap = data.snapshots?.[symbol];
+    const bid = snap?.latestQuote?.bp ?? 0;
+    const ask = snap?.latestQuote?.ap ?? 0;
+    if (bid <= 0 || ask <= 0) return null;
+    return (bid + ask) / 2;
+  } catch {
+    return null;
+  }
+}
+
 /** Fetch all open Alpaca positions and return a symbol → currentPrice map. */
 export async function getAlpacaPositionPrices(): Promise<Map<string, number>> {
   try {
