@@ -101,8 +101,8 @@ export class OptionAgent {
     const callCandidate = this.selectBestCandidate(callEnriched, signal, desiredSide);
     const putCandidate = this.selectBestCandidate(putEnriched, signal, desiredSide);
 
-    // Compare candidates — pick winner by total score
-    const winner = this.pickWinner(callCandidate, putCandidate);
+    // Compare candidates — prefer desired side if it passes filter
+    const winner = this.pickWinner(callCandidate, putCandidate, desiredSide);
 
     return {
       signalId: signal.id,
@@ -271,13 +271,18 @@ export class OptionAgent {
   private pickWinner(
     call: OptionCandidate | null,
     put: OptionCandidate | null,
+    desiredSide: OptionSide,
   ): OptionCandidate | null {
     if (!call && !put) return null;
     if (!call) return put;
     if (!put) return call;
 
-    // Winner: higher totalScore (desiredSide match is already baked in)
-    return call.score.totalScore >= put.score.totalScore ? call : put;
+    // Always prefer the desired side if it passes the basic filter,
+    // so liquidity on the wrong side can't override direction.
+    const desired = desiredSide === 'call' ? call : put;
+    const other = desiredSide === 'call' ? put : call;
+    if (desired.score.passesFilter) return desired;
+    return other;
   }
 
   private buildSelectionReason(
@@ -287,10 +292,6 @@ export class OptionAgent {
   ): string {
     const side = winner.contract.side.toUpperCase();
     if (!call || !put) return `Only ${side} candidate available`;
-
-    if (call.score.totalScore > put.score.totalScore) {
-      return `CALL score ${call.score.totalScore} > PUT score ${put.score.totalScore} — CALL wins`;
-    }
-    return `PUT score ${put.score.totalScore} >= CALL score ${call.score.totalScore} — PUT wins`;
+    return `Desired side is ${side} — preferred over score (liq: CALL=${call.score.liquidityOk ? 1 : 0} vs PUT=${put.score.liquidityOk ? 1 : 0})`;
   }
 }

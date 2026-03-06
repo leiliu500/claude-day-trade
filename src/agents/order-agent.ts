@@ -818,9 +818,10 @@ export class OrderAgent {
       );
       return;
     }
-    // Profit-to-loss reversal: any position that peaked at 3%+ is now showing a loss.
+    // Profit-to-loss reversal: any position that peaked at 1%+ is now showing a loss.
     // Removes AI discretion from a situation the AI repeatedly fails to handle correctly.
-    if (this.peakPnlPct >= 3 && pnlPctNow < 0) {
+    // tickCount >= 2 guard avoids hair-trigger exits on entry-bar noise (first ~60s).
+    if (this.peakPnlPct >= 1.0 && pnlPctNow < 0 && this.tickCount >= 2) {
       await this._executeExit(
         `PROFIT_REVERSED: peak=+${this.peakPnlPct.toFixed(1)}%, now=${pnlPctNow.toFixed(1)}% — profitable position turned to loss`,
       );

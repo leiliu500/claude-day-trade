@@ -130,36 +130,24 @@ function explainWinner(
   putP:  ScoreParts,
   desiredSide: string
 ): { key: string; why: string } {
-  if (callP.passOk !== putP.passOk) {
-    return { key: 'passOk', why: `pass: CALL=${callP.passOk} vs PUT=${putP.passOk} (higher wins)` };
+  // Desired side is always preferred when both candidates pass filter.
+  // Only falls back to the other side when desired side has no valid contract.
+  const winner = desiredSide.toUpperCase();
+  const loser  = winner === 'CALL' ? 'PUT' : 'CALL';
+  const winP   = winner === 'CALL' ? callP : putP;
+  const loseP  = winner === 'CALL' ? putP  : callP;
+
+  if (winP.passOk) {
+    return {
+      key: 'desiredSide',
+      why: `desired_side=${winner} preferred (liq: ${winner}=${winP.liqOk} vs ${loser}=${loseP.liqOk})`,
+    };
   }
-  if (callP.liqOk !== putP.liqOk) {
-    return { key: 'liqOk', why: `liq: CALL=${callP.liqOk} vs PUT=${putP.liqOk} (higher wins)` };
-  }
-  if (callP.sideMatch !== putP.sideMatch) {
-    const winner = desiredSide.toUpperCase();
-    const loser  = winner === 'CALL' ? 'PUT' : 'CALL';
-    return { key: 'sideMatch', why: `desired_side=${winner} → ${winner} sideMatch=1 beats ${loser}=0` };
-  }
-  if (callP.rr !== putP.rr) {
-    if (callP.rr == null || putP.rr == null) {
-      return {
-        key: 'rrScore',
-        why: `RR: ${callP.rr != null ? 'CALL has RR' : 'CALL RR=n/a'} vs ${putP.rr != null ? 'PUT has RR' : 'PUT RR=n/a'} (present wins)`,
-      };
-    }
-    const win = callP.rr > putP.rr ? 'CALL' : 'PUT';
-    return { key: 'rrScore', why: `RR: CALL=${callP.rr.toFixed(2)} vs PUT=${putP.rr.toFixed(2)} (higher wins → ${win})` };
-  }
-  if (callP.sp != null && putP.sp != null && callP.sp !== putP.sp) {
-    const win = callP.sp < putP.sp ? 'CALL' : 'PUT';
-    return { key: 'spScore', why: `spread: CALL=${(callP.sp * 100).toFixed(2)}% vs PUT=${(putP.sp * 100).toFixed(2)}% (lower wins → ${win})` };
-  }
-  if (callP.oi != null && putP.oi != null && callP.oi !== putP.oi) {
-    const win = callP.oi > putP.oi ? 'CALL' : 'PUT';
-    return { key: 'oiScore', why: `OI: CALL=${Math.round(callP.oi)} vs PUT=${Math.round(putP.oi)} (higher wins → ${win})` };
-  }
-  return { key: 'tie', why: 'all compare keys equal (tie)' };
+  // Desired side has no valid contract — fell back to other side
+  return {
+    key: 'fallback',
+    why: `desired ${winner} has no valid contract (pass=0) → fallback to ${loser}`,
+  };
 }
 
 function candLine(label: string, cand: OptionCandidate, isWinner: boolean): string {
