@@ -296,83 +296,25 @@ export class DecisionOrchestrator {
       }
     }
 
-    // Stage 3 hard gate: AI is forbidden from blocking past confirmation_count >= 3,
-    // UNLESS momentum indicators contradict the signal direction.
-    // Blocking conditions (any one suppresses the override):
-    //   1. OBV divergence on 2+ TFs — multi-TF volume failure (1-TF divergence only raises AI threshold by +1)
-    //   2. TD exhaustion on ANY TF — setup or countdown completion signals trend exhaustion
-    //   3. Alignment is 'mixed' — no clear consensus across timeframes
-    //   4. HTF ADX < 20 — trend is too weak to justify a forced entry
-    //   5. HTF DI crossed adverse on last bar — momentum just flipped against the signal
-    const STAGE3_MIN_CONFIDENCE = config.MIN_CONFIDENCE; // Same as entry threshold — 3 confirmations IS the conviction
-    const STAGE3_MIN_HTF_ADX = 20;      // Minimum HTF trend strength for a forced entry
-
-    const adverseOBVCount = signal.timeframes.filter(tf => {
-      if (signal.direction === 'bullish') return tf.obv.divergence === 'bearish';
-      if (signal.direction === 'bearish') return tf.obv.divergence === 'bullish';
-      return false;
-    }).length;
-
-    // TD exhaustion: a completed setup or countdown in the opposing direction signals trend exhaustion
-    const adverseTDCount = signal.timeframes.filter(tf => {
-      if (signal.direction === 'bullish') {
-        return (tf.td.setup.completed && tf.td.setup.completedDirection === 'sell') ||
-               (tf.td.countdown.completed && tf.td.countdown.direction === 'sell');
-      }
-      if (signal.direction === 'bearish') {
-        return (tf.td.setup.completed && tf.td.setup.completedDirection === 'buy') ||
-               (tf.td.countdown.completed && tf.td.countdown.direction === 'buy');
-      }
-      return false;
-    }).length;
-
-    // HTF is last element (timeframes ordered [LTF, MTF, HTF])
-    const htfTF = signal.timeframes[signal.timeframes.length - 1];
-
-    // Adverse HTF DI cross: DI just crossed opposite to signal direction on the last bar
-    const htfAdverseCross = htfTF !== undefined && (
-      (signal.direction === 'bullish' && htfTF.dmi.crossedDown) ||
-      (signal.direction === 'bearish' && htfTF.dmi.crossedUp)
-    );
-
-    const stage3BlockedByOBV = adverseOBVCount >= 2;          // 2+ TF OBV divergence blocks override (matches AI prompt: 1 TF only raises threshold)
-    const stage3BlockedByTD = adverseTDCount >= 1;
-    const stage3BlockedByConfidence = analysis.confidence < STAGE3_MIN_CONFIDENCE;
-    const stage3BlockedByMixedAlignment = signal.alignment === 'mixed'; // No TF consensus
-    const stage3BlockedByWeakHTF = htfTF !== undefined && htfTF.dmi.adx < STAGE3_MIN_HTF_ADX;
-    const stage3BlockedByAdverseDICross = htfAdverseCross;     // Fresh cross against signal direction
-
+    // Stage 3 hard gate: AI is forbidden from blocking past confirmation_count >= 3.
+    // OBV divergence and TD exhaustion raise the threshold by +1 (max), so count=2 is the
+    // worst-case block. If the AI still returns WAIT at count >= 3 and all entry gates pass,
+    // force NEW_ENTRY.
     if (
       rawOutput.decision_type === 'WAIT' &&
       rawOutput.confirmation_count >= 3 &&
-      !stage3BlockedByConfidence &&
-      !stage3BlockedByMixedAlignment &&
-      !stage3BlockedByWeakHTF &&
-      !stage3BlockedByAdverseDICross &&
+      analysis.confidence >= config.MIN_CONFIDENCE &&
       timeGateOk &&
       option.liquidityOk &&
       option.candidatePass &&
       context.openPositions.length === 0 &&
       !isEodWindow &&
-      !isFomcWindow &&
-      !stage3BlockedByOBV &&
-      !stage3BlockedByTD
+      !isFomcWindow
     ) {
       rawOutput.decision_type = 'NEW_ENTRY';
       rawOutput.should_execute = true;
       if (rawOutput.urgency === 'low') rawOutput.urgency = 'standard';
-      rawOutput.reasoning = `[STAGE 3 OVERRIDE] confirmation_count=${rawOutput.confirmation_count} >= 3, confidence=${analysis.confidence.toFixed(2)}, alignment=${signal.alignment}, HTF ADX=${htfTF?.dmi.adx.toFixed(1)} — Stage 3 CONFIRMED_ENTRY enforced; OBV adverse TFs=${adverseOBVCount}/3, TD exhaustion TFs=${adverseTDCount}/3. ${rawOutput.reasoning}`;
-    } else if (rawOutput.decision_type === 'WAIT' && rawOutput.confirmation_count >= 3) {
-      const blockReasons: string[] = [];
-      if (stage3BlockedByConfidence) blockReasons.push(`confidence ${analysis.confidence.toFixed(2)} < ${STAGE3_MIN_CONFIDENCE} (Stage 3 threshold)`);
-      if (stage3BlockedByMixedAlignment) blockReasons.push(`alignment=${signal.alignment} (need all_aligned or htf_mtf_aligned)`);
-      if (stage3BlockedByWeakHTF) blockReasons.push(`HTF ADX=${htfTF?.dmi.adx.toFixed(1)} < ${STAGE3_MIN_HTF_ADX} (trend too weak)`);
-      if (stage3BlockedByAdverseDICross) blockReasons.push(`HTF DI crossed ${signal.direction === 'bullish' ? 'bearish' : 'bullish'} on last bar (momentum flipped)`);
-      if (stage3BlockedByOBV) blockReasons.push(`multi-TF OBV divergence on ${adverseOBVCount}/3 TFs (need < 2)`);
-      if (stage3BlockedByTD) blockReasons.push(`TD exhaustion on ${adverseTDCount}/3 TFs`);
-      if (blockReasons.length > 0) {
-        rawOutput.reasoning = `[STAGE 3 BLOCKED] confirmation_count=${rawOutput.confirmation_count} >= 3 but blocked by: ${blockReasons.join('; ')}. ${rawOutput.reasoning}`;
-      }
+      rawOutput.reasoning = `[STAGE 3 OVERRIDE] confirmation_count=${rawOutput.confirmation_count} >= 3 with confidence=${analysis.confidence.toFixed(2)} — Stage 3 CONFIRMED_ENTRY enforced; OBV/TD exhaustion penalty is +1 max and cannot block past count=3. ${rawOutput.reasoning}`;
     }
 
     return {

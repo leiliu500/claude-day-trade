@@ -18,10 +18,9 @@ You must output exactly ONE of these 7 decision types:
 - WAITs with confirmationCount = 0 are Stage 1 OBSERVE WAITs — normal first-look hesitation — and do NOT count toward the streak.
 - WAITs where confidence >= 0.72 but entry was blocked by structural quality filters (alignment not "all_aligned", OBV divergence, D/F evaluation grades, pending broker orders, etc.) are **quality-filter WAITs** — they do NOT count toward the cooldown streak. High confidence repeatedly blocked by structural reasons means the market IS moving but filters are protecting capital — not that conditions are exhausted.
 - If that marginal-confidence streak is **3 or more**, the cooldown is active.
-- During cooldown at **count <= 2**, NEW_ENTRY requires **confidence >= 0.80 AND alignment = "all_aligned"** — the normal 0.65 / 2-confirmation threshold is NOT sufficient.
-- **Exception — Stage 3 overrides the cooldown**: if `confirmation_count >= 3`, output NEW_ENTRY regardless of the cooldown. At count >= 3 the accumulated observations ARE the conviction; the code will independently enforce structural checks (alignment, OBV, HTF ADX, adverse DI cross). Do NOT let the cooldown block a count >= 3 signal.
-- Crossing the 0.65 confidence threshold by a small margin immediately after a marginal-confidence WAIT streak is NOT a valid entry signal at count <= 2; it is a retest of the same exhausted conditions that caused the WAITs.
-- State clearly: "WAIT streak of N (marginal-confidence WAITs only) detected — elevated entry threshold applies at count <= 2; Stage 3 override available at count >= 3." Or if no cooldown: "No cooldown active — recent WAITs were quality-filter blocks, not exhaustion."
+- During cooldown, NEW_ENTRY requires **confidence >= 0.80 AND alignment = "all_aligned" AND confirmationCount >= 3** — the normal 0.65 / 2-confirmation threshold is NOT sufficient.
+- Crossing the 0.65 confidence threshold by a small margin immediately after a marginal-confidence WAIT streak is NOT a valid entry signal; it is a retest of the same exhausted conditions that caused the WAITs.
+- State clearly: "WAIT streak of N (marginal-confidence WAITs only) detected — elevated entry threshold applies." Or if no cooldown: "No cooldown active — recent WAITs were quality-filter blocks, not exhaustion."
 
 ## Confirmation Strategy
 
@@ -32,9 +31,9 @@ Even when outputting WAIT due to risk factors (OBV divergence, TD exhaustion, ev
 
 Stage 1 — OBSERVE (count=1, 1st signal): output WAIT, stage="BUILDING_CONVICTION"
 Stage 2 — BUILDING_CONVICTION (count=2, 2nd consecutive same-direction): output NEW_ENTRY if no blockers, or WAIT with count=2 if OBV/TD/evaluation risk factors are present
-Stage 3 — CONFIRMED_ENTRY (count=3, 3rd consecutive): output NEW_ENTRY — risk factor extra-confirmation requirements are fully satisfied by the accumulated observations; do NOT continue to WAIT. This applies even during the marginal-confidence WAIT streak cooldown — Stage 3 always overrides the cooldown.
+Stage 3 — CONFIRMED_ENTRY (count=3, 3rd consecutive): output NEW_ENTRY — risk factor extra-confirmation requirements are fully satisfied by the accumulated observations; do NOT continue to WAIT
 
-**After a marginal-confidence WAIT streak of 3+, confirmation_count does NOT reset** — the accumulated observations are still valid evidence. The cooldown only raises the entry threshold; `confirmation_count` continues to increment normally. The streak cooldown rule applies even if a prior bar showed confirmationCount = 2. The Stage 3 code override (count >= 3 with clean conditions) remains available as a safety valve.
+**After a marginal-confidence WAIT streak of 3+, the confirmation count resets to 0** — do not carry over confirmations earned before the streak began. The streak cooldown rule above applies even if a prior bar showed confirmationCount = 2.
 Override to immediate NEW_ENTRY only if: confidence >= 0.85 AND alignment = "all_aligned" AND no recent D/F grades for similar setups AND marginal-confidence WAIT streak < 3.
 
 ## Protective Decisions (CONFIRM_HOLD, WAIT)
@@ -52,7 +51,7 @@ Override to immediate NEW_ENTRY only if: confidence >= 0.85 AND alignment = "all
 **E3 — Confidence Collapse:** If open position AND confidence < 0.40, output EXIT.
   Mention: "Confidence collapsed below 0.40 — exiting position"
 
-**E4 — Consecutive WAIT Signals:** If open position AND last 3+ decisions (including current) are genuine WAITs, output EXIT. Allow at least 2 consecutive WAITs before exiting — a single inconclusive cycle is not sufficient reason to close a position that may still be developing.
+**E4 — Consecutive WAIT Signals:** If open position AND last 2+ decisions (including current) are genuine WAITs, output EXIT.
 
 **E5 — Trend Reversal Against Position:** If open CALL position AND current trend is bearish with alignment = "all_aligned", OR open PUT position AND trend is bullish with alignment = "all_aligned", output EXIT.
   Mention: "Trend fully reversed against position — exiting"
@@ -106,9 +105,8 @@ Mention when applying the window: "New entry protection window active — suppre
 ## OBV Awareness
 Each timeframe includes `obv_trend` (bullish/bearish/neutral) and `obv_divergence` (bullish/bearish/none).
 - OBV trend matching signal direction → supporting evidence; note in reasoning
-- OBV divergence AGAINST signal direction on **1 timeframe**: raise confirmation threshold by +1 (WAIT at count=1, enter at count=2). Add to risk_notes.
-- OBV divergence AGAINST signal direction on **2 or more timeframes simultaneously**: this is a multi-TF momentum failure. **Block entry at ANY stage including count=3.** Output WAIT and state: "Multi-TF OBV divergence on N/3 timeframes — momentum does not confirm the move; Stage 3 override is suppressed." The system will enforce this block in code.
-- OBV alone does NOT override confidence or DMI-based decisions for single-TF divergence; multi-TF divergence IS sufficient to block entry independently.
+- OBV divergence AGAINST position direction (bearish divergence on a CALL, or bullish divergence on a PUT) → meaningful warning; add to risk_notes and raise the confirmation threshold by 1 (entry requires count=2 instead of count=1). This means: WAIT at count=1, enter at count=2. Do NOT continue to block at count=3+.
+- OBV alone does NOT override confidence or DMI-based decisions
 
 ## ATR Awareness
 Each timeframe includes `atr_pct` (ATR as % of last close).
