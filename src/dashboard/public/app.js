@@ -5,22 +5,24 @@ let currentTab = 'positions';
 let refreshInterval = null;
 
 // ── Filter state ───────────────────────────────────────────────────────────────
-const filters = { ticker: '', timeFrom: '', timeTo: '' };
+const filters = { ticker: '', timeFrom: '', timeTo: '', decision: '' };
 const FILTERABLE_TABS = new Set(['signals', 'decisions', 'evaluations', 'orders', 'dispatches', 'analysis']);
 
 function applyFilters() {
   const tickerEl   = document.getElementById('filter-ticker');
   const timeFromEl = document.getElementById('filter-time-from');
   const timeToEl   = document.getElementById('filter-time-to');
+  const decisionEl = document.getElementById('filter-decision');
   filters.ticker   = tickerEl   ? tickerEl.value   : '';
   filters.timeFrom = timeFromEl ? timeFromEl.value : '';
   filters.timeTo   = timeToEl   ? timeToEl.value   : '';
+  filters.decision = decisionEl ? decisionEl.value : '';
 
   // Reset to page 1 for all filtered tabs
   for (const key of Object.keys(paging)) paging[key].page = 1;
 
   const clearBtn = document.getElementById('filter-clear');
-  if (clearBtn) clearBtn.style.display = (filters.ticker || filters.timeFrom || filters.timeTo) ? '' : 'none';
+  if (clearBtn) clearBtn.style.display = (filters.ticker || filters.timeFrom || filters.timeTo || filters.decision) ? '' : 'none';
 
   loadTab(currentTab);
 }
@@ -29,12 +31,15 @@ function clearFilters() {
   filters.ticker   = '';
   filters.timeFrom = '';
   filters.timeTo   = '';
+  filters.decision = '';
   const tickerEl   = document.getElementById('filter-ticker');
   const timeFromEl = document.getElementById('filter-time-from');
   const timeToEl   = document.getElementById('filter-time-to');
+  const decisionEl = document.getElementById('filter-decision');
   if (tickerEl)   tickerEl.value   = '';
   if (timeFromEl) timeFromEl.value = '';
   if (timeToEl)   timeToEl.value   = '';
+  if (decisionEl) decisionEl.value = '';
   for (const key of Object.keys(paging)) paging[key].page = 1;
   const clearBtn = document.getElementById('filter-clear');
   if (clearBtn) clearBtn.style.display = 'none';
@@ -46,6 +51,7 @@ function filterQuery() {
   if (filters.ticker)   params.set('ticker',     filters.ticker);
   if (filters.timeFrom) params.set('time_from',  filters.timeFrom);
   if (filters.timeTo)   params.set('time_to',    filters.timeTo);
+  if (filters.decision && currentTab === 'decisions') params.set('decision', filters.decision);
   return params.toString();
 }
 
@@ -87,6 +93,8 @@ document.querySelectorAll('.tab').forEach(btn => {
     document.getElementById(`tab-${currentTab}`).classList.add('active');
     const filterBar = document.getElementById('filter-bar');
     if (filterBar) filterBar.style.display = FILTERABLE_TABS.has(currentTab) ? '' : 'none';
+    const decisionGroup = document.getElementById('filter-decision-group');
+    if (decisionGroup) decisionGroup.style.display = currentTab === 'decisions' ? '' : 'none';
     loadTab(currentTab);
   });
 });

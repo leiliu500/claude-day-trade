@@ -118,12 +118,17 @@ export function startDashboard(port: number): void {
       const timeFrom = typeof timeFromRaw === 'string' && /^\d{2}:\d{2}$/.test(timeFromRaw) ? timeFromRaw : null;
       const timeTo   = typeof timeToRaw   === 'string' && /^\d{2}:\d{2}$/.test(timeToRaw)   ? timeToRaw   : null;
 
+      const decisionRaw = req.query['decision'];
+      const VALID_DECISION_TYPES = new Set(['NEW_ENTRY','CONFIRM_HOLD','ADD_POSITION','REDUCE_EXPOSURE','REVERSE','EXIT','WAIT']);
+      const decision = typeof decisionRaw === 'string' && VALID_DECISION_TYPES.has(decisionRaw) ? decisionRaw : null;
+
       const filterParams: (string | number)[] = [];
-      let tickerFilter = '', timeFromFilter = '', timeToFilter = '';
+      let tickerFilter = '', timeFromFilter = '', timeToFilter = '', decisionFilter = '';
       if (ticker)   { filterParams.push(ticker);   tickerFilter   = `AND ticker = $${filterParams.length}`; }
       if (timeFrom) { filterParams.push(timeFrom); timeFromFilter = `AND (created_at AT TIME ZONE 'America/New_York')::time >= $${filterParams.length}::time`; }
       if (timeTo)   { filterParams.push(timeTo);   timeToFilter   = `AND (created_at AT TIME ZONE 'America/New_York')::time <= $${filterParams.length}::time`; }
-      const whereClause = `WHERE trade_date >= CURRENT_DATE - INTERVAL '7 days' ${tickerFilter} ${timeFromFilter} ${timeToFilter}`;
+      if (decision) { filterParams.push(decision); decisionFilter = `AND decision_type = $${filterParams.length}`; }
+      const whereClause = `WHERE trade_date >= CURRENT_DATE - INTERVAL '7 days' ${tickerFilter} ${timeFromFilter} ${timeToFilter} ${decisionFilter}`;
       const limitN = filterParams.length + 1;
       const offsetN = filterParams.length + 2;
 

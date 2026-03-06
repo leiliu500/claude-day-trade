@@ -76,6 +76,19 @@
         <label for="filter-time-to">To</label>
         <input type="time" id="filter-time-to" onchange="applyFilters()">
       </div>
+      <div class="filter-group" id="filter-decision-group" style="display:none">
+        <label for="filter-decision">Decision</label>
+        <select id="filter-decision" onchange="applyFilters()">
+          <option value="">All</option>
+          <option value="NEW_ENTRY">NEW_ENTRY</option>
+          <option value="CONFIRM_HOLD">CONFIRM_HOLD</option>
+          <option value="ADD_POSITION">ADD_POSITION</option>
+          <option value="REDUCE_EXPOSURE">REDUCE_EXPOSURE</option>
+          <option value="REVERSE">REVERSE</option>
+          <option value="EXIT">EXIT</option>
+          <option value="WAIT">WAIT</option>
+        </select>
+      </div>
       <button class="filter-clear" id="filter-clear" onclick="clearFilters()" style="display:none">✕ Clear</button>
     </div>
 
