@@ -558,13 +558,14 @@ export async function notifyOrderAgentDecision(params: {
   consecutiveDeclines?: number;
   oldStop?: number | null;
   newStop?: number;
+  marketContextSource?: 'fresh' | 'cached' | 'none';
 }): Promise<void> {
   const {
     action, ticker, optionSymbol, optionSide, reasoning,
     overridingOrchestrator, orchestratorSuggestion,
     pnlPct, currentPrice, entryPrice,
     peakPnlPct, consecutiveDeclines,
-    oldStop, newStop,
+    oldStop, newStop, marketContextSource,
   } = params;
 
   const sideLabel   = optionSide.toUpperCase();
@@ -594,6 +595,10 @@ export async function notifyOrderAgentDecision(params: {
     if (consecutiveDeclines != null && consecutiveDeclines > 0) {
       msg += ` | Declines: ${consecutiveDeclines}`;
     }
+    if (marketContextSource) {
+      const ctxLabel = marketContextSource === 'fresh' ? '🟢 fresh' : marketContextSource === 'cached' ? '🟡 cached' : '⚫ none';
+      msg += `\nMarket ctx: ${ctxLabel}`;
+    }
     msg += `\nReason: ${reasoning.slice(0, 200)}`;
   } else {
     const oldStopStr = oldStop != null ? `$${oldStop.toFixed(2)}` : 'none';
@@ -602,6 +607,10 @@ export async function notifyOrderAgentDecision(params: {
     msg += `${ticker} | <code>${optionSymbol}</code> (${sideLabel})\n`;
     msg += `Stop: ${oldStopStr} → <b>${newStopStr}</b>\n`;
     msg += `P&L: <b>${pnlSign}${pnlPct.toFixed(1)}%</b> | Price: $${currentPrice.toFixed(2)}\n`;
+    if (marketContextSource) {
+      const ctxLabel = marketContextSource === 'fresh' ? '🟢 fresh' : marketContextSource === 'cached' ? '🟡 cached' : '⚫ none';
+      msg += `Market ctx: ${ctxLabel}\n`;
+    }
     msg += `Reason: ${reasoning.slice(0, 200)}`;
   }
 

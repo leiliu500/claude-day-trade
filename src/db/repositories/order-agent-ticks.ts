@@ -1,5 +1,7 @@
 import { getPool } from '../client.js';
 
+export type MarketContextSource = 'fresh' | 'cached' | 'none';
+
 export interface AgentTickRecord {
   positionId: string;
   tickCount: number;
@@ -10,6 +12,7 @@ export interface AgentTickRecord {
   currentPrice: number;
   overridingOrchestrator: boolean;
   orchestratorSuggestion?: string;
+  marketContextSource?: MarketContextSource;
 }
 
 export interface AgentTickRow {
@@ -21,6 +24,7 @@ export interface AgentTickRow {
   current_price: string | null;
   overriding_orchestrator: boolean;
   orchestrator_suggestion: string | null;
+  market_context_source: MarketContextSource | null;
   created_at: string;
 }
 
@@ -29,8 +33,9 @@ export async function insertAgentTick(record: AgentTickRecord): Promise<void> {
   await pool.query(
     `INSERT INTO trading.order_agent_ticks
        (position_id, tick_count, action, new_stop, reasoning, pnl_pct,
-        current_price, overriding_orchestrator, orchestrator_suggestion)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
+        current_price, overriding_orchestrator, orchestrator_suggestion,
+        market_context_source)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
     [
       record.positionId,
       record.tickCount,
@@ -41,6 +46,7 @@ export async function insertAgentTick(record: AgentTickRecord): Promise<void> {
       record.currentPrice,
       record.overridingOrchestrator,
       record.orchestratorSuggestion ?? null,
+      record.marketContextSource ?? null,
     ],
   );
 }
@@ -51,7 +57,7 @@ export async function getRecentAgentTicks(positionId: string, limit = 5): Promis
   const { rows } = await pool.query<AgentTickRow>(
     `SELECT tick_count, action, new_stop::text, reasoning, pnl_pct::text,
             current_price::text, overriding_orchestrator,
-            orchestrator_suggestion, created_at::text
+            orchestrator_suggestion, market_context_source, created_at::text
        FROM trading.order_agent_ticks
       WHERE position_id = $1
       ORDER BY created_at DESC

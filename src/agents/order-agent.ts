@@ -165,6 +165,8 @@ export class OrderAgent {
    * from both reaching _executeReduce / _executeExit simultaneously.
    */
   private isAIRunning = false;
+  /** Last market context received from the orchestrator — reused on self-ticks when no new dispatch. */
+  private cachedMarketContext: OrchestratorSuggestion['marketContext'] | null = null;
 
   constructor(private readonly cfg: OrderAgentConfig | RestoredOrderAgentConfig) {
     if ('positionId' in cfg) {
@@ -929,7 +931,7 @@ export class OrderAgent {
     // ── 3. Periodic AI independent monitoring (adaptive frequency) ─────────
     // - Every tick when price is declining (1+ consecutive falls)
     // - Every tick when pnl is negative and position was previously profitable (protect against hold trap)
-    // - Every 2 ticks (1 min) otherwise
+    // - Every tick otherwise (AI_TICK_INTERVAL = 1)
     const forceAI = this._forceNextAI;
     this._forceNextAI = false;
     const shouldRunAI =
@@ -938,7 +940,11 @@ export class OrderAgent {
       (this.peakPnlPct > 0 && pnlPctNow < 0) ||
       this.tickCount % AI_TICK_INTERVAL === 0;
     if (shouldRunAI) {
-      await this._runAIDecision(null, { currentPrice, stop, tp, qty, expiration });
+      // Fire-and-forget: do NOT await AI so _monitorRunning is released immediately.
+      // This ensures the next 30 s tick's deterministic checks (hard stop, TP, profit-lock)
+      // always run on schedule even if the Claude API call takes >30 s.
+      // isAIRunning mutex inside _runAIDecision prevents concurrent AI evaluations.
+      void this._runAIDecision(null, { currentPrice, stop, tp, qty, expiration });
     }
   }
 
@@ -1081,22 +1087,24 @@ export class OrderAgent {
         risk_management_quality: e.riskManagementQuality,
         lessons_learned:         e.lessonsLearned.slice(0, 150),
       })),
-      // Current market context from the orchestrator — predicts whether P&L dip is temporary or terminal.
-      // Null on periodic self-checks (no orchestrator input). Use to assess trend staying power.
-      market_context: suggestion?.marketContext
-        ? {
-            direction:     suggestion.marketContext.direction,
-            alignment:     suggestion.marketContext.alignment,
-            strength_score: suggestion.marketContext.strengthScore,
-            key_factors:   suggestion.marketContext.keyFactors,
-            risks:         suggestion.marketContext.risks,
-            // Derived: does the current trend support THIS position's direction?
-            // A call benefits from bullish; a put benefits from bearish.
-            trend_supports_position:
-              (candidate.contract.side === 'call' && suggestion.marketContext.direction === 'bullish') ||
-              (candidate.contract.side === 'put'  && suggestion.marketContext.direction === 'bearish'),
-          }
-        : null,
+      // Current market context — from orchestrator dispatch (fresh) or cached from last dispatch (stale ≤1 min).
+      // Null only on the very first self-tick before any orchestrator dispatch has arrived.
+      market_context: (() => {
+        if (suggestion?.marketContext) this.cachedMarketContext = suggestion.marketContext;
+        const ctx = this.cachedMarketContext;
+        if (!ctx) return null;
+        return {
+          direction:             ctx.direction,
+          alignment:             ctx.alignment,
+          strength_score:        ctx.strengthScore,
+          key_factors:           ctx.keyFactors,
+          risks:                 ctx.risks,
+          trend_supports_position:
+            (candidate.contract.side === 'call' && ctx.direction === 'bullish') ||
+            (candidate.contract.side === 'put'  && ctx.direction === 'bearish'),
+          source: suggestion?.marketContext ? 'fresh' : 'cached',
+        };
+      })(),
     };
 
     try {
@@ -1142,6 +1150,7 @@ export class OrderAgent {
     suggestion: OrchestratorSuggestion | null,
   ): Promise<OrderAgentOutcome> {
     const symbol = this.cfg.candidate.contract.symbol;
+    const marketContextSource = (suggestion?.marketContext ? 'fresh' : this.cachedMarketContext ? 'cached' : 'none') as 'fresh' | 'cached' | 'none';
 
     // Persist this AI tick before acting so history is always written even if execution fails
     if (this.positionId) {
@@ -1155,6 +1164,7 @@ export class OrderAgent {
         currentPrice,
         overridingOrchestrator: rec.overriding_orchestrator,
         orchestratorSuggestion: suggestion?.decisionType,
+        marketContextSource,
       }).catch(err =>
         console.warn(`[OrderAgent ${this.cfg.decision.ticker}] Failed to persist tick:`, (err as Error).message),
       );
@@ -1196,6 +1206,7 @@ export class OrderAgent {
           peakPnlPct:             this.peakPnlPct,
           consecutiveDeclines:    this.consecutiveDeclines,
           oldStop:                currentStop,
+          marketContextSource,
         }).catch(err => console.warn(`[OrderAgent ${this.cfg.decision.ticker}] Notify error:`, (err as Error).message));
         break;
     }
@@ -1282,6 +1293,25 @@ export class OrderAgent {
     if (this.phase === 'CLOSING' || this.phase === 'CLOSED') return;
     this.phase = 'CLOSING';
     this._stopTick();
+
+    // Track deterministic exits in DB. AI_EXIT and IMMEDIATE: are already persisted by their callers.
+    if (this.positionId && !reason.startsWith('AI_') && !reason.startsWith('IMMEDIATE:')) {
+      const trackedPrice = this.lastPrice;
+      if (trackedPrice != null) {
+        const entryForCalc = this.fillPrice ?? this.cfg.candidate.entryPremium;
+        const pnlPct = entryForCalc > 0 ? ((trackedPrice - entryForCalc) / entryForCalc) * 100 : 0;
+        void insertAgentTick({
+          positionId:             this.positionId,
+          tickCount:              this.tickCount,
+          action:                 'EXIT',
+          reasoning:              reason,
+          pnlPct:                 Math.round(pnlPct * 100) / 100,
+          currentPrice:           trackedPrice,
+          overridingOrchestrator: false,
+          marketContextSource:    this.cachedMarketContext ? 'cached' : 'none',
+        }).catch(() => {});
+      }
+    }
 
     const { decision, candidate, sizing } = this.cfg;
     const symbol = candidate.contract.symbol;
@@ -1373,18 +1403,32 @@ export class OrderAgent {
     const pnlStr = exitPrice != null
       ? (pnl >= 0 ? `+$${pnl.toFixed(2)}` : `-$${Math.abs(pnl).toFixed(2)}`)
       : '(fill pending)';
-    const emoji  = reason.startsWith('STOP')       ? '🛑'
-                 : reason.startsWith('TP')         ? '🎯'
-                 : reason.startsWith('EXPIRY')     ? '⚠️'
-                 : reason.startsWith('AI_EXIT')    ? '🤖'
-                 : reason.startsWith('UNFILLED_')  ? '🚫' : '🚪';
+    const emoji  = reason.startsWith('STOP')            ? '🛑'
+                 : reason.startsWith('TP')              ? '🎯'
+                 : reason.startsWith('EXPIRY')          ? '⚠️'
+                 : reason.startsWith('AI_EXIT')         ? '🤖'
+                 : reason.startsWith('UNFILLED_')       ? '🚫'
+                 : reason.startsWith('PROFIT_LOCK')     ? '🔒'
+                 : reason.startsWith('PEAK')            ? '📉'
+                 : reason.startsWith('RAPID_DECLINE')   ? '📉'
+                 : reason.startsWith('HOLD_TRAP')       ? '📉'
+                 : reason.startsWith('PRE_EMPTIVE')     ? '✂️'
+                 : reason.startsWith('PROFIT_REVERSED') ? '🔄'
+                 : reason.startsWith('IMMEDIATE')       ? '⚡'
+                 : '🚪';
 
     // Label the source so the notification is unambiguous
     const sourceLabel = reason.startsWith('AI_EXIT')
-      ? 'OrderAgent decision'
-      : reason.startsWith('STOP') || reason.startsWith('TP') || reason.startsWith('EXPIRY')
-        ? 'Hard stop / TP / expiry'
-        : 'Orchestrator (immediate)';
+      ? 'OrderAgent AI'
+      : reason.startsWith('STOP') || reason.startsWith('TP')
+        ? 'Hard stop / TP'
+        : reason.startsWith('EXPIRY')
+          ? 'Expiry close'
+          : reason.startsWith('IMMEDIATE:')
+            ? 'Orchestrator (immediate)'
+            : reason.startsWith('UNFILLED_')
+              ? 'Fill timeout'
+              : 'Deterministic rule';
 
     await notifyAlert(
       `${emoji} <b>Exit: ${ticker}</b> — ${sourceLabel}\n` +
@@ -1504,6 +1548,20 @@ export class OrderAgent {
     const entryForPnl = this.fillPrice ?? candidate.entryPremium;
     const pnlPct = entryForPnl > 0 && reduceFill
       ? ((reduceFill - entryForPnl) / entryForPnl) * 100 : 0;
+
+    if (this.positionId) {
+      void insertAgentTick({
+        positionId:             this.positionId,
+        tickCount:              this.tickCount,
+        action:                 'REDUCE',
+        reasoning:              reason,
+        pnlPct:                 Math.round(pnlPct * 100) / 100,
+        currentPrice:           reduceFill ?? this.lastPrice ?? 0,
+        overridingOrchestrator: false,
+        marketContextSource:    this.cachedMarketContext ? 'cached' : 'none',
+      }).catch(() => {});
+    }
+
     const pnlSign = pnlPct >= 0 ? '+' : '';
     await notifyAlert(
       `📉 <b>OrderAgent: REDUCE — ${decision.ticker}</b>\n` +
