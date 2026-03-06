@@ -17,7 +17,7 @@ export function computeTD(bars: OHLCVBar[]): TDResult {
 
   if (n < 5) {
     return {
-      setup: { direction: 'none', count: 0, completed: false },
+      setup: { direction: 'none', count: 0, completed: false, completedDirection: 'none' },
       countdown: { direction: 'none', count: 0, completed: false },
     };
   }
@@ -59,22 +59,55 @@ export function computeTD(bars: OHLCVBar[]): TDResult {
     direction: setupCount > 0 ? setupDir : 'none',
     count: Math.min(setupCount, 9),
     completed: completedSetupIdx >= 0,
+    completedDirection: completedSetupDir,
   };
 
   // ── Countdown Phase ────────────────────────────────────────────────────────
   // Countdown begins ON the 9th setup bar (inclusive) and counts all qualifying bars.
   // Buy countdown:  close <= low[2]
   // Sell countdown: close >= high[2]
+  //
+  // Cancellation rule (DeMark): a completed opposing 9-bar setup during the countdown
+  // cancels the countdown entirely.
   let cdCount = 0;
   let cdDir: 'buy' | 'sell' | 'none' = 'none';
   let cdCompleted = false;
 
   if (completedSetupIdx >= 0) {
     cdDir = completedSetupDir;
+    const opposingDir = cdDir === 'buy' ? 'sell' : 'buy';
+
+    // Track an in-progress opposing setup within the countdown window
+    let cancelSetupCount = 0;
+    let cancelSetupActiveDir: 'buy' | 'sell' | 'none' = 'none';
+    let cancelled = false;
+
     for (let i = completedSetupIdx; i < n; i++) {
       const curr = bars[i]!;
       const ref2 = bars[i - 2]!;
 
+      // ── Opposing-setup cancellation tracking ──────────────────────────────
+      // Uses close[i] vs close[i-4]; completedSetupIdx >= 8 so i-4 >= 4, always valid.
+      const ref4 = bars[i - 4]!;
+      if (curr.close < ref4.close) {
+        if (cancelSetupActiveDir !== 'buy') { cancelSetupActiveDir = 'buy'; cancelSetupCount = 0; }
+        cancelSetupCount++;
+      } else if (curr.close > ref4.close) {
+        if (cancelSetupActiveDir !== 'sell') { cancelSetupActiveDir = 'sell'; cancelSetupCount = 0; }
+        cancelSetupCount++;
+      } else {
+        cancelSetupActiveDir = 'none';
+        cancelSetupCount = 0;
+      }
+
+      if (cancelSetupCount >= 9 && cancelSetupActiveDir === opposingDir) {
+        // Opposing 9-bar setup completed — countdown is cancelled
+        cdCount = 0;
+        cancelled = true;
+        break;
+      }
+
+      // ── Countdown qualification ───────────────────────────────────────────
       if (cdDir === 'buy' && curr.close <= ref2.low) {
         cdCount++;
       } else if (cdDir === 'sell' && curr.close >= ref2.high) {
@@ -85,6 +118,10 @@ export function computeTD(bars: OHLCVBar[]): TDResult {
         cdCompleted = true;
         break;
       }
+    }
+
+    if (cancelled) {
+      cdDir = 'none';
     }
   }
 

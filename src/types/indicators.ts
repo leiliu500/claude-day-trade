@@ -23,9 +23,10 @@ export interface OBVResult {
 }
 
 export interface TDSetup {
-  direction: 'buy' | 'sell' | 'none';
-  count: number;       // 0-9
-  completed: boolean;  // count reached 9
+  direction: 'buy' | 'sell' | 'none';       // current in-progress setup direction
+  count: number;                              // 0-9 (in-progress count)
+  completed: boolean;                         // a 9-bar setup was completed
+  completedDirection: 'buy' | 'sell' | 'none'; // direction of the most-recently completed setup
 }
 
 export interface TDCountdown {

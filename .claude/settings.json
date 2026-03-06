@@ -78,7 +78,8 @@
       "Bash(docker-compose logs orchestrator --tail=15)",
       "Bash(docker-compose logs orchestrator --tail=30)",
       "Bash(docker-compose logs orchestrator --tail=20)",
-      "Bash(npm install --silent)"
+      "Bash(npm install --silent)",
+      "Bash(docker exec day-trade-postgres psql -U trader -d day_trade -c \"SELECT outcome, grade, score, pnl_total::numeric\\(10,2\\), hold_duration_min, signal_quality, timing_quality, risk_management_quality, ticker, option_right, evaluated_at FROM trading.trade_evaluations ORDER BY evaluated_at DESC LIMIT 20;\")"
     ],
     "additionalDirectories": [
       "/tmp"

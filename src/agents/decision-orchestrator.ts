@@ -316,11 +316,11 @@ export class DecisionOrchestrator {
     // TD exhaustion: a completed setup or countdown in the opposing direction signals trend exhaustion
     const adverseTDCount = signal.timeframes.filter(tf => {
       if (signal.direction === 'bullish') {
-        return (tf.td.setup.completed && tf.td.setup.direction === 'sell') ||
+        return (tf.td.setup.completed && tf.td.setup.completedDirection === 'sell') ||
                (tf.td.countdown.completed && tf.td.countdown.direction === 'sell');
       }
       if (signal.direction === 'bearish') {
-        return (tf.td.setup.completed && tf.td.setup.direction === 'buy') ||
+        return (tf.td.setup.completed && tf.td.setup.completedDirection === 'buy') ||
                (tf.td.countdown.completed && tf.td.countdown.direction === 'buy');
       }
       return false;

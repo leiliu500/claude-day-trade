@@ -61,7 +61,7 @@ function computeConfidence(signal: SignalPayload, option: OptionEvaluation): Con
     // Penalize if opposing setup completed
     if (setup.completed) {
       const opposingDir = signal.direction === 'bullish' ? 'sell' : 'buy';
-      if (setup.direction === opposingDir) tdAdjustment -= 0.05;
+      if (setup.completedDirection === opposingDir) tdAdjustment -= 0.05;
     }
     // Bonus if early confirming setup (count 1-4)
     if (setup.count >= 1 && setup.count <= 4 && !setup.completed) {
