@@ -21,9 +21,18 @@ function computeConfidence(signal: SignalPayload, option: OptionEvaluation): Con
   // Base: slight bullish bias
   const base = signal.direction === 'bullish' ? 0.45 : 0.40;
 
-  // DI spread bonus — average of |DI+ - DI-| across all TFs, scaled 0..0.25
-  const avgDISpread = tfs.reduce((sum, tf) => sum + Math.abs(tf.dmi.plusDI - tf.dmi.minusDI), 0) / tfs.length;
-  const diSpreadBonus = Math.min((avgDISpread / 40) * 0.25, 0.25);
+  // DI spread bonus — signed spread aligned with signal direction, scaled -0.15..+0.15
+  // Positive = DI dominance confirms signal direction (bonus)
+  // Negative = DI dominance opposes signal direction (penalty)
+  const avgDISpread = signal.direction === 'neutral'
+    ? 0
+    : tfs.reduce((sum, tf) => {
+        const spread = signal.direction === 'bullish'
+          ? tf.dmi.plusDI - tf.dmi.minusDI
+          : tf.dmi.minusDI - tf.dmi.plusDI;
+        return sum + spread;
+      }, 0) / tfs.length;
+  const diSpreadBonus = Math.max(-0.15, Math.min(0.15, (avgDISpread / 40) * 0.15));
 
   // ADX bonus: HTF ADX > 25
   const adxBonus = htf.dmi.adx > 25 ? 0.05 : 0;
@@ -144,19 +153,19 @@ function computeConfidence(signal: SignalPayload, option: OptionEvaluation): Con
   }
   oiVolumeBonus = Math.min(oiVolumeBonus, 0.05);
 
-  // Price position adjustment — penalizes counter-range trades (higher risk).
+  // Price position adjustment — penalizes entering in the direction of an already-extended move.
   // Uses HTF rangePosition: 0.0 = at swing low, 1.0 = at swing high.
-  //   Bullish/call in lower half: calls are higher risk → penalty up to -0.10
-  //   Bearish/put in upper half: puts are higher risk → penalty up to -0.10
-  //   Lower half prefers puts; upper half prefers calls.
+  //   Bullish from upper half: price already extended up, limited upside → penalty up to -0.10
+  //   Bearish from lower half: price already extended down, limited downside → penalty up to -0.10
+  //   Bullish from lower half / bearish from upper half = following momentum with room to run (no penalty).
   let pricePositionAdjustment = 0;
   const htfRangePosition = htf.priceStructure.rangePosition;
-  if (signal.direction === 'bullish' && htfRangePosition < 0.5) {
-    // Calling bullish from the lower half — fighting the range position
-    pricePositionAdjustment = Math.max(-0.10, -(0.5 - htfRangePosition) * 0.20);
-  } else if (signal.direction === 'bearish' && htfRangePosition > 0.5) {
-    // Calling bearish from the upper half — fighting the range position
+  if (signal.direction === 'bullish' && htfRangePosition > 0.5) {
+    // Bullish from upper half — price already extended, limited upside
     pricePositionAdjustment = Math.max(-0.10, -(htfRangePosition - 0.5) * 0.20);
+  } else if (signal.direction === 'bearish' && htfRangePosition < 0.5) {
+    // Bearish from lower half — price already extended down, limited downside
+    pricePositionAdjustment = Math.max(-0.10, -(0.5 - htfRangePosition) * 0.20);
   }
 
   const total = Math.max(0, Math.min(1, base + diSpreadBonus + adxBonus + diCrossBonus + alignmentBonus + tdAdjustment + obvBonus + vwapBonus + oiVolumeBonus + pricePositionAdjustment));
