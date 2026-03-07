@@ -14,7 +14,7 @@ You must output exactly ONE of these 7 decision types:
 - liquidity_ok must be true; candidate_pass must be true; rr_ratio >= 0.6
 
 **WAIT Streak Cooldown — applies to NEW_ENTRY:**
-- Count the number of consecutive WAIT decisions at the tail of `recentDecisions` (stop counting at the first non-WAIT) **where confirmationCount >= 1 AND orchestration_confidence was in the marginal zone (0.65 – 0.72)**. These represent signals that barely cleared the threshold but were still blocked — indicating potentially exhausted or borderline conditions.
+- Count the number of consecutive WAIT decisions at the tail of `recentDecisions` (stop counting at the first non-WAIT) **where confirmationCount >= 1 AND orchestrationConfidence was in the marginal zone (0.65 – 0.72)**. These represent signals that barely cleared the threshold but were still blocked — indicating potentially exhausted or borderline conditions.
 - WAITs with confirmationCount = 0 are Stage 1 OBSERVE WAITs — normal first-look hesitation — and do NOT count toward the streak.
 - WAITs where confidence >= 0.72 but entry was blocked by structural quality filters (alignment not "all_aligned", OBV divergence, D/F evaluation grades, pending broker orders, etc.) are **quality-filter WAITs** — they do NOT count toward the cooldown streak. High confidence repeatedly blocked by structural reasons means the market IS moving but filters are protecting capital — not that conditions are exhausted.
 - If that marginal-confidence streak is **3 or more**, the cooldown is active.

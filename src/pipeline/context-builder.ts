@@ -147,6 +147,7 @@ export async function buildContext(ticker: string): Promise<PositionContext> {
       ticker: r.ticker,
       direction: r.direction ?? null,
       confirmationCount: r.confirmation_count,
+      orchestrationConfidence: parseFloat(r.orchestration_confidence ?? '0'),
       createdAt: r.created_at,
       reasoning: r.reasoning ?? '',
     })),

@@ -28,6 +28,7 @@ export interface PositionContext {
     ticker: string;
     direction: string | null;
     confirmationCount: number;
+    orchestrationConfidence: number;
     createdAt: string;
     reasoning: string;
   }>;

@@ -66,25 +66,32 @@ function computeEodWindow(): { isEodWindow: boolean; minutesToClose: number } {
 }
 
 /**
- * Server-side confirmation counter — counts consecutive same-direction decisions
- * from recentDecisions (newest-first) where confidence >= MIN_CONFIDENCE.
- * Returns 0 if no prior same-direction decisions found.
- * The current cycle is NOT included (caller adds +1).
+ * Server-side confirmation counter — returns the prior count of consecutive same-direction
+ * observations from recentDecisions (newest-first).
+ * The current cycle is NOT included (caller adds +1 if appropriate).
+ *
+ * Design: any decision (including WAIT) with a stored confirmationCount > 0 and matching
+ * direction carries the accumulated streak forward.  Only a direction flip, a hard reset
+ * (WAIT with count=0), or running out of history returns 0.
+ *
+ * This correctly handles the skill's Stage-2 "WAIT with count=2" pattern where the AI
+ * waits one extra cycle due to OBV/TD risk, then enters at Stage-3 with count=3.
+ * Historical data that pre-dates this fix has count=0 for WAITs and degrades gracefully:
+ * those WAITs will break the loop as if they were fresh OBSERVE cycles.
  */
 function computeServerConfirmationCount(
   recentDecisions: PositionContext['recentDecisions'],
   direction: string,
 ): number {
-  let count = 0;
   for (const d of recentDecisions) {
-    // Only count decisions that actively confirm direction (not WAIT — that breaks the streak).
-    const isConfirmation = d.decisionType === 'NEW_ENTRY' ||
-                           d.decisionType === 'CONFIRM_HOLD' || d.decisionType === 'ADD_POSITION';
-    if (!isConfirmation) break;
-    if (d.direction !== direction) break;
-    count++;
+    if (d.direction !== direction) break; // direction flip — streak resets
+    // Any decision with a positive count is authoritative: return it as the prior count.
+    // This covers NEW_ENTRY, CONFIRM_HOLD, ADD_POSITION, and correctly-stored WAITs.
+    if (d.confirmationCount > 0) return d.confirmationCount;
+    // confirmationCount === 0: pure OBSERVE stage or legacy pre-fix data — prior count is 0.
+    break;
   }
-  return count;
+  return 0;
 }
 
 export class DecisionOrchestrator {
@@ -277,23 +284,38 @@ export class DecisionOrchestrator {
         rawOutput.decision_type = 'WAIT';
         rawOutput.should_execute = false;
         rawOutput.reasoning = `[GATE OVERRIDE] Confidence ${analysis.confidence.toFixed(2)} < ${config.MIN_CONFIDENCE}. ${rawOutput.reasoning}`;
-      } else {
-        // All gates passed — ensure shouldExecute is true regardless of what the AI returned.
-        // Guards against AI returning should_execute: false for a valid NEW_ENTRY/ADD_POSITION.
-        if (!rawOutput.should_execute) {
-          console.warn(`[DecisionOrchestrator] ${rawOutput.decision_type}: AI returned should_execute=false but all gates passed — correcting to true`);
-          rawOutput.should_execute = true;
-        }
+      }
+      // NOTE: should_execute=false returned by the AI for a valid NEW_ENTRY/ADD_POSITION is
+      // intentionally respected — it means the AI expressed doubt.  The confirmation count gate
+      // below provides server-side protection against premature entries regardless.
+    }
+
+    // Server-side confirmation count — computed here (before the confirmation gate) so the gate
+    // can use priorCount, and the final serverCount reflects the post-gate decision type.
+    // Always use server count as the source of truth — never let AI count drift unchecked.
+    const priorCount = computeServerConfirmationCount(context.recentDecisions, signal.direction ?? '');
+
+    // Confirmation count gate for NEW_ENTRY: require at least 1 prior same-direction confirmation
+    // (meaning serverCount will be >= 2) before allowing execution.
+    // Exception: immediate override when confidence >= 0.85 AND alignment = "all_aligned".
+    // This is a hard server enforcement of the skill's Stage-1 OBSERVE → Stage-2+ entry rule.
+    // ADD_POSITION already requires an open position + confidence >= 0.80 + all_aligned, so it
+    // is excluded from this gate — the existing conditions are sufficient.
+    if (rawOutput.decision_type === 'NEW_ENTRY' && rawOutput.should_execute) {
+      const overrideOk = analysis.confidence >= 0.85 && signal.alignment === 'all_aligned';
+      if (!overrideOk && priorCount < 1) {
+        rawOutput.decision_type = 'WAIT';
+        rawOutput.should_execute = false;
+        rawOutput.reasoning = `[GATE OVERRIDE] Confirmation gate: priorCount=${priorCount} — need >=1 prior same-direction confirmation before entering (Stage-1 OBSERVE). Override requires confidence>=0.85 + all_aligned. ${rawOutput.reasoning}`;
+        console.log(`[DecisionOrchestrator] NEW_ENTRY blocked by confirmation gate (priorCount=${priorCount}, confidence=${analysis.confidence.toFixed(2)}, alignment=${signal.alignment})`);
       }
     }
 
     // Server-side confirmation count — computed after all gate overrides so WAIT decisions
     // do not inflate the count. Only add +1 when the final decision is an actual confirmation.
-    // Always use server count as the source of truth — never let AI count drift upward unchecked.
     const isConfirmDecision = rawOutput.decision_type === 'NEW_ENTRY' ||
                               rawOutput.decision_type === 'CONFIRM_HOLD' ||
                               rawOutput.decision_type === 'ADD_POSITION';
-    const priorCount = computeServerConfirmationCount(context.recentDecisions, signal.direction ?? '');
     const serverCount = priorCount + (isConfirmDecision ? 1 : 0);
     if (serverCount !== rawOutput.confirmation_count) {
       console.log(`[DecisionOrchestrator] Overriding AI count (${rawOutput.confirmation_count}) with server count (${serverCount})`);
