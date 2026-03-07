@@ -77,16 +77,24 @@ export function checkSafetyGates(params: {
     }
   }
 
-  // 10. Open-volatility gate — no new entries in first 30 min of session (13:30–14:00 UTC)
+  // 10. Open-volatility gate — no new entries in first 30 min of session (9:30–10:00 AM ET)
   {
     const now = new Date();
-    const utcH = now.getUTCHours();
-    const utcM = now.getUTCMinutes();
-    const minutesSinceOpen = (utcH - 13) * 60 + utcM; // minutes since 13:00 UTC
-    if (minutesSinceOpen >= 30 && minutesSinceOpen < 60) {
-      // 13:30–14:00 UTC = first 30 min of session
-      const minsLeft = 60 - minutesSinceOpen;
-      failed.push(`OPEN_VOLATILITY_GATE: first 30 min of session — ${minsLeft} min until 14:00 UTC (10:00 AM ET)`);
+    // DST detection: 2nd Sunday March → 1st Sunday November (US Eastern)
+    const year = now.getUTCFullYear();
+    const dstStart = new Date(Date.UTC(year, 2, 1));
+    dstStart.setUTCDate(1 + ((7 - dstStart.getUTCDay()) % 7) + 7); // 2nd Sunday March
+    const dstEnd = new Date(Date.UTC(year, 10, 1));
+    dstEnd.setUTCDate(1 + ((7 - dstEnd.getUTCDay()) % 7)); // 1st Sunday November
+    const isDst = now >= dstStart && now < dstEnd;
+    const etOffsetMin = isDst ? -4 * 60 : -5 * 60;
+    const totalUtcMin = now.getUTCHours() * 60 + now.getUTCMinutes();
+    const etMin = ((totalUtcMin + etOffsetMin) + 24 * 60) % (24 * 60);
+    const marketOpenMin = 9 * 60 + 30; // 9:30 AM ET
+    const minutesSinceOpen = etMin - marketOpenMin;
+    if (minutesSinceOpen >= 0 && minutesSinceOpen < 30) {
+      const minsLeft = 30 - minutesSinceOpen;
+      failed.push(`OPEN_VOLATILITY_GATE: first 30 min of session — ${minsLeft} min until 10:00 AM ET`);
     }
   }
 

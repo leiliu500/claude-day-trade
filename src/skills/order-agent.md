@@ -88,19 +88,20 @@ The system fires these exits deterministically (no AI needed) before your evalua
 - **Peak gone**: peak ≥ +12% AND current P&L ≤ +4% → auto EXIT
 - **Peak reversal**: peak ≥ +10% AND current P&L ≤ -3% → auto EXIT
 - **Small-peak gains gone**: peak ≥ +5% AND current P&L ≤ +1% → auto EXIT (all gains surrendered)
-- **Profit reversed**: peak ≥ +3% AND current P&L < 0% → auto EXIT (profitable position turned to loss)
+- **Profit reversed**: peak ≥ +1% AND current P&L < 0% → auto EXIT (after 60s hold; or immediately if peak ≥ +5%) (profitable position turned to loss)
 - **Small-peak reversal**: peak ≥ +5% AND current P&L ≤ -5% → auto EXIT (now mostly superseded by above)
 - **Hold trap**: position was profitable (peak > 0%), last 3 ticks all showed P&L ≤ -2% → auto EXIT
 - **Pre-emptive loss**: P&L ≤ -10% AND held ≥ 3 min → auto EXIT
 
 If you are called, these conditions have NOT triggered. Adjust your reasoning accordingly.
 
-**CRITICAL**: If you are called and `peak_pnl_pct > 0` but `unrealized_pnl_pct < 0`, this means the position was profitable and has now reversed to a loss. The deterministic rules have NOT fired yet (threshold not quite reached). **You must EXIT** — do not HOLD a position that moved from profit to loss while waiting for deterministic thresholds. The thesis has failed.
+**CRITICAL**: If you are called and `peak_pnl_pct > 0` but `unrealized_pnl_pct < 0`, this means the position was profitable and has now reversed to a loss. The deterministic rules have NOT fired yet — this only happens when `peak_pnl_pct < 1%` (the system already handles ≥1% deterministically). **You must EXIT** — do not HOLD a marginal-peak position that has reversed to a loss. The thesis has failed.
 
 ## Automatic Trailing Stop — Do NOT attempt to manage it manually
 The system automatically maintains a trailing stop that ratchets up as follows:
 - **13% below the highest price seen** (raw trailing)
 - **Profit-protection floors** (prevent giving back gains once profit thresholds are crossed):
+  - Peak P&L ≥ +5%: stop floor at entry (breakeven protection)
   - Peak P&L ≥ +10%: stop floor at entry (breakeven protection)
   - Peak P&L ≥ +15%: stop floor at entry +3%
   - Peak P&L ≥ +20%: stop floor at entry +8%

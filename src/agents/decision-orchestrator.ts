@@ -301,17 +301,29 @@ export class DecisionOrchestrator {
 
     // Confirmation count gate for NEW_ENTRY: require at least 1 prior same-direction confirmation
     // (meaning serverCount will be >= 2) before allowing execution.
-    // Exception: immediate override when confidence >= 0.85 AND alignment = "all_aligned".
-    // This is a hard server enforcement of the skill's Stage-1 OBSERVE → Stage-2+ entry rule.
+    // Two override paths exist:
+    //   (A) High-conviction override: confidence >= 0.85 AND alignment = "all_aligned"
+    //   (B) Post-WIN relaxation: most recent evaluation was a WIN — allow count-1 re-entry at
+    //       confidence >= 0.72 AND alignment != "mixed". This prevents a forced 2-cycle (~6 min)
+    //       delay when the market gives a fresh setup immediately after banking profit.
+    //       Not granted after a LOSS exit (stop-out) — patience required to rebuild conviction.
     // ADD_POSITION already requires an open position + confidence >= 0.80 + all_aligned, so it
     // is excluded from this gate — the existing conditions are sufficient.
     if (rawOutput.decision_type === 'NEW_ENTRY' && rawOutput.should_execute) {
       const overrideOk = analysis.confidence >= 0.85 && signal.alignment === 'all_aligned';
-      if (!overrideOk && priorCount < 1) {
+      const lastEvalWasWin = context.recentEvaluations.length > 0 &&
+        context.recentEvaluations[0].outcome === 'WIN' &&
+        (context.recentEvaluations[0].pnlTotal ?? 0) > 0;
+      const postWinRelaxOk = lastEvalWasWin &&
+        analysis.confidence >= 0.72 &&
+        signal.alignment !== 'mixed';
+      if (!overrideOk && !postWinRelaxOk && priorCount < 1) {
         rawOutput.decision_type = 'WAIT';
         rawOutput.should_execute = false;
-        rawOutput.reasoning = `[GATE OVERRIDE] Confirmation gate: priorCount=${priorCount} — need >=1 prior same-direction confirmation before entering (Stage-1 OBSERVE). Override requires confidence>=0.85 + all_aligned. ${rawOutput.reasoning}`;
-        console.log(`[DecisionOrchestrator] NEW_ENTRY blocked by confirmation gate (priorCount=${priorCount}, confidence=${analysis.confidence.toFixed(2)}, alignment=${signal.alignment})`);
+        rawOutput.reasoning = `[GATE OVERRIDE] Confirmation gate: priorCount=${priorCount} — need >=1 prior same-direction confirmation before entering (Stage-1 OBSERVE). Override requires confidence>=0.85 + all_aligned, or post-WIN relaxation (confidence>=0.72 + non-mixed alignment). ${rawOutput.reasoning}`;
+        console.log(`[DecisionOrchestrator] NEW_ENTRY blocked by confirmation gate (priorCount=${priorCount}, confidence=${analysis.confidence.toFixed(2)}, alignment=${signal.alignment}, lastEvalWasWin=${lastEvalWasWin})`);
+      } else if (postWinRelaxOk && priorCount < 1 && !overrideOk) {
+        console.log(`[DecisionOrchestrator] NEW_ENTRY post-WIN relaxation applied (priorCount=${priorCount}, confidence=${analysis.confidence.toFixed(2)}, alignment=${signal.alignment})`);
       }
     }
 

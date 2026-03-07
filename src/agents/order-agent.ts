@@ -297,35 +297,50 @@ export class OrderAgent {
    */
   private async _restoreStateFromDB(): Promise<void> {
     const pool = getPool();
-    const { rows } = await pool.query<{ current_stop: string | null; entry_price: string | null }>(
-      `SELECT current_stop, entry_price FROM trading.position_journal WHERE id=$1 AND status='OPEN'`,
+    const { rows } = await pool.query<{
+      current_stop: string | null;
+      entry_price: string | null;
+      peak_pnl_pct: string | null;
+    }>(
+      `SELECT current_stop, entry_price, peak_pnl_pct FROM trading.position_journal WHERE id=$1 AND status='OPEN'`,
       [this.positionId],
     );
     if (!rows[0]) return;
 
-    const { current_stop, entry_price } = rows[0];
+    const { current_stop, entry_price, peak_pnl_pct } = rows[0];
 
     // Restore fill price if the agent was reconstructed without it
     if (entry_price && !this.fillPrice) {
       this.fillPrice = parseFloat(entry_price);
     }
 
-    if (current_stop) {
-      const dbStop    = parseFloat(current_stop);
-      const entry     = this.fillPrice ?? this.cfg.candidate.entryPremium;
-      // Derive implied peak from stored stop (lower bound; real peak may have been higher)
+    const entry = this.fillPrice ?? this.cfg.candidate.entryPremium;
+
+    if (peak_pnl_pct !== null) {
+      // Preferred path: use the exact persisted peak value
+      this.peakPnlPct = Math.max(0, parseFloat(peak_pnl_pct));
+      // Reconstruct highestPrice from peak so trailing stop formula stays consistent
+      if (entry > 0) {
+        this.highestPrice = parseFloat((entry * (1 + this.peakPnlPct / 100)).toFixed(2));
+      }
+    } else if (current_stop) {
+      // Fallback for positions created before the peak_pnl_pct column existed:
+      // derive implied peak from stored stop (lower bound; real peak may have been higher).
       // Must match the trailing stop formula: stop = highestPrice * 0.87 → highestPrice = stop / 0.87
+      const dbStop      = parseFloat(current_stop);
       const impliedPeak = parseFloat((dbStop / 0.87).toFixed(2));
       this.highestPrice = Math.max(impliedPeak, entry);
       if (entry > 0) {
         this.peakPnlPct = Math.max(0, ((this.highestPrice - entry) / entry) * 100);
       }
-      console.log(
-        `[OrderAgent ${this.cfg.decision.ticker}] Restored state:` +
-        ` fillPrice=$${this.fillPrice} highestPrice=$${this.highestPrice}` +
-        ` peakPnlPct=${this.peakPnlPct.toFixed(1)}%`,
-      );
     }
+
+    console.log(
+      `[OrderAgent ${this.cfg.decision.ticker}] Restored state:` +
+      ` fillPrice=$${this.fillPrice} highestPrice=$${this.highestPrice}` +
+      ` peakPnlPct=${this.peakPnlPct.toFixed(1)}%` +
+      (peak_pnl_pct !== null ? ' (from DB)' : ' (derived from stop — pre-migration)'),
+    );
   }
 
   /**
@@ -1411,11 +1426,17 @@ export class OrderAgent {
 
     const trailingStop = parseFloat(Math.max(rawTrailingStop, profitFloor).toFixed(2));
 
+    const pool = getPool();
     if (dbStop === null || trailingStop > dbStop) {
-      const pool = getPool();
       await pool.query(
-        `UPDATE trading.position_journal SET current_stop=$1 WHERE id=$2 AND status='OPEN'`,
-        [trailingStop, this.positionId],
+        `UPDATE trading.position_journal SET current_stop=$1, peak_pnl_pct=GREATEST(COALESCE(peak_pnl_pct,0),$2) WHERE id=$3 AND status='OPEN'`,
+        [trailingStop, this.peakPnlPct, this.positionId],
+      );
+    } else {
+      // Stop didn't move but peak may have — persist peak separately
+      await pool.query(
+        `UPDATE trading.position_journal SET peak_pnl_pct=GREATEST(COALESCE(peak_pnl_pct,0),$1) WHERE id=$2 AND status='OPEN'`,
+        [this.peakPnlPct, this.positionId],
       );
     }
     return Math.max(trailingStop, dbStop ?? 0);
