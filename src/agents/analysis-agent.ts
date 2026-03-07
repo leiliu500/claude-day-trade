@@ -153,21 +153,6 @@ function computeConfidence(signal: SignalPayload, option: OptionEvaluation): Con
   }
   oiVolumeBonus = Math.min(oiVolumeBonus, 0.05);
 
-  // Price position adjustment — penalizes entering in the direction of an already-extended move.
-  // Uses HTF rangePosition: 0.0 = at swing low, 1.0 = at swing high.
-  //   Bullish from upper half: price already extended up, limited upside → penalty up to -0.10
-  //   Bearish from lower half: price already extended down, limited downside → penalty up to -0.10
-  //   Bullish from lower half / bearish from upper half = following momentum with room to run (no penalty).
-  let pricePositionAdjustment = 0;
-  const htfRangePosition = htf.priceStructure.rangePosition;
-  if (signal.direction === 'bullish' && htfRangePosition > 0.5) {
-    // Bullish from upper half — price already extended, limited upside
-    pricePositionAdjustment = Math.max(-0.10, -(htfRangePosition - 0.5) * 0.20);
-  } else if (signal.direction === 'bearish' && htfRangePosition < 0.5) {
-    // Bearish from lower half — price already extended down, limited downside
-    pricePositionAdjustment = Math.max(-0.10, -(0.5 - htfRangePosition) * 0.20);
-  }
-
   // ADX maturity penalty — penalizes entering a trend that has already been running strong for many bars.
   // Skipped when a fresh DI cross is present on HTF (cross signals new momentum regardless of maturity).
   // HTF adxBarsAbove25 >= 10 bars: trend is very mature → -0.08
@@ -179,6 +164,25 @@ function computeConfidence(signal: SignalPayload, option: OptionEvaluation): Con
     adxMaturityPenalty = -0.08;
   } else if (!htfFreshCross && htf.dmi.adxBarsAbove25 >= 5) {
     adxMaturityPenalty = -0.04;
+  }
+
+  // Price position adjustment — penalizes entering in the direction of an already-extended move.
+  // Uses HTF rangePosition: 0.0 = at swing low, 1.0 = at swing high.
+  //   Bullish from upper half: price already extended up, limited upside → penalty up to -0.10
+  //   Bearish from lower half: price already extended down, limited downside → penalty up to -0.10
+  //   Bullish from lower half / bearish from upper half = following momentum with room to run (no penalty).
+  // Mutually exclusive with adxMaturityPenalty: both measure the same "extended trend" condition.
+  // When adxMaturityPenalty already applies, skip this to avoid double-penalizing valid trend entries.
+  let pricePositionAdjustment = 0;
+  if (adxMaturityPenalty === 0) {
+    const htfRangePosition = htf.priceStructure.rangePosition;
+    if (signal.direction === 'bullish' && htfRangePosition > 0.5) {
+      // Bullish from upper half — price already extended, limited upside
+      pricePositionAdjustment = Math.max(-0.10, -(htfRangePosition - 0.5) * 0.20);
+    } else if (signal.direction === 'bearish' && htfRangePosition < 0.5) {
+      // Bearish from lower half — price already extended down, limited downside
+      pricePositionAdjustment = Math.max(-0.10, -(0.5 - htfRangePosition) * 0.20);
+    }
   }
 
   const total = Math.max(0, Math.min(1, base + diSpreadBonus + adxBonus + diCrossBonus + alignmentBonus + tdAdjustment + obvBonus + vwapBonus + oiVolumeBonus + pricePositionAdjustment + adxMaturityPenalty));
