@@ -167,6 +167,12 @@ export class OrderAgent {
   private isAIRunning = false;
   /** Last market context received from the orchestrator — reused on self-ticks when no new dispatch. */
   private cachedMarketContext: OrchestratorSuggestion['marketContext'] | null = null;
+  /** In-memory trailing stop — synced after each 30s tick, used by stream price handler to avoid DB reads. */
+  private currentStop: number | null = null;
+  /** In-memory TP level — synced after each 30s tick. */
+  private currentTp: number | null = null;
+  /** Timestamp (ms) of the last stream-triggered price check — used to throttle quote callbacks. */
+  private lastStreamCheckMs = 0;
 
   constructor(private readonly cfg: OrderAgentConfig | RestoredOrderAgentConfig) {
     if ('positionId' in cfg) {
@@ -485,6 +491,7 @@ export class OrderAgent {
    */
   shutdown(): void {
     this._stopTick();
+    AlpacaStreamManager.getInstance().unwatchOptionQuote(this.cfg.candidate.contract.symbol);
     this.phase = 'CLOSED';
     console.log(
       `[OrderAgent ${this.cfg.decision.ticker}] Shutdown (daily cleanup)` +
@@ -554,6 +561,10 @@ export class OrderAgent {
 
       this.phase = 'MONITORING';
       this._forceNextAI = true;
+      // Subscribe to real-time quotes for immediate stop/TP detection
+      AlpacaStreamManager.getInstance().watchOptionQuote(candidate.contract.symbol, (mid) => {
+        void this._handlePriceUpdate(mid);
+      });
       console.log(
         `[OrderAgent ${decision.ticker} ${candidate.contract.symbol}] ` +
         `[STREAM] Filled qty=${filledQty} @ $${fillPrice ?? 'n/a'} → Phase: MONITORING`,
@@ -683,6 +694,10 @@ export class OrderAgent {
 
       this.phase = 'MONITORING';
       this._forceNextAI = true;
+      // Subscribe to real-time quotes for immediate stop/TP detection
+      AlpacaStreamManager.getInstance().watchOptionQuote(candidate.contract.symbol, (mid) => {
+        void this._handlePriceUpdate(mid);
+      });
       console.log(
         `[OrderAgent ${decision.ticker} ${candidate.contract.symbol}] ` +
         `[POLL] Filled qty=${filledQty} @ $${fillPrice ?? 'n/a'} → Phase: MONITORING`,
@@ -706,6 +721,101 @@ export class OrderAgent {
   private _monitorRunning = false;
   /** Set when transitioning to MONITORING so the immediate post-fill tick always runs AI. */
   private _forceNextAI = false;
+
+  /**
+   * Called on every real-time option quote update from the data stream.
+   * Runs all deterministic exit checks using only in-memory state — no REST, DB, or AI calls.
+   * The 30 s polling tick remains authoritative for trailing stop DB sync, AI decisions,
+   * and full state refresh.
+   *
+   * Uses `_monitorRunning` as a shared mutex: if the full 30 s tick is already running,
+   * the stream check is skipped (the full tick already covers all checks with a fresher price).
+   */
+  private async _handlePriceUpdate(midPrice: number): Promise<void> {
+    if (this.phase !== 'MONITORING') return;
+    if (this._monitorRunning) return;
+
+    // Throttle: at most one stream-triggered check per second (exits are idempotent via phase guard)
+    const now = Date.now();
+    if (now - this.lastStreamCheckMs < 1_000) return;
+    this.lastStreamCheckMs = now;
+
+    // ── Update in-memory peak tracking (ratchets up only, mirrors _updateTrailingStop) ──
+    const entry = this.fillPrice ?? this.cfg.candidate.entryPremium;
+    if (this.highestPrice === null) this.highestPrice = entry;
+    if (midPrice > this.highestPrice) this.highestPrice = midPrice;
+    if (entry > 0) {
+      const peakNow = ((this.highestPrice - entry) / entry) * 100;
+      this.peakPnlPct = Math.max(this.peakPnlPct, peakNow);
+    }
+
+    // Compute effective stop from in-memory state (mirrors _updateTrailingStop formula)
+    const rawTrailingStop = parseFloat((this.highestPrice * 0.87).toFixed(2));
+    let profitFloor = 0;
+    if      (this.peakPnlPct >= 30) profitFloor = parseFloat((entry * 1.18).toFixed(2));
+    else if (this.peakPnlPct >= 20) profitFloor = parseFloat((entry * 1.08).toFixed(2));
+    else if (this.peakPnlPct >= 15) profitFloor = parseFloat((entry * 1.03).toFixed(2));
+    else if (this.peakPnlPct >= 10) profitFloor = parseFloat(entry.toFixed(2));
+    // currentStop is the last DB-synced value; use it as a floor too (never regress below DB stop)
+    const streamStop = Math.max(rawTrailingStop, profitFloor, this.currentStop ?? 0);
+
+    const pnlPct = entry > 0 ? ((midPrice - entry) / entry) * 100 : 0;
+    const { decision } = this.cfg;
+
+    // ── Hard stop ──
+    if (midPrice <= streamStop) {
+      console.log(
+        `[OrderAgent ${decision.ticker}] [STREAM] STOP_HIT` +
+        ` mid=$${midPrice.toFixed(2)} stop=$${streamStop.toFixed(2)}`,
+      );
+      await this._executeExit(
+        `STOP_HIT @ $${midPrice.toFixed(2)} (stop=$${streamStop.toFixed(2)}) [stream]`,
+      );
+      return;
+    }
+
+    // ── Take-profit ──
+    if (this.currentTp != null && midPrice >= this.currentTp) {
+      console.log(
+        `[OrderAgent ${decision.ticker}] [STREAM] TP_HIT` +
+        ` mid=$${midPrice.toFixed(2)} tp=$${this.currentTp.toFixed(2)}`,
+      );
+      await this._executeExit(
+        `TP_HIT @ $${midPrice.toFixed(2)} (tp=$${this.currentTp.toFixed(2)}) [stream]`,
+      );
+      return;
+    }
+
+    // ── Peak-erosion / profit-reversal exits (no consecutiveDeclines dependency) ──
+    if (this.peakPnlPct >= 20 && pnlPct <= 10) {
+      await this._executeExit(`PEAK_EROSION [stream]: peak=+${this.peakPnlPct.toFixed(1)}%, now=${pnlPct >= 0 ? '+' : ''}${pnlPct.toFixed(1)}%`);
+      return;
+    }
+    if (this.peakPnlPct >= 12 && pnlPct <= 4) {
+      await this._executeExit(`PEAK_GONE [stream]: peak=+${this.peakPnlPct.toFixed(1)}%, now=${pnlPct >= 0 ? '+' : ''}${pnlPct.toFixed(1)}%`);
+      return;
+    }
+    if (this.peakPnlPct >= 10 && pnlPct <= -3) {
+      await this._executeExit(`PEAK_REVERSAL [stream]: peak=+${this.peakPnlPct.toFixed(1)}%, now=${pnlPct.toFixed(1)}%`);
+      return;
+    }
+    if (this.peakPnlPct >= 5 && pnlPct <= 1.0) {
+      await this._executeExit(`PEAK_GAINS_GONE [stream]: peak=+${this.peakPnlPct.toFixed(1)}%, now=${pnlPct >= 0 ? '+' : ''}${pnlPct.toFixed(1)}%`);
+      return;
+    }
+    if (this.peakPnlPct >= 1.0 && pnlPct < 0 && this.tickCount >= 2) {
+      await this._executeExit(`PROFIT_REVERSED [stream]: peak=+${this.peakPnlPct.toFixed(1)}%, now=${pnlPct.toFixed(1)}%`);
+      return;
+    }
+    if (this.peakPnlPct >= 5 && pnlPct <= -5) {
+      await this._executeExit(`PEAK_REVERSAL_SMALL [stream]: peak=+${this.peakPnlPct.toFixed(1)}%, now=${pnlPct.toFixed(1)}%`);
+      return;
+    }
+    if (pnlPct <= -10 && this.tickCount >= 6) {
+      await this._executeExit(`PRE_EMPTIVE_LOSS [stream]: pnl=${pnlPct.toFixed(1)}%`);
+      return;
+    }
+  }
 
   /**
    * Every tick:
@@ -758,6 +868,10 @@ export class OrderAgent {
 
     // ── 0. Trailing stop: 15% from peak (ratchets up only) ────────────────
     const stop = await this._updateTrailingStop(currentPrice, dbStop);
+
+    // Sync in-memory stop/TP so stream-triggered checks always use the latest values
+    this.currentStop = stop;
+    this.currentTp   = tp;
 
     // ── 0b. Track price direction (30 s granularity) ───────────────────────
     const prevPrice = this.lastPrice;
@@ -1293,6 +1407,7 @@ export class OrderAgent {
     if (this.phase === 'CLOSING' || this.phase === 'CLOSED') return;
     this.phase = 'CLOSING';
     this._stopTick();
+    AlpacaStreamManager.getInstance().unwatchOptionQuote(this.cfg.candidate.contract.symbol);
 
     // Track deterministic exits in DB. AI_EXIT and IMMEDIATE: are already persisted by their callers.
     if (this.positionId && !reason.startsWith('AI_') && !reason.startsWith('IMMEDIATE:')) {

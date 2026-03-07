@@ -42,6 +42,13 @@ interface AlpacaStreamBar {
   t: string;
 }
 
+interface AlpacaStreamQuote {
+  T: 'q';
+  S: string;
+  bp: number; // bid price
+  ap: number; // ask price
+}
+
 export interface TradeUpdateEvent {
   event: string;
   order: {
@@ -53,7 +60,8 @@ export interface TradeUpdateEvent {
   };
 }
 
-type FillCallback = (event: TradeUpdateEvent) => void;
+type FillCallback  = (event: TradeUpdateEvent) => void;
+type PriceCallback = (midPrice: number) => void;
 
 // ── AlpacaStreamManager ───────────────────────────────────────────────────────
 
@@ -68,6 +76,10 @@ export class AlpacaStreamManager extends EventEmitter {
 
   // Order ID → fill callback for trading stream
   private readonly orderCallbacks = new Map<string, FillCallback>();
+
+  // Option symbol → mid-price callback for real-time stop/TP monitoring
+  private readonly optionQuoteCallbacks  = new Map<string, PriceCallback>();
+  private readonly subscribedOptionSymbols = new Set<string>();
 
   // WebSocket handles
   private dataWs: WebSocket | null = null;
@@ -158,6 +170,25 @@ export class AlpacaStreamManager extends EventEmitter {
     this.orderCallbacks.delete(orderId);
   }
 
+  /**
+   * Subscribe to real-time mid-price updates for an option symbol.
+   * The callback fires on every quote update (bid/ask change) from the data stream.
+   * Used by OrderAgents after fill to detect stop/TP breaches immediately.
+   */
+  watchOptionQuote(symbol: string, callback: PriceCallback): void {
+    this.optionQuoteCallbacks.set(symbol, callback);
+    this.subscribedOptionSymbols.add(symbol);
+    this._subscribeOptionSymbols([symbol]);
+  }
+
+  unwatchOptionQuote(symbol: string): void {
+    this.optionQuoteCallbacks.delete(symbol);
+    this.subscribedOptionSymbols.delete(symbol);
+    if (this.dataWs?.readyState === WebSocket.OPEN) {
+      this.dataWs.send(JSON.stringify({ action: 'unsubscribe', quotes: [symbol] }));
+    }
+  }
+
   /** Graceful shutdown */
   disconnect(): void {
     if (this.dataReconnectTimer)    { clearTimeout(this.dataReconnectTimer);    this.dataReconnectTimer    = null; }
@@ -167,6 +198,8 @@ export class AlpacaStreamManager extends EventEmitter {
     this.dataWs    = null;
     this.tradingWs = null;
     this.started   = false;
+    this.optionQuoteCallbacks.clear();
+    this.subscribedOptionSymbols.clear();
     console.log('[AlpacaStream] Disconnected');
   }
 
@@ -217,6 +250,9 @@ export class AlpacaStreamManager extends EventEmitter {
       if (T === 'success' && obj['msg'] === 'authenticated') {
         console.log('[AlpacaStream/data] Authenticated — subscribing bars');
         this._subscribeDataTickers([...this.subscribedTickers]);
+        if (this.subscribedOptionSymbols.size > 0) {
+          this._subscribeOptionSymbols([...this.subscribedOptionSymbols]);
+        }
         continue;
       }
 
@@ -227,6 +263,10 @@ export class AlpacaStreamManager extends EventEmitter {
 
       if (T === 'b') {
         this._ingestBar(m as unknown as AlpacaStreamBar);
+      }
+
+      if (T === 'q') {
+        this._handleQuote(m as unknown as AlpacaStreamQuote);
       }
 
       if (T === 'error') {
@@ -242,6 +282,21 @@ export class AlpacaStreamManager extends EventEmitter {
       this.dataWs.send(JSON.stringify({ action: 'subscribe', bars: toSubscribe }));
       console.log(`[AlpacaStream/data] Subscribed bars: ${toSubscribe.join(',')}`);
     }
+  }
+
+  private _subscribeOptionSymbols(symbols: string[]): void {
+    if (symbols.length === 0) return;
+    if (this.dataWs?.readyState === WebSocket.OPEN) {
+      this.dataWs.send(JSON.stringify({ action: 'subscribe', quotes: symbols }));
+      console.log(`[AlpacaStream/data] Subscribed option quotes: ${symbols.join(',')}`);
+    }
+  }
+
+  private _handleQuote(quote: AlpacaStreamQuote): void {
+    const cb = this.optionQuoteCallbacks.get(quote.S);
+    if (!cb) return;
+    const mid = (quote.bp + quote.ap) / 2;
+    if (mid > 0) cb(mid);
   }
 
   private _ingestBar(bar: AlpacaStreamBar): void {
