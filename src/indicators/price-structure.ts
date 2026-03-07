@@ -82,8 +82,8 @@ export function computePriceStructure(
     targetLevel = swingHigh;
   }
 
-  const risk = triggerPrice - invalidationLevel;
-  const reward = targetLevel - triggerPrice;
+  const risk = Math.abs(triggerPrice - invalidationLevel);
+  const reward = Math.abs(targetLevel - triggerPrice);
   const underlyingRR = risk > 0 ? reward / risk : 0;
 
   // Price position within the swing range
