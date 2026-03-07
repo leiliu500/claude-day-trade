@@ -765,9 +765,14 @@ export class OrderAgent {
     }
 
     // Compute effective stop from in-memory state (mirrors _updateTrailingStop formula)
-    const rawTrailingStop = parseFloat((this.highestPrice * 0.87).toFixed(2));
+    // Adaptive trail factor: tighten as peak grows (same logic as _updateTrailingStop)
+    const trailFactor = this.peakPnlPct >= 40 ? 0.92
+                      : this.peakPnlPct >= 25 ? 0.90
+                      : 0.87;
+    const rawTrailingStop = parseFloat((this.highestPrice * trailFactor).toFixed(2));
     let profitFloor = 0;
-    if      (this.peakPnlPct >= 30) profitFloor = parseFloat((entry * 1.18).toFixed(2));
+    if      (this.peakPnlPct >= 40) profitFloor = parseFloat((entry * 1.25).toFixed(2));
+    else if (this.peakPnlPct >= 30) profitFloor = parseFloat((entry * 1.18).toFixed(2));
     else if (this.peakPnlPct >= 20) profitFloor = parseFloat((entry * 1.08).toFixed(2));
     else if (this.peakPnlPct >= 15) profitFloor = parseFloat((entry * 1.03).toFixed(2));
     else if (this.peakPnlPct >= 10) profitFloor = parseFloat(entry.toFixed(2));
@@ -803,6 +808,11 @@ export class OrderAgent {
     }
 
     // ── Peak-erosion / profit-reversal exits (no consecutiveDeclines dependency) ──
+    // Extreme peak (≥35%): 45% erosion triggers exit (tighter than 40% used in 30s tick w/ decline guard)
+    if (this.peakPnlPct >= 35 && pnlPct < this.peakPnlPct * 0.55 && pnlPct > 0) {
+      await this._executeExit(`PROFIT_LOCK_EXTREME [stream]: peak=+${this.peakPnlPct.toFixed(1)}%, now=+${pnlPct.toFixed(1)}% (${((pnlPct / this.peakPnlPct) * 100).toFixed(0)}% of peak)`);
+      return;
+    }
     if (this.peakPnlPct >= 20 && pnlPct <= 10) {
       await this._executeExit(`PEAK_EROSION [stream]: peak=+${this.peakPnlPct.toFixed(1)}%, now=${pnlPct >= 0 ? '+' : ''}${pnlPct.toFixed(1)}%`);
       return;
@@ -957,6 +967,13 @@ export class OrderAgent {
     // These fire when: (a) price is actively declining AND (b) 55%+ of peak gains surrendered.
     // Ordered largest peak first so the tightest threshold wins.
 
+    // Extreme peak (≥35%): lock in at ≥21% with just 1 consecutive decline — don't let exceptional gains erode
+    if (this.peakPnlPct >= 35 && pnlPctNow < this.peakPnlPct * 0.60 && pnlPctNow > 0 && this.consecutiveDeclines >= 1) {
+      await this._executeExit(
+        `PROFIT_LOCK_EXTREME: peak=+${this.peakPnlPct.toFixed(1)}%, now=+${pnlPctNow.toFixed(1)}% (${((pnlPctNow / this.peakPnlPct) * 100).toFixed(0)}% of peak) — locking exceptional profit on first decline`,
+      );
+      return;
+    }
     // Large peak (≥25%): lock in at ≥10% profit when 60%+ of gains eroded while declining
     if (this.peakPnlPct >= 25 && pnlPctNow < this.peakPnlPct * 0.40 && pnlPctNow > 0 && this.consecutiveDeclines >= 2) {
       await this._executeExit(
@@ -982,6 +999,24 @@ export class OrderAgent {
     if (this.peakPnlPct >= 10 && pnlPctNow < this.peakPnlPct * 0.35 && pnlPctNow > 0 && this.consecutiveDeclines >= 4) {
       await this._executeExit(
         `PROFIT_LOCK_SMALL: peak=+${this.peakPnlPct.toFixed(1)}%, now=+${pnlPctNow.toFixed(1)}% (${((pnlPctNow / this.peakPnlPct) * 100).toFixed(0)}% of peak) — locking remaining profit`,
+      );
+      return;
+    }
+
+    // ── Mature position profit protection ──────────────────────────────────────
+    // After 40+ min, option theta decay accelerates.  A profitable position that starts
+    // declining should be exited — the odds of further improvement shrink fast.
+    const minutesHeld = Math.floor((Date.now() - new Date(this.openedAt).getTime()) / 60_000);
+    if (minutesHeld >= 40 && pnlPctNow >= 15 && this.consecutiveDeclines >= 2) {
+      await this._executeExit(
+        `MATURE_PROFIT_EXIT: held=${minutesHeld}min, pnl=+${pnlPctNow.toFixed(1)}%, peak=+${this.peakPnlPct.toFixed(1)}% — protecting mature profit on declining price`,
+      );
+      return;
+    }
+    // Held 30+ min with a meaningful gain but any weakness — don't let theta decay it away
+    if (minutesHeld >= 30 && pnlPctNow >= 20 && this.consecutiveDeclines >= 2) {
+      await this._executeExit(
+        `MATURE_PROFIT_EXIT: held=${minutesHeld}min, pnl=+${pnlPctNow.toFixed(1)}%, peak=+${this.peakPnlPct.toFixed(1)}% — locking +20% profit after 30 min on decline`,
       );
       return;
     }
@@ -1407,18 +1442,27 @@ export class OrderAgent {
       this.peakPnlPct = Math.max(this.peakPnlPct, peakNow);
     }
 
-    // Raw trailing stop: 13% below peak price (tightened from 15% to lock in more profit)
-    const rawTrailingStop = parseFloat((this.highestPrice * 0.87).toFixed(2));
+    // Adaptive trailing stop: tighten as gains grow to protect more profit at large peaks
+    //   Peak < 25%:  13% trailing (0.87 factor)
+    //   Peak ≥ 25%:  10% trailing (0.90 factor) — lock in more from a large run
+    //   Peak ≥ 40%:   8% trailing (0.92 factor) — lock in most of an exceptional run
+    const trailFactor = this.peakPnlPct >= 40 ? 0.92
+                      : this.peakPnlPct >= 25 ? 0.90
+                      : 0.87;
+    const rawTrailingStop = parseFloat((this.highestPrice * trailFactor).toFixed(2));
 
     // Profit-protection floors — once a profit threshold is crossed, the stop never
     // falls below that floor.  This prevents giving back gains on small/moderate peaks
-    // where the raw 13%-from-peak stop would still be below the entry price.
+    // where the raw trailing stop would still be below the entry price.
+    //   Peak ≥  +5% → stop floor at breakeven (entry)
     //   Peak ≥ +10% → stop floor at breakeven (entry)
     //   Peak ≥ +15% → stop floor at +3% profit
     //   Peak ≥ +20% → stop floor at +8% profit
     //   Peak ≥ +30% → stop floor at +18% profit
+    //   Peak ≥ +40% → stop floor at +25% profit (new — exceptional run protection)
     let profitFloor = 0;
-    if (this.peakPnlPct >= 30) profitFloor = parseFloat((entryForTrail * 1.18).toFixed(2));
+    if      (this.peakPnlPct >= 40) profitFloor = parseFloat((entryForTrail * 1.25).toFixed(2));
+    else if (this.peakPnlPct >= 30) profitFloor = parseFloat((entryForTrail * 1.18).toFixed(2));
     else if (this.peakPnlPct >= 20) profitFloor = parseFloat((entryForTrail * 1.08).toFixed(2));
     else if (this.peakPnlPct >= 15) profitFloor = parseFloat((entryForTrail * 1.03).toFixed(2));
     else if (this.peakPnlPct >= 10) profitFloor = parseFloat(entryForTrail.toFixed(2));
