@@ -85,8 +85,12 @@ function computeServerConfirmationCount(
 ): number {
   for (const d of recentDecisions) {
     if (d.direction !== direction) break; // direction flip — streak resets
-    // Any decision with a positive count is authoritative: return it as the prior count.
-    // This covers NEW_ENTRY, CONFIRM_HOLD, ADD_POSITION, and correctly-stored WAITs.
+    // Exit/reduce/reverse break the streak: position was closed or cut due to risk.
+    // After these, re-entry must rebuild conviction from scratch (priorCount=0).
+    // REVERSE already resets via direction flip on the next cycle; EXIT/REDUCE do not.
+    if (d.decisionType === 'EXIT' || d.decisionType === 'REDUCE_EXPOSURE') break;
+    // Any remaining decision with a positive count is authoritative: return it as the prior count.
+    // This covers NEW_ENTRY, CONFIRM_HOLD, ADD_POSITION, and correctly-stored intermediate WAITs.
     if (d.confirmationCount > 0) return d.confirmationCount;
     // confirmationCount === 0: pure OBSERVE stage or legacy pre-fix data — prior count is 0.
     break;
