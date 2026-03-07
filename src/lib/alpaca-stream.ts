@@ -1,22 +1,24 @@
 /**
- * AlpacaStreamManager — Singleton managing three persistent WebSocket connections:
+ * AlpacaStreamManager — Singleton managing two persistent WebSocket connections
+ * plus one REST-polling loop for option quotes:
  *
  *  1. Data stream  (wss://stream.data.alpaca.markets/v2/sip)
  *     Subscribes to 1-minute bars for all watched tickers.
  *     Maintains an in-memory ring buffer of 1-min OHLCVBar per ticker.
  *     getBars() derives any N-minute aggregation on demand.
  *
- *  2. Options stream (wss://stream.data.alpaca.markets/v1beta1/options)
- *     Subscribes to real-time quotes for active option positions.
- *     Caches the latest mid-price per option symbol.
- *     getOptionMid() returns cached mid (bid+ask)/2 instantly — no REST call.
- *     watchOptionQuote() fires a callback on every quote update.
+ *  2. Option quote poll (REST OPRA snapshot, every OPTION_POLL_MS)
+ *     Alpaca does not provide a WebSocket stream for option quotes.
+ *     Polls the snapshot API for all currently-watched option symbols.
+ *     Caches the latest mid-price per symbol; fires watchOptionQuote callbacks.
+ *     getOptionMid() returns the latest cached mid instantly.
+ *     Poll starts on first watchOptionQuote call; stops when all are unwatched.
  *
  *  3. Trading stream (wss based on ALPACA_BASE_URL)
  *     Subscribes to trade_updates — emits fill events immediately
  *     so OrderAgents detect fills without polling.
  *
- * All streams auto-reconnect with exponential backoff.
+ * Both WebSocket streams auto-reconnect with exponential backoff.
  * getBars() / getOptionMid() return null when cache is absent so callers
  * fall back to the Alpaca REST API transparently.
  */
@@ -37,6 +39,9 @@ const STALENESS_THRESHOLD_S = 90;
 const MIN_RECONNECT_MS = 1_000;
 const MAX_RECONNECT_MS = 30_000;
 
+/** How often to poll option snapshots for all watched symbols (ms) */
+const OPTION_POLL_MS = 5_000;
+
 // ── Internal types ────────────────────────────────────────────────────────────
 
 interface AlpacaStreamBar {
@@ -48,12 +53,6 @@ interface AlpacaStreamBar {
   t: string;
 }
 
-interface AlpacaStreamQuote {
-  T: 'q';
-  S: string;
-  bp: number; // bid price
-  ap: number; // ask price
-}
 
 export interface TradeUpdateEvent {
   event: string;
@@ -92,15 +91,12 @@ export class AlpacaStreamManager extends EventEmitter {
 
   // WebSocket handles
   private dataWs:    WebSocket | null = null;
-  private optionsWs: WebSocket | null = null;
   private tradingWs: WebSocket | null = null;
 
   // Reconnect state
-  private dataReconnectMs     = MIN_RECONNECT_MS;
-  private optionsReconnectMs  = MIN_RECONNECT_MS;
-  private tradingReconnectMs  = MIN_RECONNECT_MS;
+  private dataReconnectMs    = MIN_RECONNECT_MS;
+  private tradingReconnectMs = MIN_RECONNECT_MS;
   private dataReconnectTimer:    ReturnType<typeof setTimeout> | null = null;
-  private optionsReconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private tradingReconnectTimer: ReturnType<typeof setTimeout> | null = null;
 
   private started = false;
@@ -114,7 +110,7 @@ export class AlpacaStreamManager extends EventEmitter {
 
   // ── Public API ──────────────────────────────────────────────────────────────
 
-  /** Open all three WebSocket connections. Safe to call multiple times. */
+  /** Open both WebSocket connections. Safe to call multiple times. */
   connect(tickers: string[]): void {
     if (this.started) {
       this._subscribeDataTickers(tickers);
@@ -123,7 +119,6 @@ export class AlpacaStreamManager extends EventEmitter {
     this.started = true;
     for (const t of tickers) this.subscribedTickers.add(t);
     this._connectData();
-    this._connectOptions();
     this._connectTrading();
     console.log(`[AlpacaStream] Connecting — tickers: ${tickers.join(',')}`);
   }
@@ -184,23 +179,21 @@ export class AlpacaStreamManager extends EventEmitter {
   }
 
   /**
-   * Subscribe to real-time mid-price updates for an option symbol.
-   * The callback fires on every quote update (bid/ask change) from the data stream.
-   * Used by OrderAgents after fill to detect stop/TP breaches immediately.
+   * Subscribe to mid-price updates for an option symbol via the poll loop.
+   * The callback fires every OPTION_POLL_MS with the latest (bid+ask)/2.
+   * Used by OrderAgents after fill to detect stop/TP breaches.
    */
   watchOptionQuote(symbol: string, callback: PriceCallback): void {
     this.optionQuoteCallbacks.set(symbol, callback);
     this.subscribedOptionSymbols.add(symbol);
-    this._subscribeOptionSymbols([symbol]);
+    this._startOptionPoll();
   }
 
   unwatchOptionQuote(symbol: string): void {
     this.optionQuoteCallbacks.delete(symbol);
     this.subscribedOptionSymbols.delete(symbol);
     this.optionMidCache.delete(symbol);
-    if (this.optionsWs?.readyState === WebSocket.OPEN) {
-      this.optionsWs.send(JSON.stringify({ action: 'unsubscribe', quotes: [symbol] }));
-    }
+    if (this.subscribedOptionSymbols.size === 0) this._stopOptionPoll();
   }
 
   /**
@@ -215,13 +208,11 @@ export class AlpacaStreamManager extends EventEmitter {
   /** Graceful shutdown */
   disconnect(): void {
     if (this.dataReconnectTimer)    { clearTimeout(this.dataReconnectTimer);    this.dataReconnectTimer    = null; }
-    if (this.optionsReconnectTimer) { clearTimeout(this.optionsReconnectTimer); this.optionsReconnectTimer = null; }
     if (this.tradingReconnectTimer) { clearTimeout(this.tradingReconnectTimer); this.tradingReconnectTimer = null; }
+    this._stopOptionPoll();
     this.dataWs?.close();
-    this.optionsWs?.close();
     this.tradingWs?.close();
     this.dataWs    = null;
-    this.optionsWs = null;
     this.tradingWs = null;
     this.started   = false;
     this.optionQuoteCallbacks.clear();
@@ -289,10 +280,6 @@ export class AlpacaStreamManager extends EventEmitter {
         this._ingestBar(m as unknown as AlpacaStreamBar);
       }
 
-      if (T === 'q') {
-        this._handleQuote(m as unknown as AlpacaStreamQuote);
-      }
-
       if (T === 'error') {
         console.error('[AlpacaStream/data] Stream error:', obj['msg']);
       }
@@ -308,19 +295,66 @@ export class AlpacaStreamManager extends EventEmitter {
     }
   }
 
-  private _subscribeOptionSymbols(symbols: string[]): void {
-    if (symbols.length === 0) return;
-    if (this.optionsWs?.readyState === WebSocket.OPEN) {
-      this.optionsWs.send(JSON.stringify({ action: 'subscribe', quotes: symbols }));
-      console.log(`[AlpacaStream/options] Subscribed quotes: ${symbols.join(',')}`);
+  // ── Option quote polling ─────────────────────────────────────────────────────
+  // Alpaca has no WebSocket endpoint for option quotes — we poll the snapshot API.
+
+  private optionPollTimer: ReturnType<typeof setInterval> | null = null;
+  private optionPollInFlight = false;
+
+  private _startOptionPoll(): void {
+    if (this.optionPollTimer) return;
+    void this._pollOptionQuotes(); // immediate first fire
+    this.optionPollTimer = setInterval(() => void this._pollOptionQuotes(), OPTION_POLL_MS);
+    console.log('[AlpacaStream/options] Quote polling started');
+  }
+
+  private _stopOptionPoll(): void {
+    if (!this.optionPollTimer) return;
+    clearInterval(this.optionPollTimer);
+    this.optionPollTimer = null;
+    console.log('[AlpacaStream/options] Quote polling stopped');
+  }
+
+  private async _pollOptionQuotes(): Promise<void> {
+    if (this.optionPollInFlight || this.subscribedOptionSymbols.size === 0) return;
+    this.optionPollInFlight = true;
+    try {
+      const symbols = [...this.subscribedOptionSymbols];
+      const snapshots = await this._fetchOptionSnapshots(symbols);
+      for (const [sym, snap] of Object.entries(snapshots)) {
+        const bid = snap?.latestQuote?.bp ?? 0;
+        const ask = snap?.latestQuote?.ap ?? 0;
+        const mid = bid > 0 && ask > 0 ? (bid + ask) / 2 : 0;
+        if (mid > 0) {
+          this.optionMidCache.set(sym, mid);
+          this.optionQuoteCallbacks.get(sym)?.(mid);
+        }
+      }
+    } catch {
+      // swallow — next interval will retry
+    } finally {
+      this.optionPollInFlight = false;
     }
   }
 
-  private _handleQuote(quote: AlpacaStreamQuote): void {
-    const mid = (quote.bp + quote.ap) / 2;
-    if (mid > 0) this.optionMidCache.set(quote.S, mid);
-    const cb = this.optionQuoteCallbacks.get(quote.S);
-    if (cb && mid > 0) cb(mid);
+  private async _fetchOptionSnapshots(
+    symbols: string[],
+  ): Promise<Record<string, { latestQuote?: { bp?: number; ap?: number } }>> {
+    const url = new URL(`${config.ALPACA_DATA_URL}/v1beta1/options/snapshots`);
+    url.searchParams.set('symbols', symbols.join(','));
+    url.searchParams.set('feed', 'opra');
+    const res = await fetch(url.toString(), {
+      headers: {
+        'APCA-API-KEY-ID':     config.ALPACA_API_KEY,
+        'APCA-API-SECRET-KEY': config.ALPACA_SECRET_KEY,
+      },
+      signal: AbortSignal.timeout(10_000),
+    });
+    if (!res.ok) return {};
+    const data = await res.json() as {
+      snapshots?: Record<string, { latestQuote?: { bp?: number; ap?: number } }>;
+    };
+    return data.snapshots ?? {};
   }
 
   private _ingestBar(bar: AlpacaStreamBar): void {
@@ -443,84 +477,6 @@ export class AlpacaStreamManager extends EventEmitter {
       this._connectData();
     }, delay);
     this.dataReconnectMs = Math.min(this.dataReconnectMs * 2, MAX_RECONNECT_MS);
-  }
-
-  // ── Options stream ──────────────────────────────────────────────────────────
-
-  private _connectOptions(): void {
-    const url = 'wss://stream.data.alpaca.markets/v1beta1/options';
-    try {
-      this.optionsWs = new WebSocket(url);
-    } catch (err) {
-      console.error('[AlpacaStream/options] WebSocket error:', (err as Error).message);
-      this._scheduleOptionsReconnect();
-      return;
-    }
-
-    this.optionsWs.onopen = () => {
-      this.optionsReconnectMs = MIN_RECONNECT_MS;
-      console.log('[AlpacaStream/options] Connected — authenticating');
-      this.optionsWs!.send(JSON.stringify({
-        action: 'auth',
-        key:    config.ALPACA_API_KEY,
-        secret: config.ALPACA_SECRET_KEY,
-      }));
-    };
-
-    this.optionsWs.onmessage = (ev) => this._handleOptionsMessage(String(ev.data));
-
-    this.optionsWs.onerror = () => {
-      console.error('[AlpacaStream/options] WebSocket error');
-    };
-
-    this.optionsWs.onclose = () => {
-      console.warn('[AlpacaStream/options] Connection closed — will reconnect');
-      this.optionsWs = null;
-      this._scheduleOptionsReconnect();
-    };
-  }
-
-  private _handleOptionsMessage(raw: string): void {
-    let msgs: unknown[];
-    try { msgs = JSON.parse(raw) as unknown[]; }
-    catch { return; }
-
-    for (const m of msgs) {
-      const obj = m as Record<string, unknown>;
-      const T = obj['T'] as string | undefined;
-
-      if (T === 'success' && obj['msg'] === 'authenticated') {
-        console.log('[AlpacaStream/options] Authenticated — subscribing option quotes');
-        if (this.subscribedOptionSymbols.size > 0) {
-          this._subscribeOptionSymbols([...this.subscribedOptionSymbols]);
-        }
-        continue;
-      }
-
-      if (T === 'subscription') {
-        console.log('[AlpacaStream/options] Subscription confirmed:', JSON.stringify(obj['quotes']));
-        continue;
-      }
-
-      if (T === 'q') {
-        this._handleQuote(m as unknown as AlpacaStreamQuote);
-      }
-
-      if (T === 'error') {
-        console.error('[AlpacaStream/options] Stream error:', obj['msg']);
-      }
-    }
-  }
-
-  private _scheduleOptionsReconnect(): void {
-    if (!this.started) return;
-    const delay = this.optionsReconnectMs;
-    console.log(`[AlpacaStream/options] Reconnecting in ${delay}ms`);
-    this.optionsReconnectTimer = setTimeout(() => {
-      this.optionsReconnectTimer = null;
-      this._connectOptions();
-    }, delay);
-    this.optionsReconnectMs = Math.min(this.optionsReconnectMs * 2, MAX_RECONNECT_MS);
   }
 
   // ── Trading stream ──────────────────────────────────────────────────────────
