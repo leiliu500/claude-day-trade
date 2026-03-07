@@ -235,10 +235,17 @@ export async function closeAllPositions(): Promise<{ closed: number; errors: str
 }
 
 /**
- * Fetch the current mid price (bid+ask)/2 for a single option symbol via the OPRA snapshot feed.
+ * Fetch the current mid price (bid+ask)/2 for an option symbol.
+ * Checks the live options WebSocket cache first; falls back to the OPRA snapshot REST API.
  * Returns null on error, missing quote, or zero bid/ask.
  */
 export async function fetchOptionMid(symbol: string): Promise<number | null> {
+  // Fast path: use the live options stream cache (populated by watchOptionQuote subscriptions)
+  const { AlpacaStreamManager } = await import('./alpaca-stream.js');
+  const cached = AlpacaStreamManager.getInstance().getOptionMid(symbol);
+  if (cached !== null) return cached;
+
+  // Slow path: REST snapshot fallback (used before the symbol has been subscribed to the stream)
   try {
     const url = new URL(`${config.ALPACA_DATA_URL}/v1beta1/options/snapshots`);
     url.searchParams.set('symbols', symbol);
