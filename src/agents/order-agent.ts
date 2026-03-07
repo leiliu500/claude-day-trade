@@ -756,6 +756,7 @@ export class OrderAgent {
     else if (this.peakPnlPct >= 20) profitFloor = parseFloat((entry * 1.08).toFixed(2));
     else if (this.peakPnlPct >= 15) profitFloor = parseFloat((entry * 1.03).toFixed(2));
     else if (this.peakPnlPct >= 10) profitFloor = parseFloat(entry.toFixed(2));
+    else if (this.peakPnlPct >= 5)  profitFloor = parseFloat(entry.toFixed(2)); // breakeven floor once 5% peak reached
     // currentStop is the last DB-synced value; use it as a floor too (never regress below DB stop)
     const streamStop = Math.max(rawTrailingStop, profitFloor, this.currentStop ?? 0);
 
@@ -803,7 +804,7 @@ export class OrderAgent {
       await this._executeExit(`PEAK_GAINS_GONE [stream]: peak=+${this.peakPnlPct.toFixed(1)}%, now=${pnlPct >= 0 ? '+' : ''}${pnlPct.toFixed(1)}%`);
       return;
     }
-    if (this.peakPnlPct >= 1.0 && pnlPct < 0 && this.tickCount >= 2) {
+    if (this.peakPnlPct >= 1.0 && pnlPct < 0 && (this.tickCount >= 2 || this.peakPnlPct >= 5)) {
       await this._executeExit(`PROFIT_REVERSED [stream]: peak=+${this.peakPnlPct.toFixed(1)}%, now=${pnlPct.toFixed(1)}%`);
       return;
     }
@@ -1002,7 +1003,7 @@ export class OrderAgent {
     // Profit-to-loss reversal: any position that peaked at 1%+ is now showing a loss.
     // Removes AI discretion from a situation the AI repeatedly fails to handle correctly.
     // tickCount >= 2 guard avoids hair-trigger exits on entry-bar noise (first ~60s).
-    if (this.peakPnlPct >= 1.0 && pnlPctNow < 0 && this.tickCount >= 2) {
+    if (this.peakPnlPct >= 1.0 && pnlPctNow < 0 && (this.tickCount >= 2 || this.peakPnlPct >= 5)) {
       await this._executeExit(
         `PROFIT_REVERSED: peak=+${this.peakPnlPct.toFixed(1)}%, now=${pnlPctNow.toFixed(1)}% — profitable position turned to loss`,
       );
@@ -1298,8 +1299,25 @@ export class OrderAgent {
         break;
 
       case 'ADJUST_STOP':
-        // Stop is managed automatically by 15% trailing stop — AI suggestion ignored
-        console.log(`[OrderAgent ${this.cfg.decision.ticker}] AI ADJUST_STOP ignored — trailing stop is automatic`);
+        // Trailing stop is automatic — treat ADJUST_STOP as HOLD and notify so the
+        // decision is visible in Telegram rather than silently discarded.
+        console.log(`[OrderAgent ${this.cfg.decision.ticker}] AI ADJUST_STOP → HOLD (trailing stop is automatic)`);
+        notifyOrderAgentDecision({
+          action:                 'HOLD',
+          ticker:                 this.cfg.decision.ticker,
+          optionSymbol:           symbol,
+          optionSide:             this.cfg.candidate.contract.side,
+          reasoning:              `[ADJUST_STOP] ${rec.reasoning}`,
+          overridingOrchestrator: rec.overriding_orchestrator,
+          orchestratorSuggestion: suggestion?.decisionType ?? null,
+          pnlPct,
+          currentPrice,
+          entryPrice:             this.fillPrice ?? this.cfg.candidate.entryPremium,
+          peakPnlPct:             this.peakPnlPct,
+          consecutiveDeclines:    this.consecutiveDeclines,
+          oldStop:                currentStop,
+          marketContextSource,
+        }).catch(err => console.warn(`[OrderAgent ${this.cfg.decision.ticker}] Notify error:`, (err as Error).message));
         break;
 
       case 'HOLD':
@@ -1389,6 +1407,7 @@ export class OrderAgent {
     else if (this.peakPnlPct >= 20) profitFloor = parseFloat((entryForTrail * 1.08).toFixed(2));
     else if (this.peakPnlPct >= 15) profitFloor = parseFloat((entryForTrail * 1.03).toFixed(2));
     else if (this.peakPnlPct >= 10) profitFloor = parseFloat(entryForTrail.toFixed(2));
+    else if (this.peakPnlPct >= 5)  profitFloor = parseFloat(entryForTrail.toFixed(2)); // breakeven floor once 5% peak reached
 
     const trailingStop = parseFloat(Math.max(rawTrailingStop, profitFloor).toFixed(2));
 
