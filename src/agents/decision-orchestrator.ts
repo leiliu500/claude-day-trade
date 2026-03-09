@@ -290,9 +290,10 @@ export class DecisionOrchestrator {
     const isEntryDecision = rawOutput.decision_type === 'NEW_ENTRY' || rawOutput.decision_type === 'ADD_POSITION';
     if (isEntryDecision) {
       if (!timeGateOk) {
+        const originalDecisionType = rawOutput.decision_type;
         rawOutput.decision_type = 'WAIT';
         rawOutput.should_execute = false;
-        rawOutput.reasoning = `[GATE OVERRIDE] Market closed. Original: ${rawOutput.decision_type}. ${rawOutput.reasoning}`;
+        rawOutput.reasoning = `[GATE OVERRIDE] Market closed. Original: ${originalDecisionType}. ${rawOutput.reasoning}`;
       } else if (!option.liquidityOk || !option.candidatePass) {
         rawOutput.decision_type = 'WAIT';
         rawOutput.should_execute = false;

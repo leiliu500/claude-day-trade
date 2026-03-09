@@ -38,6 +38,7 @@ function deterministicWait(
   ticker: string,
   profile: TradingProfile,
   timeGateOk: boolean,
+  sessionId: string,
 ): DecisionResult {
   const confPct = (analysis.confidence * 100).toFixed(0);
   const threshPct = (config.MIN_CONFIDENCE * 100).toFixed(0);
@@ -47,6 +48,7 @@ function deterministicWait(
   return {
     id: uuidv4(),
     signalId: signal.id,
+    sessionId,
     decisionType: 'WAIT',
     ticker,
     profile,
@@ -170,7 +172,7 @@ export async function runPipeline(
     const useAI = needsAIOrchestration(analysis, context, timeGateOk, hasActiveAgents);
     const decision = useAI
       ? await decisionOrchestrator.run({ signal, option: optionEval, analysis, context, timeGateOk })
-      : deterministicWait(signal, analysis, ticker, profile, timeGateOk);
+      : deterministicWait(signal, analysis, ticker, profile, timeGateOk, sessionId);
     console.log(`[Pipeline] Decision: ${decision.decisionType} (execute=${decision.shouldExecute}${useAI ? '' : ', deterministic'})`);
 
     await insertDecision(decision);
