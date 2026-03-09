@@ -370,7 +370,8 @@ export class DecisionOrchestrator {
     const isConfirmDecision = rawOutput.decision_type === 'NEW_ENTRY' ||
                               rawOutput.decision_type === 'CONFIRM_HOLD' ||
                               rawOutput.decision_type === 'ADD_POSITION' ||
-                              isConvictionAdvanceWait; // covers Stage-1 OBSERVE and Stage-N conviction WAITs
+                              isConvictionAdvanceWait || // covers direct AI WAITs (Stage-1 and Stage-N)
+                              isStage1ObserveWait; // covers Stage-1 gate: AI NEW_ENTRY converted to WAIT by server
     const serverCount = priorCount + (isConfirmDecision ? 1 : 0);
     if (serverCount !== rawOutput.confirmation_count) {
       console.log(`[DecisionOrchestrator] Overriding AI count (${rawOutput.confirmation_count}) with server count (${serverCount})`);
