@@ -118,6 +118,7 @@ export class DecisionOrchestrator {
       confidence_breakdown: {
         di_cross_bonus: analysis.confidenceBreakdown.diCrossBonus,
         vwap_bonus: analysis.confidenceBreakdown.vwapBonus,
+        rsi_bonus: analysis.confidenceBreakdown.rsiBonus,
         price_position_adjustment: analysis.confidenceBreakdown.pricePositionAdjustment,
         price_half: signal.timeframes[2]?.priceStructure.priceHalf ?? signal.timeframes[0]?.priceStructure.priceHalf ?? 'lower',
         range_position: parseFloat((signal.timeframes[2]?.priceStructure.rangePosition ?? signal.timeframes[0]?.priceStructure.rangePosition ?? 0.5).toFixed(2)),
@@ -176,6 +177,11 @@ export class DecisionOrchestrator {
           td_countdown: tf.td.countdown,
           obv_trend: tf.obv.trend,
           obv_divergence: tf.obv.divergence,
+          rsi: tf.rsi.value,
+          rsi_trend: tf.rsi.trend,
+          rsi_overbought: tf.rsi.overbought,
+          rsi_oversold: tf.rsi.oversold,
+          rsi_divergence: tf.rsi.divergence,
           candle: tf.candlePattern,
           atr_pct: tf.atr.atrPct.toFixed(2),
           price_vs_vwap: parseFloat(tf.vwap.priceVsVwap.toFixed(2)),
@@ -309,6 +315,12 @@ export class DecisionOrchestrator {
     //       Not granted after a LOSS exit (stop-out) — patience required to rebuild conviction.
     // ADD_POSITION already requires an open position + confidence >= 0.80 + all_aligned, so it
     // is excluded from this gate — the existing conditions are sufficient.
+    //
+    // IMPORTANT: When the gate fires at Stage-1 (priorCount=0), we mark this as a Stage-1 OBSERVE
+    // WAIT and still advance the server count to 1.  This ensures the next cycle sees priorCount=1
+    // and can enter at Stage-2, preventing an infinite Stage-1 loop where entries are permanently
+    // blocked because WAIT decisions never advance the count.
+    let isStage1ObserveWait = false;
     if (rawOutput.decision_type === 'NEW_ENTRY' && rawOutput.should_execute) {
       const overrideOk = analysis.confidence >= 0.85 && signal.alignment === 'all_aligned';
       const lastEvalWasWin = context.recentEvaluations.length > 0 &&
@@ -320,18 +332,36 @@ export class DecisionOrchestrator {
       if (!overrideOk && !postWinRelaxOk && priorCount < 1) {
         rawOutput.decision_type = 'WAIT';
         rawOutput.should_execute = false;
-        rawOutput.reasoning = `[GATE OVERRIDE] Confirmation gate: priorCount=${priorCount} — need >=1 prior same-direction confirmation before entering (Stage-1 OBSERVE). Override requires confidence>=0.85 + all_aligned, or post-WIN relaxation (confidence>=0.72 + non-mixed alignment). ${rawOutput.reasoning}`;
-        console.log(`[DecisionOrchestrator] NEW_ENTRY blocked by confirmation gate (priorCount=${priorCount}, confidence=${analysis.confidence.toFixed(2)}, alignment=${signal.alignment}, lastEvalWasWin=${lastEvalWasWin})`);
+        rawOutput.reasoning = `[GATE OVERRIDE] Confirmation gate: priorCount=${priorCount} — Stage-1 OBSERVE, building conviction (count will advance to 1). Override requires confidence>=0.85 + all_aligned, or post-WIN relaxation (confidence>=0.72 + non-mixed alignment). ${rawOutput.reasoning}`;
+        isStage1ObserveWait = true; // count advances to 1 so next cycle can enter at Stage-2
+        console.log(`[DecisionOrchestrator] NEW_ENTRY blocked by confirmation gate (Stage-1 OBSERVE, priorCount=${priorCount}, confidence=${analysis.confidence.toFixed(2)}, alignment=${signal.alignment}, lastEvalWasWin=${lastEvalWasWin})`);
       } else if (postWinRelaxOk && priorCount < 1 && !overrideOk) {
         console.log(`[DecisionOrchestrator] NEW_ENTRY post-WIN relaxation applied (priorCount=${priorCount}, confidence=${analysis.confidence.toFixed(2)}, alignment=${signal.alignment})`);
       }
     }
 
-    // Server-side confirmation count — computed after all gate overrides so WAIT decisions
-    // do not inflate the count. Only add +1 when the final decision is an actual confirmation.
+    // Stage-1 OBSERVE via direct AI WAIT: if AI returned WAIT (not via gate override above),
+    // priorCount=0, confidence meets threshold, and no hard gate override is in the reasoning,
+    // treat this as a Stage-1 OBSERVE and advance count to 1.
+    // This handles the case where AI correctly identifies Stage-1 but outputs WAIT directly
+    // (e.g. due to TD/RSI risk factors) instead of following the Stage-1 instruction to
+    // output NEW_ENTRY and let the server convert it.
+    if (!isStage1ObserveWait && rawOutput.decision_type === 'WAIT' && priorCount === 0 &&
+        analysis.meetsEntryThreshold && !rawOutput.reasoning.includes('[GATE OVERRIDE]')) {
+      isStage1ObserveWait = true;
+      rawOutput.reasoning = `[STAGE-1 OBSERVE] ${rawOutput.reasoning}`;
+      console.log(`[DecisionOrchestrator] Direct AI WAIT at Stage-1 (priorCount=0, confidence=${analysis.confidence.toFixed(2)}, alignment=${signal.alignment}) — advancing count to 1`);
+    }
+
+    // Server-side confirmation count — computed after all gate overrides.
+    // Only add +1 when the final decision is an actual confirmation OR a Stage-1 OBSERVE WAIT.
+    // Stage-1 OBSERVE WAITs advance count to 1 so the next cycle sees priorCount=1 and can enter
+    // at Stage-2.  Hard-gate WAITs (market closed, liquidity fail, confidence below threshold,
+    // EOD, FOMC) do NOT advance count — those represent genuine blocking conditions, not observations.
     const isConfirmDecision = rawOutput.decision_type === 'NEW_ENTRY' ||
                               rawOutput.decision_type === 'CONFIRM_HOLD' ||
-                              rawOutput.decision_type === 'ADD_POSITION';
+                              rawOutput.decision_type === 'ADD_POSITION' ||
+                              isStage1ObserveWait;
     const serverCount = priorCount + (isConfirmDecision ? 1 : 0);
     if (serverCount !== rawOutput.confirmation_count) {
       console.log(`[DecisionOrchestrator] Overriding AI count (${rawOutput.confirmation_count}) with server count (${serverCount})`);

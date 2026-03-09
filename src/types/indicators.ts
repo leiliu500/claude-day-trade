@@ -1,5 +1,6 @@
 import type { OHLCVBar, Timeframe } from './market.js';
 import type { AllCandlePatterns } from '../indicators/candle-patterns.js';
+import type { RSIResult } from '../indicators/rsi.js';
 
 export interface DMIResult {
   plusDI: number;
@@ -84,10 +85,41 @@ export interface TimeframeIndicators {
   obv: OBVResult;
   td: TDResult;
   vwap: VWAPResult;
+  rsi: RSIResult;
   candlePattern: CandlePattern;
   allCandlePatterns: AllCandlePatterns;  // all 4 patterns checked independently
   priceStructure: PriceStructure;
   currentPrice: number;
 }
+
+/**
+ * Prior Day High / Low / Close — structural reference levels for intraday context.
+ * Derived from the most recently completed daily session.
+ */
+export interface PriorDayLevels {
+  pdh: number;               // prior day high
+  pdl: number;               // prior day low
+  pdc: number;               // prior day close
+  priceVsPDH: number;        // (currentPrice − pdh) / pdh × 100 (%)
+  priceVsPDL: number;        // (currentPrice − pdl) / pdl × 100 (%)
+  abovePDH: boolean;         // price broke above prior day high
+  belowPDL: boolean;         // price broke below prior day low
+  structureBias: 'bullish' | 'bearish' | 'neutral';
+}
+
+/**
+ * Opening Range Breakout — first 30-minute range (9:30–10:00 ET) and current breakout state.
+ */
+export interface ORBResult {
+  orbHigh: number;           // opening range high
+  orbLow: number;            // opening range low
+  orbMidpoint: number;       // midpoint of the range
+  rangeSizePct: number;      // (orbHigh − orbLow) / orbLow × 100 — range magnitude
+  breakoutDirection: 'bullish' | 'bearish' | 'none'; // current price vs ORB
+  breakoutStrength: number;  // 0–1: how far price has moved beyond the ORB boundary (as fraction of range)
+  orbFormed: boolean;        // false if before 10:00 ET or no bars in the window
+}
+
+export type { RSIResult };
 
 export type { AllCandlePatterns };

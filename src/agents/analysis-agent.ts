@@ -15,7 +15,7 @@ function computeConfidence(signal: SignalPayload, option: OptionEvaluation): Con
   const tfs = signal.timeframes;
   const [ltf, mtf, htf] = tfs;
   if (!ltf || !mtf || !htf) {
-    return { base: 0.40, diSpreadBonus: 0, adxBonus: 0, diCrossBonus: 0, alignmentBonus: 0, tdAdjustment: 0, obvBonus: 0, vwapBonus: 0, oiVolumeBonus: 0, pricePositionAdjustment: 0, adxMaturityPenalty: 0, total: 0.40 };
+    return { base: 0.40, diSpreadBonus: 0, adxBonus: 0, diCrossBonus: 0, alignmentBonus: 0, tdAdjustment: 0, obvBonus: 0, vwapBonus: 0, oiVolumeBonus: 0, rsiBonus: 0, pricePositionAdjustment: 0, adxMaturityPenalty: 0, structureBonus: 0, orbBonus: 0, total: 0.40 };
   }
 
   // Base: slight bullish bias
@@ -56,76 +56,94 @@ function computeConfidence(signal: SignalPayload, option: OptionEvaluation): Con
 
   // Alignment bonus
   const alignmentBonusMap: Record<string, number> = {
-    all_aligned: 0.10,
-    htf_mtf_aligned: 0.05,
+    all_aligned: 0.08,
+    htf_mtf_aligned: 0.04,
     mtf_ltf_aligned: 0.02,
     mixed: 0,
   };
   const alignmentBonus = alignmentBonusMap[signal.alignment] ?? 0;
 
-  // TD adjustment
+  // TD adjustment — late-stage confirming setups (7-9) are highest quality entries;
+  // opposing completed setups are exhaustion signals (penalize).
   let tdAdjustment = 0;
   for (const tf of tfs) {
     const setup = tf.td.setup;
-    // Penalize if opposing setup completed
+    const confirmDir = signal.direction === 'bullish' ? 'buy' : 'sell';
+    const opposingDir = signal.direction === 'bullish' ? 'sell' : 'buy';
+
     if (setup.completed) {
-      const opposingDir = signal.direction === 'bullish' ? 'sell' : 'buy';
+      // Penalize if opposing setup just completed (9-bar exhaustion on wrong side)
       if (setup.completedDirection === opposingDir) tdAdjustment -= 0.05;
-    }
-    // Bonus if early confirming setup (count 1-4)
-    if (setup.count >= 1 && setup.count <= 4 && !setup.completed) {
-      const confirmDir = signal.direction === 'bullish' ? 'buy' : 'sell';
-      if (setup.direction === confirmDir) tdAdjustment += 0.01;
+    } else if (setup.direction === confirmDir) {
+      // Confirming setup in progress — reward late-stage (7-9) more than early (1-4)
+      if (setup.count >= 7) {
+        tdAdjustment += 0.02; // Late-stage: strong momentum, high-quality entry window
+      } else if (setup.count >= 5) {
+        tdAdjustment += 0.01; // Mid-stage: decent momentum
+      } else if (setup.count >= 1) {
+        tdAdjustment += 0.005; // Early-stage: forming, minor support
+      }
+    } else if (setup.direction === opposingDir && setup.count >= 7) {
+      // Opposing setup near completion → exhaustion risk
+      tdAdjustment -= 0.03;
     }
   }
-  tdAdjustment = Math.max(-0.05, Math.min(0.03, tdAdjustment));
+  tdAdjustment = Math.max(-0.08, Math.min(0.05, tdAdjustment));
 
   // OBV bonus — HTF and MTF only; LTF OBV is too noisy to score
-  // +0.03 per TF whose OBV trend matches signal direction (max +0.06)
-  // -0.04 per TF showing OBV divergence against signal direction (clamped -0.06)
+  // +0.05 per TF whose OBV trend matches signal direction (max +0.10)
+  // -0.06 per TF showing OBV divergence against signal direction (clamped -0.10)
   let obvBonus = 0;
   if (signal.direction !== 'neutral') {
     for (const tf of [htf, mtf]) {
-      if (tf.obv.trend === signal.direction) obvBonus += 0.03;
+      if (tf.obv.trend === signal.direction) obvBonus += 0.05;
       const badDivergence =
         (signal.direction === 'bullish' && tf.obv.divergence === 'bearish') ||
         (signal.direction === 'bearish' && tf.obv.divergence === 'bullish');
-      if (badDivergence) obvBonus -= 0.04;
+      if (badDivergence) obvBonus -= 0.06;
     }
-    obvBonus = Math.max(-0.06, Math.min(0.06, obvBonus));
+    obvBonus = Math.max(-0.10, Math.min(0.10, obvBonus));
   }
 
   // VWAP bonus — HTF and MTF direction alignment + HTF band extension penalty.
-  // Direction alignment (HTF + MTF): +0.02 per TF where price is on the correct VWAP side;
-  //   -0.02 per TF where price is significantly on the wrong side (|priceVsVwap| > 0.2%)
+  // VWAP is the #2 signal after DI Spread — its range (-0.12..+0.10) reflects its importance.
+  // Direction alignment (HTF + MTF): +0.04 per TF where price is on the correct VWAP side;
+  //   -0.04 per TF where price is significantly on the wrong side (|priceVsVwap| > 0.2%)
   // Band extension penalty (HTF only — most reliable anchor):
-  //   Price beyond 2σ band in entry direction → -0.06 (overextended, mean-reversion risk)
-  //   Price beyond 1σ band in entry direction → -0.02 (somewhat extended)
-  // Clamped -0.08..+0.06
+  //   In strong trends (HTF ADX > 35), price legitimately stays beyond VWAP bands — reduce penalty.
+  //   Strong trend (ADX > 35): beyond 2σ → -0.03 (normal trend extension, not overextension)
+  //   Normal trend (ADX ≤ 35): beyond 2σ → -0.10 (overextended, mean-reversion risk)
+  //   beyond 1σ → -0.02 regardless of ADX
+  // Clamped -0.12..+0.10
   let vwapBonus = 0;
   if (signal.direction !== 'neutral') {
     for (const tf of [htf, mtf]) {
       const pvv = tf.vwap.priceVsVwap;
       if (signal.direction === 'bullish') {
-        if (pvv > 0) vwapBonus += 0.02;
-        else if (pvv < -0.2) vwapBonus -= 0.02;
+        if (pvv > 0) vwapBonus += 0.04;
+        else if (pvv < -0.2) vwapBonus -= 0.04;
       } else {
-        if (pvv < 0) vwapBonus += 0.02;
-        else if (pvv > 0.2) vwapBonus -= 0.02;
+        if (pvv < 0) vwapBonus += 0.04;
+        else if (pvv > 0.2) vwapBonus -= 0.04;
       }
     }
-    // Band extension check on HTF — entering when price is already beyond a VWAP band
-    // risks catching a mean-reversion move rather than a trend continuation.
+    // Band extension check on HTF.
+    // In strong trends (ADX > 35), VWAP extension is normal — reduce the penalty so we
+    // don't suppress valid trend-continuation entries during the strongest market moves.
     const { vwap: htfVwap, upperBand: htfUpper, lowerBand: htfLower, deviation: htfDev } = htf.vwap;
     const htfPrice = htf.currentPrice;
+    const htfAdxStrong = htf.dmi.adx > 35;
+    const beyond2sigPenalty = htfAdxStrong ? -0.03 : -0.10;
+    const beyond1sigPenalty = -0.02; // same regardless of ADX
+
     if (signal.direction === 'bullish') {
-      if (htfPrice > htfUpper)                 vwapBonus -= 0.10; // beyond 2σ — very overextended
-      else if (htfPrice > htfVwap + htfDev)    vwapBonus -= 0.05; // beyond 1σ — somewhat extended
+      if (htfPrice > htfUpper)              vwapBonus += beyond2sigPenalty;
+      else if (htfPrice > htfVwap + htfDev) vwapBonus += beyond1sigPenalty;
     } else {
-      if (htfPrice < htfLower)                 vwapBonus -= 0.10; // beyond 2σ below VWAP
-      else if (htfPrice < htfVwap - htfDev)    vwapBonus -= 0.05; // beyond 1σ below VWAP
+      if (htfPrice < htfLower)              vwapBonus += beyond2sigPenalty;
+      else if (htfPrice < htfVwap - htfDev) vwapBonus += beyond1sigPenalty;
     }
-    vwapBonus = Math.max(-0.12, Math.min(0.06, vwapBonus));
+    vwapBonus = Math.max(-0.12, Math.min(0.10, vwapBonus));
   }
 
   // OI/Volume bonus — triggered only when option volume is extremely high.
@@ -153,6 +171,37 @@ function computeConfidence(signal: SignalPayload, option: OptionEvaluation): Con
   }
   oiVolumeBonus = Math.min(oiVolumeBonus, 0.05);
 
+  // RSI bonus — momentum confirmation and extreme-level filters.
+  // Uses HTF and MTF RSI (LTF RSI is too noisy).
+  // Momentum alignment (+0.02 per TF where RSI trend matches signal direction)
+  // Oversold for bullish entry / overbought for bearish entry = momentum reversal support (+0.02)
+  // Overbought for bullish entry / oversold for bearish entry = entering against exhaustion (-0.06)
+  // RSI divergence against signal direction = warning (-0.05)
+  // Clamped -0.08..+0.05
+  let rsiBonus = 0;
+  if (signal.direction !== 'neutral') {
+    for (const tf of [htf, mtf]) {
+      // Momentum alignment: RSI trend matches signal direction
+      if (tf.rsi.trend === signal.direction) rsiBonus += 0.02;
+
+      // Overbought/oversold extremes
+      if (signal.direction === 'bullish') {
+        if (tf.rsi.oversold)    rsiBonus += 0.02;  // bullish entry from oversold = high-quality reversal
+        if (tf.rsi.overbought)  rsiBonus -= 0.06;  // bullish entry when overbought = chasing exhaustion
+      } else {
+        if (tf.rsi.overbought)  rsiBonus += 0.02;  // bearish entry from overbought = high-quality reversal
+        if (tf.rsi.oversold)    rsiBonus -= 0.06;  // bearish entry when oversold = chasing exhaustion
+      }
+
+      // RSI divergence against signal direction
+      const badDiv =
+        (signal.direction === 'bullish' && tf.rsi.divergence === 'bearish') ||
+        (signal.direction === 'bearish' && tf.rsi.divergence === 'bullish');
+      if (badDiv) rsiBonus -= 0.05;
+    }
+    rsiBonus = Math.max(-0.08, Math.min(0.05, rsiBonus));
+  }
+
   // ADX maturity penalty — penalizes entering a trend that has already been running strong for many bars.
   // Skipped when a fresh DI cross is present on HTF (cross signals new momentum regardless of maturity).
   // HTF adxBarsAbove25 >= 10 bars: trend is very mature → -0.08
@@ -168,8 +217,8 @@ function computeConfidence(signal: SignalPayload, option: OptionEvaluation): Con
 
   // Price position adjustment — penalizes entering in the direction of an already-extended move.
   // Uses HTF rangePosition: 0.0 = at swing low, 1.0 = at swing high.
-  //   Bullish from upper half: price already extended up, limited upside → penalty up to -0.10
-  //   Bearish from lower half: price already extended down, limited downside → penalty up to -0.10
+  //   Bullish from upper half: price already extended up, limited upside → penalty up to -0.08
+  //   Bearish from lower half: price already extended down, limited downside → penalty up to -0.08
   //   Bullish from lower half / bearish from upper half = following momentum with room to run (no penalty).
   // Mutually exclusive with adxMaturityPenalty: both measure the same "extended trend" condition.
   // When adxMaturityPenalty already applies, skip this to avoid double-penalizing valid trend entries.
@@ -178,16 +227,57 @@ function computeConfidence(signal: SignalPayload, option: OptionEvaluation): Con
     const htfRangePosition = htf.priceStructure.rangePosition;
     if (signal.direction === 'bullish' && htfRangePosition > 0.5) {
       // Bullish from upper half — price already extended, limited upside
-      pricePositionAdjustment = Math.max(-0.10, -(htfRangePosition - 0.5) * 0.20);
+      pricePositionAdjustment = Math.max(-0.08, -(htfRangePosition - 0.5) * 0.16);
     } else if (signal.direction === 'bearish' && htfRangePosition < 0.5) {
       // Bearish from lower half — price already extended down, limited downside
-      pricePositionAdjustment = Math.max(-0.10, -(0.5 - htfRangePosition) * 0.20);
+      pricePositionAdjustment = Math.max(-0.08, -(0.5 - htfRangePosition) * 0.16);
     }
   }
 
-  const total = Math.max(0, Math.min(1, base + diSpreadBonus + adxBonus + diCrossBonus + alignmentBonus + tdAdjustment + obvBonus + vwapBonus + oiVolumeBonus + pricePositionAdjustment + adxMaturityPenalty));
+  // Prior Day Levels bonus — institutional reference prices that confirm or oppose the trade.
+  //   Bullish entry above PDH: +0.06 (price broke yesterday's high — structural strength)
+  //   Bullish entry above PDC but below PDH: +0.02 (above prior close, approaching PDH)
+  //   Bullish entry below PDL: -0.08 (buying when price can't hold prior day's floor)
+  //   Bearish entry below PDL: +0.06 (price broke yesterday's low — structural weakness)
+  //   Bearish entry below PDC but above PDL: +0.02 (below prior close, approaching PDL)
+  //   Bearish entry above PDH: -0.08 (selling when price is breaking out to upside)
+  //   Clamped -0.08..+0.06
+  let structureBonus = 0;
+  if (signal.direction !== 'neutral' && signal.priorDayLevels.pdh > 0) {
+    const { abovePDH, belowPDL, pdc } = signal.priorDayLevels;
+    const price = signal.currentPrice;
+    if (signal.direction === 'bullish') {
+      if (abovePDH)              structureBonus = 0.06;
+      else if (price > pdc)      structureBonus = 0.02;
+      else if (belowPDL)         structureBonus = -0.08;
+    } else {
+      if (belowPDL)              structureBonus = 0.06;
+      else if (price < pdc)      structureBonus = 0.02;
+      else if (abovePDH)         structureBonus = -0.08;
+    }
+    structureBonus = Math.max(-0.08, Math.min(0.06, structureBonus));
+  }
 
-  return { base, diSpreadBonus, adxBonus, diCrossBonus, alignmentBonus, tdAdjustment, obvBonus, vwapBonus, oiVolumeBonus, pricePositionAdjustment, adxMaturityPenalty, total };
+  // Opening Range Breakout bonus — confirms or contradicts entry direction vs ORB.
+  // Only scored when the ORB has fully formed (after 10:00 AM ET).
+  //   Breakout in trade direction: +0.06 (momentum aligned with day's directional bias)
+  //   Breakout against trade direction: -0.08 (trading against the day's established direction)
+  //   No breakout (price still inside ORB): 0 (neutral — range-bound, no ORB edge)
+  //   Clamped -0.08..+0.06
+  let orbBonus = 0;
+  if (signal.direction !== 'neutral' && signal.orb.orbFormed) {
+    const { breakoutDirection } = signal.orb;
+    if (breakoutDirection === signal.direction) {
+      orbBonus = 0.06;
+    } else if (breakoutDirection !== 'none' && breakoutDirection !== signal.direction) {
+      orbBonus = -0.08;
+    }
+    orbBonus = Math.max(-0.08, Math.min(0.06, orbBonus));
+  }
+
+  const total = Math.max(0, Math.min(1, base + diSpreadBonus + adxBonus + diCrossBonus + alignmentBonus + tdAdjustment + obvBonus + vwapBonus + oiVolumeBonus + rsiBonus + pricePositionAdjustment + adxMaturityPenalty + structureBonus + orbBonus));
+
+  return { base, diSpreadBonus, adxBonus, diCrossBonus, alignmentBonus, tdAdjustment, obvBonus, vwapBonus, oiVolumeBonus, rsiBonus, pricePositionAdjustment, adxMaturityPenalty, structureBonus, orbBonus, total };
 }
 
 /**
@@ -252,6 +342,11 @@ async function generateExplanation(
       td_setup: tf.td.setup,
       td_countdown: tf.td.countdown,
       vwap_band_position: vwapBandPosition,
+      rsi: tf.rsi.value,
+      rsi_trend: tf.rsi.trend,
+      rsi_overbought: tf.rsi.overbought,
+      rsi_oversold: tf.rsi.oversold,
+      rsi_divergence: tf.rsi.divergence,
       // Individual pattern flags for explicit formatting rules
       hammer: {
         present: tf.allCandlePatterns.hammer.present,
@@ -271,6 +366,29 @@ async function generateExplanation(
       },
       };
     }),
+    market_structure: {
+      prior_day: signal.priorDayLevels.pdh > 0
+        ? {
+            pdh: signal.priorDayLevels.pdh,
+            pdl: signal.priorDayLevels.pdl,
+            pdc: signal.priorDayLevels.pdc,
+            above_pdh: signal.priorDayLevels.abovePDH,
+            below_pdl: signal.priorDayLevels.belowPDL,
+            structure_bias: signal.priorDayLevels.structureBias,
+            structure_bonus: cb.structureBonus.toFixed(3),
+          }
+        : null,
+      orb: signal.orb.orbFormed
+        ? {
+            orb_high: signal.orb.orbHigh,
+            orb_low: signal.orb.orbLow,
+            range_size_pct: signal.orb.rangeSizePct.toFixed(3),
+            breakout_direction: signal.orb.breakoutDirection,
+            breakout_strength: signal.orb.breakoutStrength.toFixed(2),
+            orb_bonus: cb.orbBonus.toFixed(3),
+          }
+        : { orb_formed: false },
+    },
     option: option.winnerCandidate
       ? {
           side: option.winnerCandidate.contract.side,

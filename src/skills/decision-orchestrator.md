@@ -15,11 +15,12 @@ You must output exactly ONE of these 7 decision types:
 
 **WAIT Streak Cooldown — applies to NEW_ENTRY:**
 - Count the number of consecutive WAIT decisions at the tail of `recentDecisions` (stop counting at the first non-WAIT) **where confirmationCount >= 1 AND orchestrationConfidence was in the marginal zone (0.65 – 0.72)**. These represent signals that barely cleared the threshold but were still blocked — indicating potentially exhausted or borderline conditions.
-- WAITs with confirmationCount = 0 are Stage 1 OBSERVE WAITs — normal first-look hesitation — and do NOT count toward the streak.
+- WAITs with confirmationCount = 1 and reasoning that mentions "Stage-1 OBSERVE" are Stage 1 OBSERVE WAITs — the first cycle of a new direction, blocked only because no prior same-direction confirmation exists. They appear exactly once per direction start (the next cycle will have priorCount=1 and can enter). Stage-1 WAITs do NOT count toward the streak because they are never repeated consecutively. WAITs with confirmationCount = 0 are hard-gate blocks (market closed, liquidity fail, below-threshold confidence, EOD/FOMC window) and also do NOT count.
 - WAITs where confidence >= 0.72 but entry was blocked by structural quality filters (alignment not "all_aligned", OBV divergence, D/F evaluation grades, pending broker orders, etc.) are **quality-filter WAITs** — they do NOT count toward the cooldown streak. High confidence repeatedly blocked by structural reasons means the market IS moving but filters are protecting capital — not that conditions are exhausted.
 - If that marginal-confidence streak is **3 or more**, the cooldown is active.
-- During cooldown, NEW_ENTRY requires **confidence >= 0.80 AND alignment = "all_aligned" AND confirmationCount >= 3** — the normal 0.65 / 2-confirmation threshold is NOT sufficient.
+- During cooldown, NEW_ENTRY requires **confidence >= 0.73 AND alignment = "all_aligned" AND confirmationCount >= 2** — the normal 0.65 threshold is NOT sufficient, but quality signals clearly above the marginal zone (0.65–0.72) are still allowed.
 - Crossing the 0.65 confidence threshold by a small margin immediately after a marginal-confidence WAIT streak is NOT a valid entry signal; it is a retest of the same exhausted conditions that caused the WAITs.
+- A signal at confidence >= 0.73 is qualitatively different from a marginal-zone signal — it is strictly above the 0.65–0.72 marginal ceiling and represents genuine conviction; allow through with 2+ confirmations.
 - State clearly: "WAIT streak of N (marginal-confidence WAITs only) detected — elevated entry threshold applies." Or if no cooldown: "No cooldown active — recent WAITs were quality-filter blocks, not exhaustion."
 
 ## Confirmation Strategy
@@ -29,12 +30,13 @@ You must output exactly ONE of these 7 decision types:
 
 Even when outputting WAIT due to risk factors (OBV divergence, TD exhaustion, evaluation history), you MUST still increment `confirmation_count` if the direction is the same as the previous cycle. **Outputting WAIT does NOT mean starting over.**
 
-Stage 1 — OBSERVE (count=1, 1st signal): output WAIT, stage="BUILDING_CONVICTION"
+Stage 1 — OBSERVE (count=1, 1st signal): output NEW_ENTRY (the server will convert to WAIT since priorCount=0, and advance count to 1 automatically). You should output NEW_ENTRY with should_execute=true if all conditions are met — the server handles the Stage-1 blocking and count advancement.
 Stage 2 — BUILDING_CONVICTION (count=2, 2nd consecutive same-direction): output NEW_ENTRY if no blockers, or WAIT with count=2 if OBV/TD/evaluation risk factors are present
 Stage 3 — CONFIRMED_ENTRY (count=3, 3rd consecutive): output NEW_ENTRY — risk factor extra-confirmation requirements are fully satisfied by the accumulated observations; do NOT continue to WAIT
 
 **After a marginal-confidence WAIT streak of 3+, the confirmation count resets to 0** — do not carry over confirmations earned before the streak began. The streak cooldown rule above applies even if a prior bar showed confirmationCount = 2.
 Override to immediate NEW_ENTRY only if: confidence >= 0.85 AND alignment = "all_aligned" AND no recent D/F grades for similar setups AND marginal-confidence WAIT streak < 3.
+Quality-signal cooldown entry (streak >= 3): confidence >= 0.73 AND alignment = "all_aligned" AND confirmationCount >= 2 — this is sufficient even during an active cooldown.
 
 ## Protective Decisions (CONFIRM_HOLD, WAIT)
 - CONFIRM_HOLD: have open position, signals still confirm direction
@@ -108,14 +110,49 @@ Each timeframe includes `obv_trend` (bullish/bearish/neutral) and `obv_divergenc
 - OBV divergence AGAINST position direction (bearish divergence on a CALL, or bullish divergence on a PUT) → meaningful warning; add to risk_notes and raise the confirmation threshold by 1 (entry requires count=2 instead of count=1). This means: WAIT at count=1, enter at count=2. Do NOT continue to block at count=3+.
 - OBV alone does NOT override confidence or DMI-based decisions
 
+## RSI Awareness
+Each timeframe includes `rsi` (0–100), `rsi_trend` (bullish/bearish/neutral), `rsi_overbought` (>70), `rsi_oversold` (<30), `rsi_divergence` (bullish/bearish/none).
+The `confidence_breakdown` includes `rsi_bonus` showing its net contribution.
+- For CALL setups: HTF/MTF RSI overbought → headwind; add to risk_notes; caution about chasing exhaustion
+- For PUT setups: HTF/MTF RSI oversold → headwind; add to risk_notes; caution about chasing exhaustion
+- RSI divergence against signal direction → treat same as OBV divergence; raise confirmation threshold by 1 (max combined penalty with OBV: +1 extra confirmation, not +2)
+- rsi_bonus > 0.04: RSI provides strong momentum support — note as confirming evidence
+- rsi_bonus < −0.05: RSI warns of momentum exhaustion — add to risk_notes
+
 ## ATR Awareness
 Each timeframe includes `atr_pct` (ATR as % of last close).
 - HTF atr_pct > 1.5% = elevated volatility — note in risk_notes
 - LTF atr_pct < 0.4% = compressed range — flag as potential breakout setup or insufficient momentum
 
+## Prior Day Levels Awareness
+The signal includes `prior_day` with `pdh` (prior day high), `pdl` (prior day low), `pdc` (prior day close), `above_pdh`, `below_pdl`, and `structure_bias`.
+The `confidence_breakdown` includes `structure_bonus` (−0.08 to +0.06) showing its net contribution.
+
+**Hard filters for new entries:**
+- CALL entry when price is below PDL (`below_pdl = true`): this is a strong structural headwind — price cannot hold yesterday's floor. Require confirmation_count >= 3 before entry. Note in risk_notes: "Price below prior day low — structural weakness, elevated entry threshold"
+- PUT entry when price is above PDH (`above_pdh = true`): price is breaking out above yesterday's high. Require confirmation_count >= 3 before entry. Note in risk_notes: "Price above prior day high — counter-trend put entry, elevated entry threshold"
+
+**Confirming context:**
+- CALL entry when `above_pdh = true` (`structure_bias = bullish`): strongest structural setup — price broke above prior day resistance. Note as confirming evidence.
+- PUT entry when `below_pdl = true` (`structure_bias = bearish`): strongest structural setup — price broke below prior day support. Note as confirming evidence.
+- `structure_bonus > 0.03`: prior day levels confirm trade direction — note as supporting evidence
+- `structure_bonus < -0.03`: prior day levels contradict trade direction — add to risk_notes
+
+## Opening Range Breakout Awareness
+The signal includes `orb` with `orb_high`, `orb_low`, `range_size_pct`, `breakout_direction` (bullish/bearish/none), `breakout_strength` (0–1), and `orb_formed`.
+The `confidence_breakdown` includes `orb_bonus` (−0.08 to +0.06) showing its net contribution.
+
+- `orb_formed = false`: ORB not yet available (before 10:00 AM ET or no intraday bars). Skip ORB analysis entirely — do NOT penalize.
+- `breakout_direction = bullish` for a CALL entry: day's momentum confirmed upward — note as strong supporting evidence
+- `breakout_direction = bearish` for a PUT entry: day's momentum confirmed downward — note as strong supporting evidence
+- `breakout_direction` contradicts trade direction: trading against the day's established bias — add to risk_notes; treat as one additional reason for caution (similar to OBV divergence — raise confirmation threshold by 1)
+- `breakout_direction = none` (price still inside range): neutral — no ORB edge, neither bonus nor penalty
+- `orb_bonus > 0.04`: ORB provides strong directional confirmation — note as supporting evidence
+- `orb_bonus < -0.04`: ORB warns that trade is against the day's directional bias — add to risk_notes
+
 ## VWAP Awareness
 Each timeframe includes `price_vs_vwap` (% distance of current price above/below VWAP; positive = above, negative = below).
-The `confidence_breakdown` includes `vwap_bonus` (−0.04 to +0.04) showing its net contribution to confidence.
+The `confidence_breakdown` includes `vwap_bonus` (−0.12 to +0.10) showing its net contribution to confidence.
 - For CALL setups: price above VWAP (price_vs_vwap > 0) on HTF and MTF is bullish confirmation; below VWAP is a headwind
 - For PUT setups: price below VWAP (price_vs_vwap < 0) on HTF and MTF is bearish confirmation; above VWAP is a headwind
 - vwap_bonus > 0.02: VWAP confirms signal direction — note as supporting evidence

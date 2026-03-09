@@ -933,12 +933,16 @@ function renderAnalysisCard(sig) {
       ${renderConfidenceBar('DI Spread',   cb.diSpreadBonus     ?? 0, 0.25, 'conf-bar-bonus')}
       ${renderConfidenceBar('ADX',         cb.adxBonus          ?? 0, 0.10, 'conf-bar-bonus')}
       ${renderConfidenceBar('DI Cross',    cb.diCrossBonus      ?? 0, 0.06, 'conf-bar-bonus')}
-      ${renderConfidenceBar('Alignment',   cb.alignmentBonus    ?? 0, 0.10, 'conf-bar-bonus')}
-      ${renderConfidenceBar('TD Seq',      cb.tdAdjustment      ?? 0, 0.05, 'conf-bar-bonus')}
-      ${renderConfidenceBar('OBV',         cb.obvBonus          ?? 0, 0.03, 'conf-bar-bonus')}
-      ${renderConfidenceBar('VWAP',        cb.vwapBonus         ?? 0, 0.08, 'conf-bar-bonus')}
-      ${renderConfidenceBar('Price Pos',   cb.pricePositionAdjustment ?? 0, 0.10, 'conf-bar-bonus')}
+      ${renderConfidenceBar('Alignment',   cb.alignmentBonus    ?? 0, 0.08, 'conf-bar-bonus')}
+      ${renderConfidenceBar('TD Seq',      cb.tdAdjustment      ?? 0, 0.08, 'conf-bar-bonus')}
+      ${renderConfidenceBar('OBV',         cb.obvBonus          ?? 0, 0.10, 'conf-bar-bonus')}
+      ${renderConfidenceBar('VWAP',        cb.vwapBonus         ?? 0, 0.12, 'conf-bar-bonus')}
+      ${renderConfidenceBar('RSI',         cb.rsiBonus          ?? 0, 0.08, 'conf-bar-bonus')}
       ${renderConfidenceBar('OI/Volume',   cb.oiVolumeBonus     ?? 0, 0.05, 'conf-bar-bonus')}
+      ${renderConfidenceBar('Price Pos',   cb.pricePositionAdjustment ?? 0, 0.08, 'conf-bar-bonus')}
+      ${renderConfidenceBar('ADX Maturity',cb.adxMaturityPenalty ?? 0, 0.08, 'conf-bar-bonus')}
+      ${renderConfidenceBar('Structure',   cb.structureBonus    ?? 0, 0.08, 'conf-bar-bonus')}
+      ${renderConfidenceBar('ORB',         cb.orbBonus          ?? 0, 0.08, 'conf-bar-bonus')}
       <div class="conf-total-row">
         <span>Total</span>
         <span class="${thresh ? 'bullish' : 'bearish'}" style="font-weight:700">${confPct}%${thresh ? ' ✅' : ' (below threshold)'}</span>
@@ -946,12 +950,54 @@ function renderAnalysisCard(sig) {
     </div>
   ` : '';
 
+  // Market Structure section (PDH/PDL + ORB)
+  const pdl  = signal.priorDayLevels || {};
+  const orb  = signal.orb || {};
+  const msHtml = (pdl.pdh || orb.orbFormed) ? (() => {
+    const price = signal.currentPrice;
+
+    // PDH/PDL panel
+    let pdPanel = '';
+    if (pdl.pdh) {
+      const biasCls = pdl.structureBias === 'bullish' ? 'bullish' : pdl.structureBias === 'bearish' ? 'bearish' : '';
+      const abovePDH = pdl.abovePDH ? '<span class="bullish"> ▲ above PDH</span>' : '';
+      const belowPDL = pdl.belowPDL ? '<span class="bearish"> ▼ below PDL</span>' : '';
+      pdPanel = `
+        <div class="agent-stat"><span class="stat-label">PDH</span><span>${fmt(pdl.pdh)}${abovePDH}</span></div>
+        <div class="agent-stat"><span class="stat-label">PDL</span><span>${fmt(pdl.pdl)}${belowPDL}</span></div>
+        <div class="agent-stat"><span class="stat-label">PDC</span><span>${fmt(pdl.pdc)}</span></div>
+        <div class="agent-stat"><span class="stat-label">Bias</span><span class="${biasCls}">${pdl.structureBias || '—'}</span></div>
+      `;
+    }
+
+    // ORB panel
+    let orbPanel = '';
+    if (orb.orbFormed) {
+      const brkCls = orb.breakoutDirection === 'bullish' ? 'bullish' : orb.breakoutDirection === 'bearish' ? 'bearish' : '';
+      const brkStr = orb.breakoutDirection === 'none' ? '<span style="opacity:0.6">inside range</span>'
+        : `<span class="${brkCls}">${orb.breakoutDirection} (${(orb.breakoutStrength * 100).toFixed(0)}%)</span>`;
+      orbPanel = `
+        <div class="agent-stat"><span class="stat-label">ORB High</span><span>${fmt(orb.orbHigh)}</span></div>
+        <div class="agent-stat"><span class="stat-label">ORB Low</span><span>${fmt(orb.orbLow)}</span></div>
+        <div class="agent-stat"><span class="stat-label">Range</span><span>${orb.rangeSizePct != null ? orb.rangeSizePct.toFixed(2) + '%' : '—'}</span></div>
+        <div class="agent-stat"><span class="stat-label">Breakout</span><span>${brkStr}</span></div>
+      `;
+    } else if (signal.orb) {
+      orbPanel = `<div class="agent-stat"><span class="stat-label">ORB</span><span style="opacity:0.5">not yet formed</span></div>`;
+    }
+
+    return `
+      <div class="stats-section-label">Market Structure</div>
+      <div class="agent-stats">${pdPanel}${orbPanel}</div>
+    `;
+  })() : '';
+
   // Per-timeframe indicator table
   const tfHtml = tfs.length > 0 ? `
     <div class="stats-section-label">Timeframe Indicators</div>
     <table class="analysis-tf-table">
       <thead>
-        <tr><th>TF</th><th>DI+</th><th>DI-</th><th>ADX</th><th>Trend</th><th>DI Cross</th><th>VWAP Band</th><th>TD Setup</th><th>Patterns</th></tr>
+        <tr><th>TF</th><th>DI+</th><th>DI-</th><th>ADX</th><th>Trend</th><th>DI Cross</th><th>RSI</th><th>OBV</th><th>VWAP Band</th><th>TD Setup</th><th>Patterns</th></tr>
       </thead>
       <tbody>
         ${tfs.map(tf => {
@@ -959,6 +1005,8 @@ function renderAnalysisCard(sig) {
           const td   = tf.td?.setup || {};
           const cp   = tf.allCandlePatterns || {};
           const vwap = tf.vwap || {};
+          const rsi  = tf.rsi || {};
+          const obv  = tf.obv || {};
           const patterns = [
             cp.hammer?.present          ? 'Hammer' : null,
             cp.shootingStar?.present    ? 'ShootStar' : null,
@@ -986,6 +1034,20 @@ function renderAnalysisCard(sig) {
             else if (price < vwap.vwap - dev) vwapBandStr = '<span class="bullish">−1σ</span>';
             else                              vwapBandStr = 'near';
           }
+          // RSI display
+          let rsiStr = '—';
+          if (rsi.value != null) {
+            const rsiCls = rsi.overbought ? 'bearish' : rsi.oversold ? 'bullish' : rsi.trend === 'bullish' ? 'bullish' : rsi.trend === 'bearish' ? 'bearish' : '';
+            const rsiFlag = rsi.overbought ? ' 🔴' : rsi.oversold ? ' 🟢' : '';
+            const rsiDiv = rsi.divergence !== 'none' ? ` <span style="font-size:0.65rem;opacity:0.7">(${rsi.divergence} div)</span>` : '';
+            rsiStr = `<span class="${rsiCls}">${rsi.value}${rsiFlag}</span>${rsiDiv}`;
+          }
+          // OBV display
+          const obvTrendCls = obv.trend === 'bullish' ? 'bullish' : obv.trend === 'bearish' ? 'bearish' : '';
+          const obvDivStr = obv.divergence && obv.divergence !== 'none'
+            ? ` <span style="font-size:0.65rem;opacity:0.7">(${obv.divergence})</span>` : '';
+          const obvStr = obv.trend ? `<span class="${obvTrendCls}">${obv.trend}</span>${obvDivStr}` : '—';
+
           return `<tr>
             <td><b>${tf.timeframe}</b></td>
             <td class="bullish">${dmi.plusDI != null ? dmi.plusDI.toFixed(1) : '—'}</td>
@@ -993,6 +1055,8 @@ function renderAnalysisCard(sig) {
             <td>${dmi.adx != null ? dmi.adx.toFixed(1) : '—'}</td>
             <td class="${trendCls}">${dmi.trend || '—'}</td>
             <td style="font-size:0.75rem">${diCrossStr}</td>
+            <td style="font-size:0.75rem">${rsiStr}</td>
+            <td style="font-size:0.75rem">${obvStr}</td>
             <td style="font-size:0.75rem">${vwapBandStr}</td>
             <td>${tdStr}</td>
             <td style="font-size:0.75rem">${patterns}</td>
@@ -1054,6 +1118,7 @@ function renderAnalysisCard(sig) {
         </div>
       </div>
       ${cbHtml}
+      ${msHtml}
       ${tfHtml}
       ${aiHtml}
       ${optHtml}

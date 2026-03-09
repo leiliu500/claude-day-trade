@@ -1,5 +1,5 @@
 import type { TradingProfile, Timeframe } from './market.js';
-import type { TimeframeIndicators } from './indicators.js';
+import type { TimeframeIndicators, PriorDayLevels, ORBResult } from './indicators.js';
 
 export type SignalDirection = 'bullish' | 'bearish' | 'neutral';
 export type AlignmentType = 'all_aligned' | 'htf_mtf_aligned' | 'mtf_ltf_aligned' | 'mixed';
@@ -20,6 +20,10 @@ export interface SignalPayload {
   atr: number;                // ATR from HTF (for stop/TP sizing)
   atm: number;                // ATM strike (rounded to nearest 1.0)
   strengthScore: number;      // 0–100 numeric trend strength (ADX-based, for Telegram display)
+
+  // Market structure signals
+  priorDayLevels: PriorDayLevels;   // PDH / PDL / PDC from yesterday's completed session
+  orb: ORBResult;                   // Opening range breakout (9:30–10:00 ET)
 
   triggeredBy: 'AUTO' | 'MANUAL';
   sessionId?: string;

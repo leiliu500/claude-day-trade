@@ -8,6 +8,8 @@ import { computeTD } from '../indicators/td-sequential.js';
 import { detectCandlePattern, detectAllPatterns } from '../indicators/candle-patterns.js';
 import { computePriceStructure } from '../indicators/price-structure.js';
 import { computeVWAP } from '../indicators/vwap.js';
+import { computeRSI } from '../indicators/rsi.js';
+import { computePriorDayLevels, computeORB } from '../indicators/market-structure.js';
 import { PROFILE_TIMEFRAMES, normalizeAlpacaBars } from '../types/market.js';
 import type { OHLCVBar, Timeframe, TradingProfile, AlpacaBarsResponse } from '../types/market.js';
 import type { TimeframeIndicators } from '../types/indicators.js';
@@ -88,6 +90,7 @@ function computeTimeframeIndicators(
     obv: computeOBV(bars, 14),
     td: computeTD(bars),
     vwap: computeVWAP(bars),
+    rsi: computeRSI(bars, 14),
     candlePattern: detectCandlePattern(bars),
     allCandlePatterns: detectAllPatterns(bars),
     priceStructure: computePriceStructure(bars, 20, direction),
@@ -121,11 +124,14 @@ export class SignalAgent {
   ): Promise<SignalPayload> {
     const [ltf, mtf, htf] = PROFILE_TIMEFRAMES[profile];
 
-    // Fetch all 3 timeframes in parallel
-    const [ltfBars, mtfBars, htfBars] = await Promise.all([
+    // Fetch all 3 timeframes + daily bars (for PDH/PDL) in parallel.
+    // Daily bars are always fetched separately — even when HTF is '1d' — to
+    // guarantee at least 3 complete daily sessions regardless of profile.
+    const [ltfBars, mtfBars, htfBars, dailyBars] = await Promise.all([
       fetchBars(ticker, ltf),
       fetchBars(ticker, mtf),
       fetchBars(ticker, htf),
+      fetchBarsRest(ticker, '1d', 3),
     ]);
 
     // First pass: compute DMI-based indicators to determine direction
@@ -156,6 +162,10 @@ export class SignalAgent {
     const htfAdx = tfIndicators[2]?.dmi.adx ?? tfIndicators[1]?.dmi.adx ?? 0;
     const strengthScore = Math.min(100, Math.round(htfAdx * 2));
 
+    // Market structure: PDH/PDL from daily bars; ORB from LTF (most granular intraday bars)
+    const priorDayLevels = computePriorDayLevels(dailyBars, currentPrice);
+    const orb = computeORB(ltfBars, currentPrice);
+
     return {
       id: uuidv4(),
       ticker,
@@ -170,6 +180,8 @@ export class SignalAgent {
       atr,
       atm,
       strengthScore,
+      priorDayLevels,
+      orb,
       triggeredBy: trigger,
       sessionId,
       createdAt: new Date().toISOString(),

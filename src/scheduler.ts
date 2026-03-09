@@ -26,15 +26,27 @@ const STREAM_FALLBACK_THRESHOLD_MS = 2 * 60 * 1000; // 2 minutes
 const isRunning = new Map<string, boolean>(); // true while pipeline is executing
 const lastRunAt = new Map<string, number>();  // ms timestamp of most recent run start
 
-/** True when current UTC time is within the trading window: Mon-Fri 13:30-20:30 UTC (9:30 AM - 4:30 PM ET) */
+/** True when current UTC time is within the trading window: Mon-Fri 9:30 AM - 4:30 PM ET (DST-aware) */
 function isTradingWindow(): boolean {
-  const now    = new Date();
-  const day    = now.getUTCDay();     // 0=Sun, 6=Sat
-  const hour   = now.getUTCHours();
-  const minute = now.getUTCMinutes();
-  const afterStart = hour > 13 || (hour === 13 && minute >= 30);
-  const beforeEnd  = hour < 20 || (hour === 20 && minute < 30);
-  return day >= 1 && day <= 5 && afterStart && beforeEnd;
+  const now  = new Date();
+  const day  = now.getUTCDay(); // 0=Sun, 6=Sat
+  if (day === 0 || day === 6) return false;
+
+  // DST detection: 2nd Sunday March → 1st Sunday November (US Eastern)
+  const year = now.getUTCFullYear();
+  const dstStart = new Date(Date.UTC(year, 2, 1));
+  dstStart.setUTCDate(1 + ((7 - dstStart.getUTCDay()) % 7) + 7); // 2nd Sunday March
+  const dstEnd = new Date(Date.UTC(year, 10, 1));
+  dstEnd.setUTCDate(1 + ((7 - dstEnd.getUTCDay()) % 7)); // 1st Sunday November
+  const isDst = now >= dstStart && now < dstEnd;
+
+  const etOffsetMin = isDst ? -4 * 60 : -5 * 60;
+  const totalUtcMin = now.getUTCHours() * 60 + now.getUTCMinutes();
+  const etMin = ((totalUtcMin + etOffsetMin) + 24 * 60) % (24 * 60);
+
+  const marketOpenMin  = 9 * 60 + 30;  // 9:30 AM ET
+  const marketCloseMin = 16 * 60 + 30; // 4:30 PM ET
+  return etMin >= marketOpenMin && etMin < marketCloseMin;
 }
 
 /**

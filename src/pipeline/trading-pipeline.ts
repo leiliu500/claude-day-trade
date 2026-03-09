@@ -29,14 +29,21 @@ const STALE_QUOTE_ABORT_PCT = 0.15;
 
 /**
  * Returns a fully-formed WAIT without calling any AI.
- * Used when confidence is below threshold and there are no open positions to manage.
+ * Used when there are no open positions to manage and either confidence is below threshold
+ * or the time gate is closed (market hours check failed).
  */
 function deterministicWait(
   signal: SignalPayload,
   analysis: AnalysisResult,
   ticker: string,
   profile: TradingProfile,
+  timeGateOk: boolean,
 ): DecisionResult {
+  const confPct = (analysis.confidence * 100).toFixed(0);
+  const threshPct = (config.MIN_CONFIDENCE * 100).toFixed(0);
+  const reason = !timeGateOk
+    ? `Market closed (time gate) — no open positions to manage. AI orchestration skipped. (Confidence ${confPct}%, threshold ${threshPct}%)`
+    : `Confidence ${confPct}% < threshold ${threshPct}% — no open positions to manage. AI orchestration skipped.`;
   return {
     id: uuidv4(),
     signalId: signal.id,
@@ -46,7 +53,7 @@ function deterministicWait(
     direction: signal.direction,
     confirmationCount: 0,
     orchestrationConfidence: analysis.confidence,
-    reasoning: `Confidence ${(analysis.confidence * 100).toFixed(0)}% < threshold ${(config.MIN_CONFIDENCE * 100).toFixed(0)}% — no open positions to manage. AI orchestration skipped.`,
+    reasoning: reason,
     urgency: 'low',
     shouldExecute: false,
     entryStrategy: {
@@ -55,7 +62,7 @@ function deterministicWait(
       signalDirection: null,
       confirmationsNeeded: 3,
       overrideTriggered: false,
-      notes: 'Below threshold with no active positions.',
+      notes: !timeGateOk ? 'Market closed with no active positions.' : 'Below threshold with no active positions.',
     },
     createdAt: new Date().toISOString(),
   };
@@ -143,6 +150,10 @@ export async function runPipeline(
     // ── Phase 5: Analysis (deterministic confidence; AI explanation only when market open) ──
     const analysis = await analysisAgent.run(signal, optionEval, timeGateOk);
     console.log(`[Pipeline] Analysis: confidence=${analysis.confidence.toFixed(2)}, threshold=${analysis.meetsEntryThreshold}`);
+    if (analysis.confidenceBreakdown) {
+      const cb = analysis.confidenceBreakdown;
+      console.log(`[Pipeline] ConfBreakdown[${ticker}]: base=${cb.base.toFixed(2)} di=${cb.diSpreadBonus.toFixed(3)} adx=${cb.adxBonus.toFixed(2)} cross=${cb.diCrossBonus.toFixed(3)} align=${cb.alignmentBonus.toFixed(2)} td=${cb.tdAdjustment.toFixed(3)} obv=${cb.obvBonus.toFixed(3)} vwap=${cb.vwapBonus.toFixed(3)} oiVol=${cb.oiVolumeBonus.toFixed(3)} rsi=${cb.rsiBonus.toFixed(3)} pos=${cb.pricePositionAdjustment.toFixed(3)} maturity=${cb.adxMaturityPenalty.toFixed(3)} struct=${cb.structureBonus.toFixed(3)} orb=${cb.orbBonus.toFixed(3)}`);
+    }
 
     // ── Phase 6: Persist Signal Snapshot ──────────────────────────────────
     const snapshotId = await insertSignalSnapshot(signal, optionEval, analysis, sessionId);
@@ -159,7 +170,7 @@ export async function runPipeline(
     const useAI = needsAIOrchestration(analysis, context, timeGateOk, hasActiveAgents);
     const decision = useAI
       ? await decisionOrchestrator.run({ signal, option: optionEval, analysis, context, timeGateOk })
-      : deterministicWait(signal, analysis, ticker, profile);
+      : deterministicWait(signal, analysis, ticker, profile, timeGateOk);
     console.log(`[Pipeline] Decision: ${decision.decisionType} (execute=${decision.shouldExecute}${useAI ? '' : ', deterministic'})`);
 
     await insertDecision(decision);

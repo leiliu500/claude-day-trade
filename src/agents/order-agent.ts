@@ -127,9 +127,10 @@ export interface OrderAgentOutcome {
   pnlPct?: number;
 }
 
-const TICK_INTERVAL_MS       = 30_000;
-const AI_TICK_INTERVAL       = 1;     // periodic AI check every N ticks (30 s)
-const FILL_TIMEOUT_MS        = 90_000; // cancel unfilled limit order after 90 s
+const TICK_INTERVAL_MS          = 30_000;
+const AI_TICK_INTERVAL          = 1;        // fallback AI check every N ticks (30 s) when orchestrator is silent
+const ORCHESTRATOR_FALLBACK_MS  = 90_000;   // run self-tick AI only if no orchestrator dispatch in this window
+const FILL_TIMEOUT_MS           = 90_000;   // cancel unfilled limit order after 90 s
 const FILL_STALE_CHECK_MS    = 45_000; // check for adverse price move at 45 s
 const FILL_STALE_ABORT_PCT   = 0.15;  // cancel if current mid dropped > 15% below limit price
 
@@ -167,6 +168,8 @@ export class OrderAgent {
   private isAIRunning = false;
   /** Last market context received from the orchestrator — reused on self-ticks when no new dispatch. */
   private cachedMarketContext: OrchestratorSuggestion['marketContext'] | null = null;
+  /** Timestamp (ms) of the last orchestrator dispatch — used to gate self-tick AI calls. */
+  private lastDispatchMs = 0;
   /** In-memory trailing stop — synced after each 30s tick, used by stream price handler to avoid DB reads. */
   private currentStop: number | null = null;
   /** In-memory TP level — synced after each 30s tick. */
@@ -454,6 +457,7 @@ export class OrderAgent {
       urgency:             suggestion.urgency,
       reason:              suggestion.reason,
     });
+    this.lastDispatchMs = Date.now();
     return await this._runAIDecision(suggestion);
   }
 
@@ -1093,17 +1097,23 @@ export class OrderAgent {
       return;
     }
 
-    // ── 3. Periodic AI independent monitoring (adaptive frequency) ─────────
-    // - Every tick when price is declining (1+ consecutive falls)
-    // - Every tick when pnl is negative and position was previously profitable (protect against hold trap)
-    // - Every tick otherwise (AI_TICK_INTERVAL = 1)
+    // ── 3. Fallback AI (only when orchestrator has been silent > ORCHESTRATOR_FALLBACK_MS) ──
+    // Primary AI path: processOrchestratorDecision() fires immediately on every orchestrator
+    // dispatch (~1 min cadence) with fresh market context — no self-tick AI needed then.
+    // Self-tick AI is a safety-net for when the pipeline is silent (scheduler paused,
+    // no signal generated, stream gap, or position entered without an immediate dispatch).
     const forceAI = this._forceNextAI;
     this._forceNextAI = false;
+    const orchestratorSilent =
+      this.lastDispatchMs === 0 ||
+      Date.now() - this.lastDispatchMs > ORCHESTRATOR_FALLBACK_MS;
     const shouldRunAI =
       forceAI ||
-      this.consecutiveDeclines >= 1 ||
-      (this.peakPnlPct > 0 && pnlPctNow < 0) ||
-      this.tickCount % AI_TICK_INTERVAL === 0;
+      (orchestratorSilent && (
+        this.consecutiveDeclines >= 1 ||
+        (this.peakPnlPct > 0 && pnlPctNow < 0) ||
+        this.tickCount % AI_TICK_INTERVAL === 0
+      ));
     if (shouldRunAI) {
       // Fire-and-forget: do NOT await AI so _monitorRunning is released immediately.
       // This ensures the next 30 s tick's deterministic checks (hard stop, TP, profit-lock)
