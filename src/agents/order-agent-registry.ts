@@ -465,7 +465,21 @@ export class OrderAgentRegistry {
       try {
         const decision = decisionMap.get(row.decision_id);
         if (!decision) {
-          console.warn(`[Registry] No decision found for positionId=${row.position_id} — skipping restore`);
+          console.warn(
+            `[Registry] No decision found for positionId=${row.position_id} ` +
+            `(decisionId=${row.decision_id}) — auto-closing orphaned position`,
+          );
+          try {
+            await this._directDbFallbackExit(
+              row.ticker,
+              `orphaned_position_no_decision (decisionId=${row.decision_id})`,
+            );
+          } catch (closeErr) {
+            console.error(
+              `[Registry] Failed to auto-close orphaned positionId=${row.position_id}:`,
+              (closeErr as Error).message,
+            );
+          }
           continue;
         }
 

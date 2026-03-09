@@ -265,6 +265,11 @@ export async function runPipeline(
           console.log(
             `[Pipeline] NEW_ENTRY quote refreshed: $${newSizing.limitPrice} (dev=${(newDev * 100).toFixed(1)}%)`,
           );
+        } else {
+          console.warn(
+            `[Pipeline] NEW_ENTRY: fetchOptionMid returned null for ${optionEval.winnerCandidate.contract.symbol}` +
+            ` — proceeding with original price $${newSizing.limitPrice} (stale check skipped)`,
+          );
         }
 
         const newPositionId = await registry.createAndStart({
@@ -348,6 +353,11 @@ export async function runPipeline(
           addSizing.limitPrice = Math.round(addFreshMid * 100) / 100;
           console.log(
             `[Pipeline] ADD_POSITION quote refreshed: $${addSizing.limitPrice} (dev=${(addDev * 100).toFixed(1)}%)`,
+          );
+        } else {
+          console.warn(
+            `[Pipeline] ADD_POSITION: fetchOptionMid returned null for ${optionEval.winnerCandidate.contract.symbol}` +
+            ` — proceeding with original price $${addSizing.limitPrice} (stale check skipped)`,
           );
         }
 
@@ -445,23 +455,72 @@ export async function runPipeline(
           break;
         }
 
-        const { sizing: revSizing, passed: revPassed } = executionAgent.prepareEntry({
+        const { sizing: revSizing, passed: revPassed, failedGates: revFailed } = executionAgent.prepareEntry({
           decision, signal, option: optionEval, analysis,
           accountEquity: context.accountEquity, accountBuyingPower: context.accountBuyingPower,
           dailyRealizedPnl: context.dailyRealizedPnl, timeGateOk,
         });
-
-        if (revPassed && revSizing && optionEval.winnerCandidate) {
-          const revPositionId = await registry.createAndStart({
-            decision, candidate: optionEval.winnerCandidate, sizing: revSizing, sessionId,
-            entryConfidence: analysis.confidence, entryAlignment: signal.alignment, entryDirection: signal.direction,
-          });
-          result.orderSubmitted = !!revPositionId;
-          result.orderSymbol    = optionEval.winnerCandidate.contract.symbol;
-          result.orderQty       = revSizing.qty;
-          result.orderPrice     = revSizing.limitPrice;
-          result.sizing         = revSizing;
+        if (!revPassed || !revSizing || !optionEval.winnerCandidate) {
+          result.failedGates = revFailed; break;
         }
+
+        // Human approval gate — REVERSE opens a new position and deserves the
+        // same oversight as NEW_ENTRY / ADD_POSITION.
+        const { outcome: revOutcome, approvalId: revApprovalId } = await ApprovalService.getInstance().requestApproval({
+          decision, candidate: optionEval.winnerCandidate, sizing: revSizing, confidence: analysis.confidence,
+        });
+        result.humanApprovalOutcome = revOutcome;
+        if (revOutcome !== 'approved') {
+          console.log(`[Pipeline] REVERSE blocked by human (${revOutcome}) for ${ticker}`); break;
+        }
+
+        // Re-quote after approval — the quote may be up to 2 minutes stale.
+        const revFreshMid = await fetchOptionMid(optionEval.winnerCandidate.contract.symbol);
+        if (revFreshMid !== null) {
+          const revDev = (revFreshMid - revSizing.limitPrice) / revSizing.limitPrice;
+          if (Math.abs(revDev) > STALE_QUOTE_ABORT_PCT) {
+            const revOriginalPrice = revSizing.limitPrice;
+            console.warn(
+              `[Pipeline] REVERSE aborted — quote stale after approval: ` +
+              `limit=$${revOriginalPrice} mid=$${revFreshMid.toFixed(2)} ` +
+              `dev=${(revDev * 100).toFixed(1)}%`,
+            );
+            result.failedGates = [`STALE_QUOTE: price moved ${(revDev * 100).toFixed(1)}% since signal`];
+            markApprovalStaleQuote(revApprovalId, revOriginalPrice, revFreshMid, revDev).catch(() => {});
+            notifyStaleQuoteAbort({
+              ticker,
+              decisionType: decision.decisionType,
+              optionSymbol: optionEval.winnerCandidate.contract.symbol,
+              originalPrice: revOriginalPrice,
+              freshMid: revFreshMid,
+              devPct: revDev,
+            }).catch(() => {});
+            break;
+          }
+          revSizing.limitPrice = Math.round(revFreshMid * 100) / 100;
+          console.log(
+            `[Pipeline] REVERSE quote refreshed: $${revSizing.limitPrice} (dev=${(revDev * 100).toFixed(1)}%)`,
+          );
+        } else {
+          console.warn(
+            `[Pipeline] REVERSE: fetchOptionMid returned null for ${optionEval.winnerCandidate.contract.symbol}` +
+            ` — proceeding with original price $${revSizing.limitPrice} (stale check skipped)`,
+          );
+        }
+
+        const revPositionId = await registry.createAndStart({
+          decision, candidate: optionEval.winnerCandidate, sizing: revSizing, sessionId,
+          entryConfidence: analysis.confidence, entryAlignment: signal.alignment, entryDirection: signal.direction,
+        });
+        if (!revPositionId) {
+          console.warn(`[Pipeline] REVERSE: registry.createAndStart returned empty — position cap reached or agent.start() failed for ${ticker}`);
+          break;
+        }
+        result.orderSubmitted = true;
+        result.orderSymbol    = optionEval.winnerCandidate.contract.symbol;
+        result.orderQty       = revSizing.qty;
+        result.orderPrice     = revSizing.limitPrice;
+        result.sizing         = revSizing;
         break;
       }
 

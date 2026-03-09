@@ -12,7 +12,7 @@ import type { SizeResult } from '../types/trade.js';
 const TELEGRAM_BASE = 'https://api.telegram.org';
 const APPROVAL_TIMEOUT_MS = 2 * 60 * 1000; // 2 minutes
 
-export type ApprovalOutcome = 'approved' | 'denied' | 'timeout';
+export type ApprovalOutcome = 'approved' | 'denied' | 'timeout' | 'send_failed';
 
 export interface ApprovalResult {
   outcome: ApprovalOutcome;
@@ -30,6 +30,7 @@ export interface TelegramUser {
 interface PendingApproval {
   resolve: (outcome: ApprovalOutcome) => void;
   timer: ReturnType<typeof setTimeout>;
+  resolved: boolean;
 }
 
 export interface ApprovalRequest {
@@ -61,7 +62,7 @@ export class ApprovalService {
 
   /**
    * Send approval request to Telegram and wait for human response.
-   * Resolves with 'approved' | 'denied' | 'timeout'.
+   * Resolves with 'approved' | 'denied' | 'timeout' | 'send_failed'.
    */
   async requestApproval(req: ApprovalRequest): Promise<ApprovalResult> {
     const approvalId = uuidv4();
@@ -102,6 +103,7 @@ export class ApprovalService {
     const token = config.TELEGRAM_BOT_TOKEN;
     const chatId = config.TELEGRAM_CHAT_ID;
     let messageId: number | undefined;
+    let sendFailed = false;
 
     try {
       const res = await fetch(`${TELEGRAM_BASE}/bot${token}/sendMessage`, {
@@ -129,33 +131,52 @@ export class ApprovalService {
         }
       } else {
         console.error('[ApprovalService] Telegram send failed:', await res.text());
+        sendFailed = true;
       }
     } catch (err) {
       console.error('[ApprovalService] Telegram send error:', err);
+      sendFailed = true;
+    }
+
+    // If Telegram send failed, resolve immediately — the user never saw the
+    // approval request so waiting 2 minutes to default-deny wastes time.
+    if (sendFailed) {
+      console.warn(`[ApprovalService] Telegram send failed — resolving immediately as send_failed (${approvalId})`);
+      await updateHumanApprovalStatus(approvalId, 'TIMEOUT').catch(() => {});
+      return { outcome: 'send_failed', approvalId };
     }
 
     console.log(`[ApprovalService] Waiting for human approval: ${approvalId} (${decision.ticker} ${decision.decisionType})`);
 
-    // Block pipeline until approved / denied / timeout
+    // Block pipeline until approved / denied / timeout.
+    // The `resolved` flag prevents the rare race where timeout and callback
+    // fire in the same event-loop tick — Promise.resolve is idempotent but
+    // the flag makes intent explicit and prevents duplicate DB writes.
     const outcome = await new Promise<ApprovalOutcome>((resolve) => {
-      const timer = setTimeout(async () => {
-        this.pending.delete(approvalId);
-        await updateHumanApprovalStatus(approvalId, 'TIMEOUT').catch(() => {});
+      const pending: PendingApproval = {
+        resolve,
+        timer: setTimeout(async () => {
+          if (pending.resolved) return;
+          pending.resolved = true;
+          this.pending.delete(approvalId);
+          await updateHumanApprovalStatus(approvalId, 'TIMEOUT').catch(() => {});
 
-        // Edit message to remove buttons and mark expired
-        if (messageId) {
-          await this.editMessageRemoveButtons(
-            chatId,
-            messageId,
-            msg + '\n\n⏰ <b>Timed out — trade cancelled.</b>',
-          );
-        }
+          // Edit message to remove buttons and mark expired
+          if (messageId) {
+            await this.editMessageRemoveButtons(
+              chatId,
+              messageId,
+              msg + '\n\n⏰ <b>Timed out — trade cancelled.</b>',
+            );
+          }
 
-        console.log(`[ApprovalService] Approval timed out: ${approvalId}`);
-        resolve('timeout');
-      }, APPROVAL_TIMEOUT_MS);
+          console.log(`[ApprovalService] Approval timed out: ${approvalId}`);
+          resolve('timeout');
+        }, APPROVAL_TIMEOUT_MS),
+        resolved: false,
+      };
 
-      this.pending.set(approvalId, { resolve, timer });
+      this.pending.set(approvalId, pending);
     });
     return { outcome, approvalId };
   }
@@ -171,11 +192,12 @@ export class ApprovalService {
     from: TelegramUser,
   ): Promise<boolean> {
     const pending = this.pending.get(approvalId);
-    if (!pending) {
-      // Already timed out or unknown ID
+    if (!pending || pending.resolved) {
+      // Already timed out, already resolved, or unknown ID
       return false;
     }
 
+    pending.resolved = true;
     clearTimeout(pending.timer);
     this.pending.delete(approvalId);
 

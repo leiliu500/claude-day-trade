@@ -422,9 +422,11 @@ export async function notifySignalAnalysis(result: PipelineResult): Promise<void
 
   if (result.humanApprovalOutcome) {
     const icon  = result.humanApprovalOutcome === 'approved' ? '✅'
-      : result.humanApprovalOutcome === 'denied' ? '❌' : '⏰';
+      : result.humanApprovalOutcome === 'denied' ? '❌'
+      : result.humanApprovalOutcome === 'send_failed' ? '⚠️' : '⏰';
     const label = result.humanApprovalOutcome === 'approved' ? 'Approved — order submitted'
       : result.humanApprovalOutcome === 'denied'  ? 'Denied by user — order cancelled'
+      : result.humanApprovalOutcome === 'send_failed' ? 'Telegram send failed — order cancelled'
       : 'Timed out — order cancelled';
     msg += `\n\n${icon} <b>Human Approval:</b> ${label}`;
   }
