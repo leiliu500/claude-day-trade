@@ -368,6 +368,12 @@ export class DecisionOrchestrator {
       rawOutput.confirmation_count = serverCount;
     }
 
+    // Sanitize: WAIT decisions must never have should_execute=true (AI sometimes outputs this
+    // inconsistently — it causes misleading ✅ in the dashboard with no functional effect).
+    if (rawOutput.decision_type === 'WAIT' && rawOutput.should_execute) {
+      rawOutput.should_execute = false;
+    }
+
     return {
       id: uuidv4(),
       signalId: signal.id,
