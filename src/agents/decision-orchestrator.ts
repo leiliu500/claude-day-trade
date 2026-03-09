@@ -260,16 +260,22 @@ export class DecisionOrchestrator {
 
     // Hard EOD gate: force EXIT for any open position in EOD window
     if (isEodWindow && context.openPositions.length > 0 && rawOutput.decision_type !== 'EXIT') {
+      const eodOriginal = rawOutput.decision_type;
       rawOutput.decision_type = 'EXIT';
       rawOutput.should_execute = true;
-      rawOutput.reasoning = `[EOD GATE] End-of-day liquidation — closing all positions (${minutesToClose} min to close). Original: ${rawOutput.decision_type}. ${rawOutput.reasoning}`;
+      rawOutput.reasoning = `[EOD GATE] End-of-day liquidation — closing all positions (${minutesToClose} min to close). Original: ${eodOriginal}. ${rawOutput.reasoning}`;
     }
+
+    // Track whether a hard time-based gate blocked a new entry (EOD or FOMC).
+    // Used below to prevent isConvictionAdvanceWait from firing on these blocks.
+    let isHardTimeGateBlock = false;
 
     // EOD window also blocks new entries
     if (isEodWindow && (rawOutput.decision_type === 'NEW_ENTRY' || rawOutput.decision_type === 'ADD_POSITION')) {
       rawOutput.decision_type = 'WAIT';
       rawOutput.should_execute = false;
       rawOutput.reasoning = `[EOD GATE] New entries forbidden in EOD window. ${rawOutput.reasoning}`;
+      isHardTimeGateBlock = true;
     }
 
     // FOMC gate: block new entries when an FOMC event is within 30 minutes
@@ -277,6 +283,7 @@ export class DecisionOrchestrator {
       rawOutput.decision_type = 'WAIT';
       rawOutput.should_execute = false;
       rawOutput.reasoning = `[FOMC GATE] ${fomcEventDescription} in ${fomcMinutesToEvent} min — new entries forbidden. ${rawOutput.reasoning}`;
+      isHardTimeGateBlock = true;
     }
 
     // Final safety: override to WAIT if safety gates fail for entry decisions
@@ -349,7 +356,7 @@ export class DecisionOrchestrator {
     //
     // Without this, a Stage-2 WAIT keeps priorCount=1 forever and Stage-3 is never reached.
     let isConvictionAdvanceWait = false;
-    if (!isStage1ObserveWait && rawOutput.decision_type === 'WAIT' &&
+    if (!isStage1ObserveWait && !isHardTimeGateBlock && rawOutput.decision_type === 'WAIT' &&
         analysis.meetsEntryThreshold && !rawOutput.reasoning.includes('[GATE OVERRIDE]')) {
       isConvictionAdvanceWait = true;
       if (priorCount === 0) {
