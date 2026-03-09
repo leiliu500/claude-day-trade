@@ -931,17 +931,25 @@ export class OrderAgent {
       const expStr   = new Date(expiration).toISOString().slice(0, 10);
 
       if (expStr === todayStr) {
-        const utcHour = now.getUTCHours();
-        const utcMin  = now.getUTCMinutes();
+        // Compute ET minutes via DST-aware offset (same logic as computeEodWindow in decision-orchestrator)
+        const year     = now.getUTCFullYear();
+        const dstStart = new Date(Date.UTC(year, 2, 1));
+        dstStart.setUTCDate(1 + ((7 - dstStart.getUTCDay()) % 7) + 7); // 2nd Sunday March
+        const dstEnd   = new Date(Date.UTC(year, 10, 1));
+        dstEnd.setUTCDate(1 + ((7 - dstEnd.getUTCDay()) % 7)); // 1st Sunday November
+        const isDst        = now >= dstStart && now < dstEnd;
+        const etOffsetMin  = isDst ? -4 * 60 : -5 * 60;
+        const etMinutes    = (now.getUTCHours() * 60 + now.getUTCMinutes() + etOffsetMin + 24 * 60) % (24 * 60);
+        const minsToClose  = 16 * 60 - etMinutes; // minutes until 4:00 PM ET
 
-        if (utcHour === 19 && utcMin >= 30 && utcMin < 45 && !this.expiryWarningSent) {
+        if (minsToClose >= 25 && minsToClose <= 35 && !this.expiryWarningSent) {
           this.expiryWarningSent = true;
           await notifyAlert(
             `⏰ <b>Expiry Warning: ${ticker}</b>\n` +
             `<code>${symbol}</code> expires TODAY\n` +
-            `Position still open — 30 min to market close!`,
+            `Position still open — ~30 min to market close!`,
           );
-        } else if (utcHour === 19 && utcMin >= 45) {
+        } else if (minsToClose >= 0 && minsToClose <= 15) {
           await this._executeExit('EXPIRY_FORCE_CLOSE');
           return;
         }
@@ -1088,9 +1096,24 @@ export class OrderAgent {
       }
     }
 
+    // Stuck-negative: position NEVER reached 1% profit and has been losing for 5+ ticks.
+    // Catches slow-bleed entries that oscillate down without 3 consecutive drops (RAPID_DECLINE
+    // never fires because any uptick resets consecutiveDeclines). Exit at -5% before hard stop.
+    if (this.peakPnlPct < 1.0 && pnlPctNow <= -5 && this.tickCount >= 5) {
+      const last5 = this.recentTickPnls.slice(-5);
+      const mostlyNegative = last5.filter(p => p < 0).length >= 4; // 4 of last 5 ticks negative
+      if (mostlyNegative) {
+        await this._executeExit(
+          `STUCK_NEGATIVE: peak=+${this.peakPnlPct.toFixed(1)}%, now=${pnlPctNow.toFixed(1)}%` +
+          ` — never profitable, losing for ${this.tickCount} ticks`,
+        );
+        return;
+      }
+    }
+
     // Pre-emptive loss exit: exit at -10% before hard stop fires at ~-13%.
-    // Saves 3%+ per trade. Only activates after 3+ min (6 ticks) to avoid entry noise.
-    if (pnlPctNow <= -10 && this.tickCount >= 6) {
+    // Saves 3%+ per trade. Only activates after 90s (3 ticks) to avoid entry-bar noise.
+    if (pnlPctNow <= -10 && this.tickCount >= 3) {
       await this._executeExit(
         `PRE_EMPTIVE_LOSS: pnl=${pnlPctNow.toFixed(1)}% — cutting before hard stop`,
       );
