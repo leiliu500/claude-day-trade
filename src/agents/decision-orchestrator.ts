@@ -340,17 +340,26 @@ export class DecisionOrchestrator {
       }
     }
 
-    // Stage-1 OBSERVE via direct AI WAIT: if AI returned WAIT (not via gate override above),
-    // priorCount=0, confidence meets threshold, and no hard gate override is in the reasoning,
-    // treat this as a Stage-1 OBSERVE and advance count to 1.
-    // This handles the case where AI correctly identifies Stage-1 but outputs WAIT directly
-    // (e.g. due to TD/RSI risk factors) instead of following the Stage-1 instruction to
-    // output NEW_ENTRY and let the server convert it.
-    if (!isStage1ObserveWait && rawOutput.decision_type === 'WAIT' && priorCount === 0 &&
+    // Conviction-advance WAITs: if AI returned WAIT (not via gate override), confidence meets
+    // threshold, and no hard gate override is in the reasoning, advance the server count.
+    // This covers:
+    //   Stage-1 (priorCount=0) — first observation, tagged [STAGE-1 OBSERVE]
+    //   Stage-N (priorCount>=1) — AI deferring due to OBV/TD/RSI risk factors but still building
+    //     conviction; the count must advance so we eventually reach Stage-3 forced entry.
+    //
+    // Without this, a Stage-2 WAIT keeps priorCount=1 forever and Stage-3 is never reached.
+    let isConvictionAdvanceWait = false;
+    if (!isStage1ObserveWait && rawOutput.decision_type === 'WAIT' &&
         analysis.meetsEntryThreshold && !rawOutput.reasoning.includes('[GATE OVERRIDE]')) {
-      isStage1ObserveWait = true;
-      rawOutput.reasoning = `[STAGE-1 OBSERVE] ${rawOutput.reasoning}`;
-      console.log(`[DecisionOrchestrator] Direct AI WAIT at Stage-1 (priorCount=0, confidence=${analysis.confidence.toFixed(2)}, alignment=${signal.alignment}) — advancing count to 1`);
+      isConvictionAdvanceWait = true;
+      if (priorCount === 0) {
+        isStage1ObserveWait = true; // keep backward-compat flag for isConfirmDecision below
+        rawOutput.reasoning = `[STAGE-1 OBSERVE] ${rawOutput.reasoning}`;
+        console.log(`[DecisionOrchestrator] Direct AI WAIT at Stage-1 (priorCount=0, confidence=${analysis.confidence.toFixed(2)}, alignment=${signal.alignment}) — advancing count to 1`);
+      } else {
+        rawOutput.reasoning = `[STAGE-${priorCount + 1} CONVICTION WAIT] ${rawOutput.reasoning}`;
+        console.log(`[DecisionOrchestrator] Conviction-advance WAIT at Stage-${priorCount + 1} (priorCount=${priorCount}, confidence=${analysis.confidence.toFixed(2)}, alignment=${signal.alignment}) — advancing count to ${priorCount + 1}`);
+      }
     }
 
     // Server-side confirmation count — computed after all gate overrides.
@@ -361,7 +370,7 @@ export class DecisionOrchestrator {
     const isConfirmDecision = rawOutput.decision_type === 'NEW_ENTRY' ||
                               rawOutput.decision_type === 'CONFIRM_HOLD' ||
                               rawOutput.decision_type === 'ADD_POSITION' ||
-                              isStage1ObserveWait;
+                              isConvictionAdvanceWait; // covers Stage-1 OBSERVE and Stage-N conviction WAITs
     const serverCount = priorCount + (isConfirmDecision ? 1 : 0);
     if (serverCount !== rawOutput.confirmation_count) {
       console.log(`[DecisionOrchestrator] Overriding AI count (${rawOutput.confirmation_count}) with server count (${serverCount})`);
