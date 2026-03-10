@@ -127,8 +127,8 @@ export interface OrderAgentOutcome {
   pnlPct?: number;
 }
 
-const TICK_INTERVAL_MS          = 30_000;
-const AI_TICK_INTERVAL          = 1;        // fallback AI check every N ticks (30 s) when orchestrator is silent
+const TICK_INTERVAL_MS          = 10_000;   // 10 s — fast deterministic checks (was 30 s)
+const AI_TICK_INTERVAL          = 1;        // AI check every tick (10 s) when orchestrator is silent
 const FILL_TIMEOUT_MS           = 90_000;   // cancel unfilled limit order after 90 s
 const FILL_STALE_CHECK_MS    = 45_000; // check for adverse price move at 45 s
 const FILL_STALE_ABORT_PCT   = 0.15;  // cancel if current mid dropped > 15% below limit price
@@ -153,7 +153,7 @@ export class OrderAgent {
   private peakPnlPct: number          = 0;
   /** Previous tick's price — used to detect consecutive price declines. */
   private lastPrice: number | null    = null;
-  /** Number of consecutive 30 s ticks where price fell — drives rapid-decline exit and adaptive AI. */
+  /** Number of consecutive 10 s ticks where price fell — drives rapid-decline exit and adaptive AI. */
   private consecutiveDeclines: number = 0;
   /** Rolling buffer of last 5 pnlPctNow values — used to detect sustained-loss hold traps. */
   private recentTickPnls: number[] = [];
@@ -173,6 +173,10 @@ export class OrderAgent {
   private currentTp: number | null = null;
   /** Timestamp (ms) of the last stream-triggered price check — used to throttle quote callbacks. */
   private lastStreamCheckMs = 0;
+  /** Last price seen in stream handler — used to track price direction at 5s granularity. */
+  private lastStreamPrice: number | null = null;
+  /** Consecutive stream-level price declines (5s granularity) — feeds profit-lock rules in stream handler. */
+  private streamConsecutiveDeclines = 0;
 
   constructor(private readonly cfg: OrderAgentConfig | RestoredOrderAgentConfig) {
     if ('positionId' in cfg) {
@@ -743,10 +747,10 @@ export class OrderAgent {
   /**
    * Called on every real-time option quote update from the data stream.
    * Runs all deterministic exit checks using only in-memory state — no REST, DB, or AI calls.
-   * The 30 s polling tick remains authoritative for trailing stop DB sync, AI decisions,
+   * The 10 s polling tick remains authoritative for trailing stop DB sync, AI decisions,
    * and full state refresh.
    *
-   * Uses `_monitorRunning` as a shared mutex: if the full 30 s tick is already running,
+   * Uses `_monitorRunning` as a shared mutex: if the full 10 s tick is already running,
    * the stream check is skipped (the full tick already covers all checks with a fresher price).
    */
   private async _handlePriceUpdate(midPrice: number): Promise<void> {
@@ -786,6 +790,16 @@ export class OrderAgent {
     const pnlPct = entry > 0 ? ((midPrice - entry) / entry) * 100 : 0;
     const { decision } = this.cfg;
 
+    // ── Track price direction at stream granularity (5s) ──
+    if (this.lastStreamPrice !== null) {
+      if (midPrice < this.lastStreamPrice) {
+        this.streamConsecutiveDeclines++;
+      } else {
+        this.streamConsecutiveDeclines = 0;
+      }
+    }
+    this.lastStreamPrice = midPrice;
+
     // ── Hard stop ──
     if (midPrice <= streamStop) {
       console.log(
@@ -810,12 +824,31 @@ export class OrderAgent {
       return;
     }
 
-    // ── Peak-erosion / profit-reversal exits (no consecutiveDeclines dependency) ──
-    // Extreme peak (≥35%): 45% erosion triggers exit (tighter than 40% used in 30s tick w/ decline guard)
-    if (this.peakPnlPct >= 35 && pnlPct < this.peakPnlPct * 0.55 && pnlPct > 0) {
+    // ── Profit-lock exits (stream-level consecutiveDeclines at 5s granularity) ──
+    // Mirrors the 10s tick profit-lock rules but fires faster using stream price direction.
+    const scd = this.streamConsecutiveDeclines;
+    if (this.peakPnlPct >= 35 && pnlPct < this.peakPnlPct * 0.60 && pnlPct > 0 && scd >= 1) {
       await this._executeExit(`PROFIT_LOCK_EXTREME [stream]: peak=+${this.peakPnlPct.toFixed(1)}%, now=+${pnlPct.toFixed(1)}% (${((pnlPct / this.peakPnlPct) * 100).toFixed(0)}% of peak)`);
       return;
     }
+    if (this.peakPnlPct >= 25 && pnlPct < this.peakPnlPct * 0.40 && pnlPct > 0 && scd >= 2) {
+      await this._executeExit(`PROFIT_LOCK_LARGE [stream]: peak=+${this.peakPnlPct.toFixed(1)}%, now=+${pnlPct.toFixed(1)}% (${((pnlPct / this.peakPnlPct) * 100).toFixed(0)}% of peak)`);
+      return;
+    }
+    if (this.peakPnlPct >= 20 && pnlPct < this.peakPnlPct * 0.45 && pnlPct > 0 && scd >= 2) {
+      await this._executeExit(`PROFIT_LOCK_MEDIUM [stream]: peak=+${this.peakPnlPct.toFixed(1)}%, now=+${pnlPct.toFixed(1)}% (${((pnlPct / this.peakPnlPct) * 100).toFixed(0)}% of peak)`);
+      return;
+    }
+    if (this.peakPnlPct >= 15 && pnlPct < this.peakPnlPct * 0.40 && pnlPct > 0 && scd >= 3) {
+      await this._executeExit(`PROFIT_LOCK_MODERATE [stream]: peak=+${this.peakPnlPct.toFixed(1)}%, now=+${pnlPct.toFixed(1)}% (${((pnlPct / this.peakPnlPct) * 100).toFixed(0)}% of peak)`);
+      return;
+    }
+    if (this.peakPnlPct >= 10 && pnlPct < this.peakPnlPct * 0.35 && pnlPct > 0 && scd >= 4) {
+      await this._executeExit(`PROFIT_LOCK_SMALL [stream]: peak=+${this.peakPnlPct.toFixed(1)}%, now=+${pnlPct.toFixed(1)}% (${((pnlPct / this.peakPnlPct) * 100).toFixed(0)}% of peak)`);
+      return;
+    }
+
+    // ── Peak-erosion / profit-reversal exits (no consecutiveDeclines dependency) ──
     if (this.peakPnlPct >= 20 && pnlPct <= 10) {
       await this._executeExit(`PEAK_EROSION [stream]: peak=+${this.peakPnlPct.toFixed(1)}%, now=${pnlPct >= 0 ? '+' : ''}${pnlPct.toFixed(1)}%`);
       return;
@@ -832,7 +865,7 @@ export class OrderAgent {
       await this._executeExit(`PEAK_GAINS_GONE [stream]: peak=+${this.peakPnlPct.toFixed(1)}%, now=${pnlPct >= 0 ? '+' : ''}${pnlPct.toFixed(1)}%`);
       return;
     }
-    if (this.peakPnlPct >= 1.0 && pnlPct < 0 && (this.tickCount >= 2 || this.peakPnlPct >= 5)) {
+    if (this.peakPnlPct >= 1.0 && pnlPct < 0 && (this.tickCount >= 6 || this.peakPnlPct >= 5)) {
       await this._executeExit(`PROFIT_REVERSED [stream]: peak=+${this.peakPnlPct.toFixed(1)}%, now=${pnlPct.toFixed(1)}%`);
       return;
     }
@@ -840,17 +873,17 @@ export class OrderAgent {
       await this._executeExit(`PEAK_REVERSAL_SMALL [stream]: peak=+${this.peakPnlPct.toFixed(1)}%, now=${pnlPct.toFixed(1)}%`);
       return;
     }
-    if (pnlPct <= -10 && this.tickCount >= 6) {
+    if (pnlPct <= -10 && this.tickCount >= 18) {
       await this._executeExit(`PRE_EMPTIVE_LOSS [stream]: pnl=${pnlPct.toFixed(1)}%`);
       return;
     }
   }
 
   /**
-   * Every tick:
+   * Every 10 s tick:
    *   1. Fetch live price and DB state
    *   2. Hard stop / TP / expiry (deterministic — always fires first)
-   *   3. Periodic AI check (no orchestrator input) every AI_TICK_INTERVAL ticks
+   *   3. AI check every 3rd tick (~30 s) when orchestrator is silent
    *
    * Re-entrant guard (_monitorRunning) prevents overlap between the immediate
    * post-fill call and the next setInterval tick.
@@ -902,7 +935,7 @@ export class OrderAgent {
     this.currentStop = stop;
     this.currentTp   = tp;
 
-    // ── 0b. Track price direction (30 s granularity) ───────────────────────
+    // ── 0b. Track price direction (10 s granularity) ───────────────────────
     const prevPrice = this.lastPrice;
     this.lastPrice  = currentPrice;
     if (prevPrice !== null) {
@@ -960,12 +993,12 @@ export class OrderAgent {
     const entryForRapid = this.fillPrice ?? candidate.entryPremium;
     const pnlPctNow = entryForRapid > 0 ? ((currentPrice - entryForRapid) / entryForRapid) * 100 : 0;
 
-    // Track rolling pnl for hold-trap detection (keep last 5 values)
+    // Track rolling pnl for hold-trap detection (keep last 15 values — ~150s at 10s ticks)
     this.recentTickPnls.push(pnlPctNow);
-    if (this.recentTickPnls.length > 5) this.recentTickPnls.shift();
+    if (this.recentTickPnls.length > 15) this.recentTickPnls.shift();
 
-    // Rapid-decline: 3+ consecutive drops AND P&L ≤ -6% (tightened from 4/-8%)
-    if (this.consecutiveDeclines >= 3 && pnlPctNow <= -6) {
+    // Rapid-decline: 9+ consecutive drops (~90s) AND P&L ≤ -6%
+    if (this.consecutiveDeclines >= 9 && pnlPctNow <= -6) {
       await this._executeExit(
         `RAPID_DECLINE: ${this.consecutiveDeclines} consecutive ticks falling,` +
         ` pnl=${pnlPctNow.toFixed(1)}%`,
@@ -977,37 +1010,38 @@ export class OrderAgent {
     // Goal: maximize profit by locking in gains before they fully erode.
     // These fire when: (a) price is actively declining AND (b) 55%+ of peak gains surrendered.
     // Ordered largest peak first so the tightest threshold wins.
+    // Note: consecutiveDeclines thresholds scaled 3x for 10s ticks (same real-time durations as before).
 
-    // Extreme peak (≥35%): lock in at ≥21% with just 1 consecutive decline — don't let exceptional gains erode
-    if (this.peakPnlPct >= 35 && pnlPctNow < this.peakPnlPct * 0.60 && pnlPctNow > 0 && this.consecutiveDeclines >= 1) {
+    // Extreme peak (≥35%): lock in with ~30s of decline — don't let exceptional gains erode
+    if (this.peakPnlPct >= 35 && pnlPctNow < this.peakPnlPct * 0.60 && pnlPctNow > 0 && this.consecutiveDeclines >= 3) {
       await this._executeExit(
-        `PROFIT_LOCK_EXTREME: peak=+${this.peakPnlPct.toFixed(1)}%, now=+${pnlPctNow.toFixed(1)}% (${((pnlPctNow / this.peakPnlPct) * 100).toFixed(0)}% of peak) — locking exceptional profit on first decline`,
+        `PROFIT_LOCK_EXTREME: peak=+${this.peakPnlPct.toFixed(1)}%, now=+${pnlPctNow.toFixed(1)}% (${((pnlPctNow / this.peakPnlPct) * 100).toFixed(0)}% of peak) — locking exceptional profit on decline`,
       );
       return;
     }
-    // Large peak (≥25%): lock in at ≥10% profit when 60%+ of gains eroded while declining
-    if (this.peakPnlPct >= 25 && pnlPctNow < this.peakPnlPct * 0.40 && pnlPctNow > 0 && this.consecutiveDeclines >= 2) {
+    // Large peak (≥25%): lock in at ≥10% profit when 60%+ of gains eroded while declining (~60s)
+    if (this.peakPnlPct >= 25 && pnlPctNow < this.peakPnlPct * 0.40 && pnlPctNow > 0 && this.consecutiveDeclines >= 6) {
       await this._executeExit(
         `PROFIT_LOCK_LARGE: peak=+${this.peakPnlPct.toFixed(1)}%, now=+${pnlPctNow.toFixed(1)}% (${((pnlPctNow / this.peakPnlPct) * 100).toFixed(0)}% of peak) — locking profit while declining`,
       );
       return;
     }
-    // Medium peak (≥20%): lock in while profitable when 55%+ of gains eroded while declining
-    if (this.peakPnlPct >= 20 && pnlPctNow < this.peakPnlPct * 0.45 && pnlPctNow > 0 && this.consecutiveDeclines >= 2) {
+    // Medium peak (≥20%): lock in while profitable when 55%+ of gains eroded while declining (~60s)
+    if (this.peakPnlPct >= 20 && pnlPctNow < this.peakPnlPct * 0.45 && pnlPctNow > 0 && this.consecutiveDeclines >= 6) {
       await this._executeExit(
         `PROFIT_LOCK_MEDIUM: peak=+${this.peakPnlPct.toFixed(1)}%, now=+${pnlPctNow.toFixed(1)}% (${((pnlPctNow / this.peakPnlPct) * 100).toFixed(0)}% of peak) — locking profit while declining`,
       );
       return;
     }
-    // Moderate peak (≥15%): lock in while profitable when 60%+ of gains eroded while falling hard
-    if (this.peakPnlPct >= 15 && pnlPctNow < this.peakPnlPct * 0.40 && pnlPctNow > 0 && this.consecutiveDeclines >= 3) {
+    // Moderate peak (≥15%): lock in while profitable when 60%+ of gains eroded while falling (~90s)
+    if (this.peakPnlPct >= 15 && pnlPctNow < this.peakPnlPct * 0.40 && pnlPctNow > 0 && this.consecutiveDeclines >= 9) {
       await this._executeExit(
         `PROFIT_LOCK_MODERATE: peak=+${this.peakPnlPct.toFixed(1)}%, now=+${pnlPctNow.toFixed(1)}% (${((pnlPctNow / this.peakPnlPct) * 100).toFixed(0)}% of peak) — locking profit while falling`,
       );
       return;
     }
-    // Small peak (≥10%): lock in while profitable when 65%+ of gains eroded while falling fast
-    if (this.peakPnlPct >= 10 && pnlPctNow < this.peakPnlPct * 0.35 && pnlPctNow > 0 && this.consecutiveDeclines >= 4) {
+    // Small peak (≥10%): lock in while profitable when 65%+ of gains eroded while falling (~120s)
+    if (this.peakPnlPct >= 10 && pnlPctNow < this.peakPnlPct * 0.35 && pnlPctNow > 0 && this.consecutiveDeclines >= 12) {
       await this._executeExit(
         `PROFIT_LOCK_SMALL: peak=+${this.peakPnlPct.toFixed(1)}%, now=+${pnlPctNow.toFixed(1)}% (${((pnlPctNow / this.peakPnlPct) * 100).toFixed(0)}% of peak) — locking remaining profit`,
       );
@@ -1018,14 +1052,14 @@ export class OrderAgent {
     // After 40+ min, option theta decay accelerates.  A profitable position that starts
     // declining should be exited — the odds of further improvement shrink fast.
     const minutesHeld = Math.floor((Date.now() - new Date(this.openedAt).getTime()) / 60_000);
-    if (minutesHeld >= 40 && pnlPctNow >= 15 && this.consecutiveDeclines >= 2) {
+    if (minutesHeld >= 40 && pnlPctNow >= 15 && this.consecutiveDeclines >= 6) {
       await this._executeExit(
         `MATURE_PROFIT_EXIT: held=${minutesHeld}min, pnl=+${pnlPctNow.toFixed(1)}%, peak=+${this.peakPnlPct.toFixed(1)}% — protecting mature profit on declining price`,
       );
       return;
     }
     // Held 30+ min with a meaningful gain but any weakness — don't let theta decay it away
-    if (minutesHeld >= 30 && pnlPctNow >= 20 && this.consecutiveDeclines >= 2) {
+    if (minutesHeld >= 30 && pnlPctNow >= 20 && this.consecutiveDeclines >= 6) {
       await this._executeExit(
         `MATURE_PROFIT_EXIT: held=${minutesHeld}min, pnl=+${pnlPctNow.toFixed(1)}%, peak=+${this.peakPnlPct.toFixed(1)}% — locking +20% profit after 30 min on decline`,
       );
@@ -1063,8 +1097,8 @@ export class OrderAgent {
     }
     // Profit-to-loss reversal: any position that peaked at 1%+ is now showing a loss.
     // Removes AI discretion from a situation the AI repeatedly fails to handle correctly.
-    // tickCount >= 2 guard avoids hair-trigger exits on entry-bar noise (first ~60s).
-    if (this.peakPnlPct >= 1.0 && pnlPctNow < 0 && (this.tickCount >= 2 || this.peakPnlPct >= 5)) {
+    // tickCount >= 6 guard avoids hair-trigger exits on entry-bar noise (first ~60s).
+    if (this.peakPnlPct >= 1.0 && pnlPctNow < 0 && (this.tickCount >= 6 || this.peakPnlPct >= 5)) {
       await this._executeExit(
         `PROFIT_REVERSED: peak=+${this.peakPnlPct.toFixed(1)}%, now=${pnlPctNow.toFixed(1)}% — profitable position turned to loss`,
       );
@@ -1080,16 +1114,15 @@ export class OrderAgent {
       return;
     }
 
-    // Hold-trap: position was profitable but has been consistently losing for 3+ ticks.
+    // Hold-trap: position was profitable but has been consistently losing for 9+ ticks (~90s).
     // Catches cases where the AI repeatedly HOLDs through a profit→loss transition.
-    // Only fires after 3+ ticks of sustained negative P&L from a previously profitable position.
-    if (this.peakPnlPct > 0 && pnlPctNow <= -3 && this.recentTickPnls.length >= 3) {
-      const last3 = this.recentTickPnls.slice(-3);
-      const allNegative = last3.every(p => p <= -2);
+    if (this.peakPnlPct > 0 && pnlPctNow <= -3 && this.recentTickPnls.length >= 9) {
+      const last9 = this.recentTickPnls.slice(-9);
+      const allNegative = last9.every(p => p <= -2);
       if (allNegative) {
         await this._executeExit(
           `HOLD_TRAP: position was profitable (peak=+${this.peakPnlPct.toFixed(1)}%)` +
-          ` but negative for 3 consecutive ticks — now=${pnlPctNow.toFixed(1)}%`,
+          ` but negative for 9 consecutive ticks (~90s) — now=${pnlPctNow.toFixed(1)}%`,
         );
         return;
       }
@@ -1098,37 +1131,37 @@ export class OrderAgent {
     // Stuck-negative: position NEVER reached 1% profit and has been losing for 5+ ticks.
     // Catches slow-bleed entries that oscillate down without 3 consecutive drops (RAPID_DECLINE
     // never fires because any uptick resets consecutiveDeclines). Exit at -5% before hard stop.
-    if (this.peakPnlPct < 1.0 && pnlPctNow <= -5 && this.tickCount >= 5) {
-      const last5 = this.recentTickPnls.slice(-5);
-      const mostlyNegative = last5.filter(p => p < 0).length >= 4; // 4 of last 5 ticks negative
+    if (this.peakPnlPct < 1.0 && pnlPctNow <= -5 && this.tickCount >= 15) {
+      const last15 = this.recentTickPnls.slice(-15);
+      const mostlyNegative = last15.filter(p => p < 0).length >= 12; // 12 of last 15 ticks negative
       if (mostlyNegative) {
         await this._executeExit(
           `STUCK_NEGATIVE: peak=+${this.peakPnlPct.toFixed(1)}%, now=${pnlPctNow.toFixed(1)}%` +
-          ` — never profitable, losing for ${this.tickCount} ticks`,
+          ` — never profitable, losing for ${Math.round(this.tickCount * 10 / 60)} min`,
         );
         return;
       }
     }
 
     // Pre-emptive loss exit: exit at -10% before hard stop fires at ~-13%.
-    // Saves 3%+ per trade. Only activates after 90s (3 ticks) to avoid entry-bar noise.
-    if (pnlPctNow <= -10 && this.tickCount >= 3) {
+    // Saves 3%+ per trade. Only activates after 90s (9 ticks) to avoid entry-bar noise.
+    if (pnlPctNow <= -10 && this.tickCount >= 9) {
       await this._executeExit(
         `PRE_EMPTIVE_LOSS: pnl=${pnlPctNow.toFixed(1)}% — cutting before hard stop`,
       );
       return;
     }
 
-    // ── 3. AI monitoring every 30s tick ──
+    // ── 3. AI monitoring every 10s tick ──
     // Runs independently of orchestrator dispatches so the agent always has
-    // its own 30s-cadence AI evaluation, even when the pipeline is dispatching
+    // its own 10s-cadence AI evaluation, even when the pipeline is dispatching
     // every ~1 min. The isAIRunning mutex inside _runAIDecision prevents
     // concurrent evaluations if an orchestrator dispatch arrives mid-tick.
     const forceAI = this._forceNextAI;
     this._forceNextAI = false;
     const shouldRunAI =
       forceAI ||
-      this.consecutiveDeclines >= 1 ||
+      this.consecutiveDeclines >= 3 ||
       (this.peakPnlPct > 0 && pnlPctNow < 0) ||
       this.tickCount % AI_TICK_INTERVAL === 0;
     if (shouldRunAI) {
@@ -1250,10 +1283,10 @@ export class OrderAgent {
         qty:                 s.qty,
         minutes_held:        minutesHeld,
         minutes_to_expiry:   minutesToExp,
-        // Real-time price momentum from 30 s tick history
-        price_trend:         this.consecutiveDeclines >= 4 ? 'falling_fast'
-                           : this.consecutiveDeclines >= 2 ? 'falling'
-                           : this.consecutiveDeclines === 1 ? 'slight_dip'
+        // Real-time price momentum from 10 s tick history
+        price_trend:         this.consecutiveDeclines >= 12 ? 'falling_fast'
+                           : this.consecutiveDeclines >= 6 ? 'falling'
+                           : this.consecutiveDeclines >= 3 ? 'slight_dip'
                            : 'stable_or_rising',
         consecutive_declines: this.consecutiveDeclines,
       },
