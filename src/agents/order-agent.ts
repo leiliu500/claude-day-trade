@@ -128,7 +128,7 @@ export interface OrderAgentOutcome {
 }
 
 const TICK_INTERVAL_MS          = 10_000;   // 10 s — fast deterministic checks (was 30 s)
-const AI_TICK_INTERVAL          = 1;        // AI check every tick (10 s) when orchestrator is silent
+const AI_TICK_INTERVAL          = 2;        // AI check every 2nd tick (~20 s) — balances responsiveness with mutex contention
 const FILL_TIMEOUT_MS           = 90_000;   // cancel unfilled limit order after 90 s
 const FILL_STALE_CHECK_MS    = 45_000; // check for adverse price move at 45 s
 const FILL_STALE_ABORT_PCT   = 0.15;  // cancel if current mid dropped > 15% below limit price
@@ -167,6 +167,12 @@ export class OrderAgent {
   private isAIRunning = false;
   /** Last market context received from the orchestrator — reused on self-ticks when no new dispatch. */
   private cachedMarketContext: OrchestratorSuggestion['marketContext'] | null = null;
+  /**
+   * Queued orchestrator suggestion — set when processOrchestratorDecision arrives while
+   * AI is already running. The next AI completion or tick will pick this up and process it
+   * so EXIT/REDUCE signals from the pipeline are never silently dropped.
+   */
+  private pendingSuggestion: OrchestratorSuggestion | null = null;
   /** In-memory trailing stop — synced after each 30s tick, used by stream price handler to avoid DB reads. */
   private currentStop: number | null = null;
   /** In-memory TP level — synced after each 30s tick. */
@@ -824,27 +830,29 @@ export class OrderAgent {
       return;
     }
 
-    // ── Profit-lock exits (stream-level consecutiveDeclines at 5s granularity) ──
-    // Mirrors the 10s tick profit-lock rules but fires faster using stream price direction.
-    const scd = this.streamConsecutiveDeclines;
-    if (this.peakPnlPct >= 35 && pnlPct < this.peakPnlPct * 0.60 && pnlPct > 0 && scd >= 1) {
-      await this._executeExit(`PROFIT_LOCK_EXTREME [stream]: peak=+${this.peakPnlPct.toFixed(1)}%, now=+${pnlPct.toFixed(1)}% (${((pnlPct / this.peakPnlPct) * 100).toFixed(0)}% of peak)`);
+    // ── Profit-lock exits (deterministic — no consecutiveDeclines dependency) ──
+    // Fire purely on peak-erosion % + minimum hold time (tickCount).
+    // Stream handler uses same thresholds as 10s tick for consistency.
+    const streamRetainedPct = this.peakPnlPct > 0 ? (pnlPct / this.peakPnlPct) * 100 : 100;
+
+    if (this.peakPnlPct >= 35 && streamRetainedPct < 60 && pnlPct > 0 && this.tickCount >= 6) {
+      await this._executeExit(`PROFIT_LOCK_EXTREME [stream]: peak=+${this.peakPnlPct.toFixed(1)}%, now=+${pnlPct.toFixed(1)}% (${streamRetainedPct.toFixed(0)}% of peak)`);
       return;
     }
-    if (this.peakPnlPct >= 25 && pnlPct < this.peakPnlPct * 0.40 && pnlPct > 0 && scd >= 2) {
-      await this._executeExit(`PROFIT_LOCK_LARGE [stream]: peak=+${this.peakPnlPct.toFixed(1)}%, now=+${pnlPct.toFixed(1)}% (${((pnlPct / this.peakPnlPct) * 100).toFixed(0)}% of peak)`);
+    if (this.peakPnlPct >= 25 && streamRetainedPct < 50 && pnlPct > 0 && this.tickCount >= 6) {
+      await this._executeExit(`PROFIT_LOCK_LARGE [stream]: peak=+${this.peakPnlPct.toFixed(1)}%, now=+${pnlPct.toFixed(1)}% (${streamRetainedPct.toFixed(0)}% of peak)`);
       return;
     }
-    if (this.peakPnlPct >= 20 && pnlPct < this.peakPnlPct * 0.45 && pnlPct > 0 && scd >= 2) {
-      await this._executeExit(`PROFIT_LOCK_MEDIUM [stream]: peak=+${this.peakPnlPct.toFixed(1)}%, now=+${pnlPct.toFixed(1)}% (${((pnlPct / this.peakPnlPct) * 100).toFixed(0)}% of peak)`);
+    if (this.peakPnlPct >= 20 && streamRetainedPct < 50 && pnlPct > 0 && this.tickCount >= 9) {
+      await this._executeExit(`PROFIT_LOCK_MEDIUM [stream]: peak=+${this.peakPnlPct.toFixed(1)}%, now=+${pnlPct.toFixed(1)}% (${streamRetainedPct.toFixed(0)}% of peak)`);
       return;
     }
-    if (this.peakPnlPct >= 15 && pnlPct < this.peakPnlPct * 0.40 && pnlPct > 0 && scd >= 3) {
-      await this._executeExit(`PROFIT_LOCK_MODERATE [stream]: peak=+${this.peakPnlPct.toFixed(1)}%, now=+${pnlPct.toFixed(1)}% (${((pnlPct / this.peakPnlPct) * 100).toFixed(0)}% of peak)`);
+    if (this.peakPnlPct >= 15 && streamRetainedPct < 45 && pnlPct > 0 && this.tickCount >= 9) {
+      await this._executeExit(`PROFIT_LOCK_MODERATE [stream]: peak=+${this.peakPnlPct.toFixed(1)}%, now=+${pnlPct.toFixed(1)}% (${streamRetainedPct.toFixed(0)}% of peak)`);
       return;
     }
-    if (this.peakPnlPct >= 10 && pnlPct < this.peakPnlPct * 0.35 && pnlPct > 0 && scd >= 4) {
-      await this._executeExit(`PROFIT_LOCK_SMALL [stream]: peak=+${this.peakPnlPct.toFixed(1)}%, now=+${pnlPct.toFixed(1)}% (${((pnlPct / this.peakPnlPct) * 100).toFixed(0)}% of peak)`);
+    if (this.peakPnlPct >= 10 && streamRetainedPct < 40 && pnlPct > 0 && this.tickCount >= 12) {
+      await this._executeExit(`PROFIT_LOCK_SMALL [stream]: peak=+${this.peakPnlPct.toFixed(1)}%, now=+${pnlPct.toFixed(1)}% (${streamRetainedPct.toFixed(0)}% of peak)`);
       return;
     }
 
@@ -1006,62 +1014,62 @@ export class OrderAgent {
       return;
     }
 
-    // ── Profit-lock exits: exit WHILE STILL PROFITABLE when price is declining ──
-    // Goal: maximize profit by locking in gains before they fully erode.
-    // These fire when: (a) price is actively declining AND (b) 55%+ of peak gains surrendered.
+    // ── Profit-lock exits: deterministic — no consecutiveDeclines dependency ──
+    // Fire purely on peak-erosion % + minimum hold time (tickCount).
+    // Catches slow bleed-outs where small bounces reset consecutiveDeclines.
     // Ordered largest peak first so the tightest threshold wins.
-    // Note: consecutiveDeclines thresholds scaled 3x for 10s ticks (same real-time durations as before).
 
-    // Extreme peak (≥35%): lock in with ~30s of decline — don't let exceptional gains erode
-    if (this.peakPnlPct >= 35 && pnlPctNow < this.peakPnlPct * 0.60 && pnlPctNow > 0 && this.consecutiveDeclines >= 3) {
+    const pnlRetainedPct = this.peakPnlPct > 0 ? (pnlPctNow / this.peakPnlPct) * 100 : 100;
+
+    // Extreme peak (≥35%): gave back 40%+ of gains after 60s → lock in
+    if (this.peakPnlPct >= 35 && pnlRetainedPct < 60 && pnlPctNow > 0 && this.tickCount >= 6) {
       await this._executeExit(
-        `PROFIT_LOCK_EXTREME: peak=+${this.peakPnlPct.toFixed(1)}%, now=+${pnlPctNow.toFixed(1)}% (${((pnlPctNow / this.peakPnlPct) * 100).toFixed(0)}% of peak) — locking exceptional profit on decline`,
+        `PROFIT_LOCK_EXTREME: peak=+${this.peakPnlPct.toFixed(1)}%, now=+${pnlPctNow.toFixed(1)}% (${pnlRetainedPct.toFixed(0)}% of peak) — locking exceptional profit`,
       );
       return;
     }
-    // Large peak (≥25%): lock in at ≥10% profit when 60%+ of gains eroded while declining (~60s)
-    if (this.peakPnlPct >= 25 && pnlPctNow < this.peakPnlPct * 0.40 && pnlPctNow > 0 && this.consecutiveDeclines >= 6) {
+    // Large peak (≥25%): gave back 50%+ of gains after 60s
+    if (this.peakPnlPct >= 25 && pnlRetainedPct < 50 && pnlPctNow > 0 && this.tickCount >= 6) {
       await this._executeExit(
-        `PROFIT_LOCK_LARGE: peak=+${this.peakPnlPct.toFixed(1)}%, now=+${pnlPctNow.toFixed(1)}% (${((pnlPctNow / this.peakPnlPct) * 100).toFixed(0)}% of peak) — locking profit while declining`,
+        `PROFIT_LOCK_LARGE: peak=+${this.peakPnlPct.toFixed(1)}%, now=+${pnlPctNow.toFixed(1)}% (${pnlRetainedPct.toFixed(0)}% of peak) — locking profit`,
       );
       return;
     }
-    // Medium peak (≥20%): lock in while profitable when 55%+ of gains eroded while declining (~60s)
-    if (this.peakPnlPct >= 20 && pnlPctNow < this.peakPnlPct * 0.45 && pnlPctNow > 0 && this.consecutiveDeclines >= 6) {
+    // Medium peak (≥20%): gave back 50%+ of gains after 90s
+    if (this.peakPnlPct >= 20 && pnlRetainedPct < 50 && pnlPctNow > 0 && this.tickCount >= 9) {
       await this._executeExit(
-        `PROFIT_LOCK_MEDIUM: peak=+${this.peakPnlPct.toFixed(1)}%, now=+${pnlPctNow.toFixed(1)}% (${((pnlPctNow / this.peakPnlPct) * 100).toFixed(0)}% of peak) — locking profit while declining`,
+        `PROFIT_LOCK_MEDIUM: peak=+${this.peakPnlPct.toFixed(1)}%, now=+${pnlPctNow.toFixed(1)}% (${pnlRetainedPct.toFixed(0)}% of peak) — locking profit`,
       );
       return;
     }
-    // Moderate peak (≥15%): lock in while profitable when 60%+ of gains eroded while falling (~90s)
-    if (this.peakPnlPct >= 15 && pnlPctNow < this.peakPnlPct * 0.40 && pnlPctNow > 0 && this.consecutiveDeclines >= 9) {
+    // Moderate peak (≥15%): gave back 55%+ of gains after 90s
+    if (this.peakPnlPct >= 15 && pnlRetainedPct < 45 && pnlPctNow > 0 && this.tickCount >= 9) {
       await this._executeExit(
-        `PROFIT_LOCK_MODERATE: peak=+${this.peakPnlPct.toFixed(1)}%, now=+${pnlPctNow.toFixed(1)}% (${((pnlPctNow / this.peakPnlPct) * 100).toFixed(0)}% of peak) — locking profit while falling`,
+        `PROFIT_LOCK_MODERATE: peak=+${this.peakPnlPct.toFixed(1)}%, now=+${pnlPctNow.toFixed(1)}% (${pnlRetainedPct.toFixed(0)}% of peak) — locking profit`,
       );
       return;
     }
-    // Small peak (≥10%): lock in while profitable when 65%+ of gains eroded while falling (~120s)
-    if (this.peakPnlPct >= 10 && pnlPctNow < this.peakPnlPct * 0.35 && pnlPctNow > 0 && this.consecutiveDeclines >= 12) {
+    // Small peak (≥10%): gave back 60%+ of gains after 120s
+    if (this.peakPnlPct >= 10 && pnlRetainedPct < 40 && pnlPctNow > 0 && this.tickCount >= 12) {
       await this._executeExit(
-        `PROFIT_LOCK_SMALL: peak=+${this.peakPnlPct.toFixed(1)}%, now=+${pnlPctNow.toFixed(1)}% (${((pnlPctNow / this.peakPnlPct) * 100).toFixed(0)}% of peak) — locking remaining profit`,
+        `PROFIT_LOCK_SMALL: peak=+${this.peakPnlPct.toFixed(1)}%, now=+${pnlPctNow.toFixed(1)}% (${pnlRetainedPct.toFixed(0)}% of peak) — locking remaining profit`,
       );
       return;
     }
 
     // ── Mature position profit protection ──────────────────────────────────────
-    // After 40+ min, option theta decay accelerates.  A profitable position that starts
-    // declining should be exited — the odds of further improvement shrink fast.
+    // After 40+ min, option theta decay accelerates. Lock in profits — no decline dependency.
     const minutesHeld = Math.floor((Date.now() - new Date(this.openedAt).getTime()) / 60_000);
-    if (minutesHeld >= 40 && pnlPctNow >= 15 && this.consecutiveDeclines >= 6) {
+    if (minutesHeld >= 40 && pnlPctNow >= 15 && pnlPctNow < this.peakPnlPct * 0.85) {
       await this._executeExit(
-        `MATURE_PROFIT_EXIT: held=${minutesHeld}min, pnl=+${pnlPctNow.toFixed(1)}%, peak=+${this.peakPnlPct.toFixed(1)}% — protecting mature profit on declining price`,
+        `MATURE_PROFIT_EXIT: held=${minutesHeld}min, pnl=+${pnlPctNow.toFixed(1)}%, peak=+${this.peakPnlPct.toFixed(1)}% — protecting mature profit`,
       );
       return;
     }
-    // Held 30+ min with a meaningful gain but any weakness — don't let theta decay it away
-    if (minutesHeld >= 30 && pnlPctNow >= 20 && this.consecutiveDeclines >= 6) {
+    // Held 30+ min with +20% — lock in if any erosion from peak
+    if (minutesHeld >= 30 && pnlPctNow >= 20 && pnlPctNow < this.peakPnlPct * 0.85) {
       await this._executeExit(
-        `MATURE_PROFIT_EXIT: held=${minutesHeld}min, pnl=+${pnlPctNow.toFixed(1)}%, peak=+${this.peakPnlPct.toFixed(1)}% — locking +20% profit after 30 min on decline`,
+        `MATURE_PROFIT_EXIT: held=${minutesHeld}min, pnl=+${pnlPctNow.toFixed(1)}%, peak=+${this.peakPnlPct.toFixed(1)}% — locking +20% profit after 30 min`,
       );
       return;
     }
@@ -1163,6 +1171,8 @@ export class OrderAgent {
       forceAI ||
       this.consecutiveDeclines >= 3 ||
       (this.peakPnlPct > 0 && pnlPctNow < 0) ||
+      (this.peakPnlPct >= 10 && pnlPctNow < this.peakPnlPct * 0.55) ||   // large peak erosion — urgent AI check
+      pnlPctNow <= -8 ||                                                   // deep loss — urgent AI check
       this.tickCount % AI_TICK_INTERVAL === 0;
     if (shouldRunAI) {
       // Fire-and-forget: do NOT await AI so _monitorRunning is released immediately.
@@ -1194,7 +1204,14 @@ export class OrderAgent {
     // Without this, two calls can both reach _executeReduce before either changes the phase,
     // causing duplicate reduce orders to be submitted to Alpaca.
     if (this.isAIRunning) {
-      console.log(`[OrderAgent ${this.cfg.decision.ticker}] AI already running — skipping concurrent call`);
+      // Queue orchestrator suggestions so they are never silently dropped.
+      // Pipeline EXIT/REDUCE signals are higher priority than routine periodic checks.
+      if (suggestion) {
+        this.pendingSuggestion = suggestion;
+        console.log(`[OrderAgent ${this.cfg.decision.ticker}] AI already running — queued ${suggestion.decisionType} for immediate processing after current AI completes`);
+      } else {
+        console.log(`[OrderAgent ${this.cfg.decision.ticker}] AI already running — skipping periodic tick`);
+      }
       return null;
     }
     this.isAIRunning = true;
@@ -1363,6 +1380,18 @@ export class OrderAgent {
     }
     } finally {
       this.isAIRunning = false;
+
+      // Drain queued orchestrator suggestion that arrived while AI was running.
+      // This ensures pipeline EXIT/REDUCE signals are never silently dropped.
+      const queued = this.pendingSuggestion;
+      this.pendingSuggestion = null;
+      if (queued && this.phase === 'MONITORING') {
+        console.log(
+          `[OrderAgent ${this.cfg.decision.ticker}] Processing queued ${queued.decisionType} suggestion`,
+        );
+        // Run asynchronously but don't block the finally clause
+        void this._runAIDecision(queued);
+      }
     }
   }
 

@@ -79,14 +79,14 @@ You receive the following — never raw signal timeframes, DMI data, or market c
 
 ## Deterministic Exit Rules — Already Fired Before You Are Called
 The system fires these exits deterministically (no AI needed) before your evaluation:
-- **Rapid decline**: 3+ consecutive 30s price drops AND P&L ≤ -6% → auto EXIT
-- **Profit lock (extreme peak)**: peak ≥ +35% AND current < 60% of peak AND still profitable AND 1+ decline → auto EXIT (don't let exceptional gains erode)
-- **Profit lock (large peak)**: peak ≥ +25% AND current < 40% of peak AND still profitable AND 2+ declines → auto EXIT while profitable
-- **Profit lock (medium peak)**: peak ≥ +20% AND current < 45% of peak AND still profitable AND 2+ declines → auto EXIT while profitable
-- **Profit lock (moderate peak)**: peak ≥ +15% AND current < 40% of peak AND still profitable AND 3+ declines → auto EXIT while profitable
-- **Profit lock (small peak)**: peak ≥ +10% AND current < 35% of peak AND still profitable AND 4+ declines → auto EXIT while profitable
-- **Mature profit (40 min)**: held ≥ 40 min AND P&L ≥ +15% AND 2+ declines → auto EXIT (theta decay; lock in mature profit)
-- **Mature profit (30 min)**: held ≥ 30 min AND P&L ≥ +20% AND 2+ declines → auto EXIT (protect +20% after 30 min)
+- **Rapid decline**: 9+ consecutive 10s price drops AND P&L ≤ -6% → auto EXIT
+- **Profit lock (extreme peak)**: peak ≥ +35% AND retained < 60% of peak AND still profitable AND held ≥ 60s → auto EXIT
+- **Profit lock (large peak)**: peak ≥ +25% AND retained < 50% of peak AND still profitable AND held ≥ 60s → auto EXIT
+- **Profit lock (medium peak)**: peak ≥ +20% AND retained < 50% of peak AND still profitable AND held ≥ 90s → auto EXIT
+- **Profit lock (moderate peak)**: peak ≥ +15% AND retained < 45% of peak AND still profitable AND held ≥ 90s → auto EXIT
+- **Profit lock (small peak)**: peak ≥ +10% AND retained < 40% of peak AND still profitable AND held ≥ 120s → auto EXIT
+- **Mature profit (40 min)**: held ≥ 40 min AND P&L ≥ +15% AND P&L < 85% of peak → auto EXIT (theta decay)
+- **Mature profit (30 min)**: held ≥ 30 min AND P&L ≥ +20% AND P&L < 85% of peak → auto EXIT
 - **Peak erosion**: peak ≥ +20% AND current P&L ≤ +10% → auto EXIT
 - **Peak gone**: peak ≥ +12% AND current P&L ≤ +4% → auto EXIT
 - **Peak reversal**: peak ≥ +10% AND current P&L ≤ -3% → auto EXIT
