@@ -15,11 +15,11 @@ function computeConfidence(signal: SignalPayload, option: OptionEvaluation): Con
   const tfs = signal.timeframes;
   const [ltf, mtf, htf] = tfs;
   if (!ltf || !mtf || !htf) {
-    return { base: 0.40, diSpreadBonus: 0, adxBonus: 0, diCrossBonus: 0, alignmentBonus: 0, tdAdjustment: 0, obvBonus: 0, vwapBonus: 0, oiVolumeBonus: 0, pricePositionAdjustment: 0, adxMaturityPenalty: 0, structureBonus: 0, orbBonus: 0, total: 0.40 };
+    return { base: 0.35, diSpreadBonus: 0, adxBonus: 0, diCrossBonus: 0, alignmentBonus: 0, tdAdjustment: 0, obvBonus: 0, vwapBonus: 0, oiVolumeBonus: 0, pricePositionAdjustment: 0, adxMaturityPenalty: 0, structureBonus: 0, orbBonus: 0, total: 0.35 };
   }
 
-  // Base: slight bullish bias
-  const base = signal.direction === 'bullish' ? 0.45 : 0.40;
+  // Base: slight bullish bias (lowered to prevent redundant-indicator inflation)
+  const base = signal.direction === 'bullish' ? 0.40 : 0.35;
 
   // DI spread bonus — signed spread aligned with signal direction, scaled -0.15..+0.15
   // Positive = DI dominance confirms signal direction (bonus)
@@ -56,17 +56,16 @@ function computeConfidence(signal: SignalPayload, option: OptionEvaluation): Con
 
   // Alignment bonus
   const alignmentBonusMap: Record<string, number> = {
-    all_aligned: 0.08,
-    htf_mtf_aligned: 0.04,
+    all_aligned: 0.06,
+    htf_mtf_aligned: 0.03,
     mtf_ltf_aligned: 0.02,
     mixed: 0,
   };
   const alignmentBonus = alignmentBonusMap[signal.alignment] ?? 0;
 
-  // TD adjustment — SECONDARY indicator. Late-stage confirming setups (7-9) are quality entries;
-  // opposing completed setups are mild exhaustion signals. TD does NOT mean immediate reversal —
-  // it is supplementary context, not a primary decision driver. Penalties are intentionally small
-  // so TD alone cannot push a good-quality signal below the entry threshold.
+  // TD adjustment — TERTIARY indicator with minimal weight. Late-stage confirming setups (7-9)
+  // provide minor support; opposing completed setups are weak exhaustion signals. TD does NOT
+  // mean immediate reversal — it is background context, not a decision driver.
   let tdAdjustment = 0;
   for (const tf of tfs) {
     const setup = tf.td.setup;
@@ -74,39 +73,38 @@ function computeConfidence(signal: SignalPayload, option: OptionEvaluation): Con
     const opposingDir = signal.direction === 'bullish' ? 'sell' : 'buy';
 
     if (setup.completed) {
-      // Mild penalty if opposing setup just completed (9-bar exhaustion on wrong side)
-      if (setup.completedDirection === opposingDir) tdAdjustment -= 0.02;
+      // Tiny penalty if opposing setup just completed (9-bar exhaustion on wrong side)
+      if (setup.completedDirection === opposingDir) tdAdjustment -= 0.01;
     } else if (setup.direction === confirmDir) {
-      // Confirming setup in progress — reward late-stage (7-9) more than early (1-4)
+      // Confirming setup in progress — minor reward for late-stage only
       if (setup.count >= 7) {
-        tdAdjustment += 0.02; // Late-stage: strong momentum, high-quality entry window
+        tdAdjustment += 0.01; // Late-stage: strong momentum
       } else if (setup.count >= 5) {
-        tdAdjustment += 0.01; // Mid-stage: decent momentum
-      } else if (setup.count >= 1) {
-        tdAdjustment += 0.005; // Early-stage: forming, minor support
+        tdAdjustment += 0.005; // Mid-stage: decent momentum
       }
+      // Early-stage (1-4): no bonus — too early to matter
     } else if (setup.direction === opposingDir && setup.count >= 7) {
-      // Opposing setup near completion → mild caution
-      tdAdjustment -= 0.01;
+      // Opposing setup near completion → tiny caution
+      tdAdjustment -= 0.005;
     }
   }
-  tdAdjustment = Math.max(-0.04, Math.min(0.05, tdAdjustment));
+  tdAdjustment = Math.max(-0.015, Math.min(0.02, tdAdjustment));
 
   // OBV bonus — HTF and MTF only; LTF OBV is too noisy to score
-  // +0.05 per TF whose OBV trend matches signal direction (max +0.10)
-  // -0.03 per TF showing OBV divergence against signal direction (clamped -0.06)
-  // Note: OBV divergence penalty is intentionally light — confidence score already
-  // captures it, and the orchestrator uses it for risk_notes only (no confirmation gate).
+  // +0.03 per TF whose OBV trend matches signal direction (max +0.06)
+  // -0.02 per TF showing OBV divergence against signal direction (clamped -0.04)
+  // OBV trend confirmation is largely redundant with DI spread in trending markets,
+  // so kept modest to prevent confidence inflation when all indicators agree.
   let obvBonus = 0;
   if (signal.direction !== 'neutral') {
     for (const tf of [htf, mtf]) {
-      if (tf.obv.trend === signal.direction) obvBonus += 0.05;
+      if (tf.obv.trend === signal.direction) obvBonus += 0.03;
       const badDivergence =
         (signal.direction === 'bullish' && tf.obv.divergence === 'bearish') ||
         (signal.direction === 'bearish' && tf.obv.divergence === 'bullish');
-      if (badDivergence) obvBonus -= 0.03;
+      if (badDivergence) obvBonus -= 0.02;
     }
-    obvBonus = Math.max(-0.06, Math.min(0.10, obvBonus));
+    obvBonus = Math.max(-0.04, Math.min(0.06, obvBonus));
   }
 
   // VWAP bonus — HTF and MTF direction alignment + HTF band extension penalty.

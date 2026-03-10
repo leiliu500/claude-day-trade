@@ -89,8 +89,11 @@ function computeServerConfirmationCount(
     // After these, re-entry must rebuild conviction from scratch (priorCount=0).
     // REVERSE already resets via direction flip on the next cycle; EXIT/REDUCE do not.
     if (d.decisionType === 'EXIT' || d.decisionType === 'REDUCE_EXPOSURE') break;
+    // NEW_ENTRY / ADD_POSITION means an order was placed — the confirmation cycle is
+    // complete and the next cycle must start fresh at 0.
+    if (d.decisionType === 'NEW_ENTRY' || d.decisionType === 'ADD_POSITION') break;
     // Any remaining decision with a positive count is authoritative: return it as the prior count.
-    // This covers NEW_ENTRY, CONFIRM_HOLD, ADD_POSITION, and correctly-stored intermediate WAITs.
+    // This covers CONFIRM_HOLD and correctly-stored intermediate WAITs.
     if (d.confirmationCount > 0) return d.confirmationCount;
     // confirmationCount === 0: pure OBSERVE stage or legacy pre-fix data — prior count is 0.
     break;
@@ -324,7 +327,7 @@ export class DecisionOrchestrator {
     // blocked because WAIT decisions never advance the count.
     let isStage1ObserveWait = false;
     if (rawOutput.decision_type === 'NEW_ENTRY' && rawOutput.should_execute) {
-      const overrideOk = analysis.confidence >= 0.85 && signal.alignment === 'all_aligned';
+      const overrideOk = analysis.confidence >= 0.92 && signal.alignment === 'all_aligned';
       const lastEvalWasWin = context.recentEvaluations.length > 0 &&
         context.recentEvaluations[0].outcome === 'WIN' &&
         (context.recentEvaluations[0].pnlTotal ?? 0) > 0;
@@ -334,7 +337,7 @@ export class DecisionOrchestrator {
       if (!overrideOk && !postWinRelaxOk && priorCount < 1) {
         rawOutput.decision_type = 'WAIT';
         rawOutput.should_execute = false;
-        rawOutput.reasoning = `[GATE OVERRIDE] Confirmation gate: priorCount=${priorCount} — Stage-1 OBSERVE, building conviction (count will advance to 1). Override requires confidence>=0.85 + all_aligned, or post-WIN relaxation (confidence>=0.72 + non-mixed alignment). ${rawOutput.reasoning}`;
+        rawOutput.reasoning = `[GATE OVERRIDE] Confirmation gate: priorCount=${priorCount} — Stage-1 OBSERVE, building conviction (count will advance to 1). Override requires confidence>=0.92 + all_aligned, or post-WIN relaxation (confidence>=0.72 + non-mixed alignment). ${rawOutput.reasoning}`;
         isStage1ObserveWait = true; // count advances to 1 so next cycle can enter at Stage-2
         console.log(`[DecisionOrchestrator] NEW_ENTRY blocked by confirmation gate (Stage-1 OBSERVE, priorCount=${priorCount}, confidence=${analysis.confidence.toFixed(2)}, alignment=${signal.alignment}, lastEvalWasWin=${lastEvalWasWin})`);
       } else if (postWinRelaxOk && priorCount < 1 && !overrideOk) {
@@ -365,16 +368,18 @@ export class DecisionOrchestrator {
     }
 
     // Server-side confirmation count — computed after all gate overrides.
-    // Only add +1 when the final decision is an actual confirmation OR a Stage-1 OBSERVE WAIT.
-    // Stage-1 OBSERVE WAITs advance count to 1 so the next cycle sees priorCount=1 and can enter
-    // at Stage-2.  Hard-gate WAITs (market closed, liquidity fail, confidence below threshold,
+    // Only add +1 when the final decision is a pre-entry conviction advance (WAIT stages) or
+    // Stage-1 OBSERVE.  CONFIRM_HOLD means position is already open — the confirmation counter
+    // is irrelevant post-entry, so it stays at 0 to keep the dashboard clean.
+    // Hard-gate WAITs (market closed, liquidity fail, confidence below threshold,
     // EOD, FOMC) do NOT advance count — those represent genuine blocking conditions, not observations.
-    const isConfirmDecision = rawOutput.decision_type === 'NEW_ENTRY' ||
-                              rawOutput.decision_type === 'CONFIRM_HOLD' ||
-                              rawOutput.decision_type === 'ADD_POSITION' ||
-                              isConvictionAdvanceWait || // covers direct AI WAITs (Stage-1 and Stage-N)
+    // NEW_ENTRY / ADD_POSITION mean an order is placed — the confirmation cycle is complete.
+    // Reset count to 0 so the dashboard shows a clean slate (next cycle starts fresh).
+    const isConvictionDecision = isConvictionAdvanceWait || // covers direct AI WAITs (Stage-1 and Stage-N)
                               isStage1ObserveWait; // covers Stage-1 gate: AI NEW_ENTRY converted to WAIT by server
-    const serverCount = priorCount + (isConfirmDecision ? 1 : 0);
+    const serverCount = isEntryDecision ? 0
+      : rawOutput.decision_type === 'CONFIRM_HOLD' ? 0
+      : Math.min(3, priorCount + (isConvictionDecision ? 1 : 0));
     if (serverCount !== rawOutput.confirmation_count) {
       console.log(`[DecisionOrchestrator] Overriding AI count (${rawOutput.confirmation_count}) with server count (${serverCount})`);
       rawOutput.confirmation_count = serverCount;
