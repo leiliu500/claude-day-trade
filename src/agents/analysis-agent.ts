@@ -94,7 +94,9 @@ function computeConfidence(signal: SignalPayload, option: OptionEvaluation): Con
 
   // OBV bonus — HTF and MTF only; LTF OBV is too noisy to score
   // +0.05 per TF whose OBV trend matches signal direction (max +0.10)
-  // -0.06 per TF showing OBV divergence against signal direction (clamped -0.10)
+  // -0.03 per TF showing OBV divergence against signal direction (clamped -0.06)
+  // Note: OBV divergence penalty is intentionally light — confidence score already
+  // captures it, and the orchestrator uses it for risk_notes only (no confirmation gate).
   let obvBonus = 0;
   if (signal.direction !== 'neutral') {
     for (const tf of [htf, mtf]) {
@@ -102,9 +104,9 @@ function computeConfidence(signal: SignalPayload, option: OptionEvaluation): Con
       const badDivergence =
         (signal.direction === 'bullish' && tf.obv.divergence === 'bearish') ||
         (signal.direction === 'bearish' && tf.obv.divergence === 'bullish');
-      if (badDivergence) obvBonus -= 0.06;
+      if (badDivergence) obvBonus -= 0.03;
     }
-    obvBonus = Math.max(-0.10, Math.min(0.10, obvBonus));
+    obvBonus = Math.max(-0.06, Math.min(0.10, obvBonus));
   }
 
   // VWAP bonus — HTF and MTF direction alignment + HTF band extension penalty.

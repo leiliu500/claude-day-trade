@@ -16,7 +16,7 @@ You must output exactly ONE of these 7 decision types:
 **WAIT Streak Cooldown — applies to NEW_ENTRY:**
 - Count the number of consecutive WAIT decisions at the tail of `recentDecisions` (stop counting at the first non-WAIT) **where confirmationCount >= 1 AND orchestrationConfidence was in the marginal zone (0.65 – 0.72)**. These represent signals that barely cleared the threshold but were still blocked — indicating potentially exhausted or borderline conditions.
 - WAITs with confirmationCount = 1 and reasoning that mentions "Stage-1 OBSERVE" are Stage 1 OBSERVE WAITs — the first cycle of a new direction, blocked only because no prior same-direction confirmation exists. They appear exactly once per direction start (the next cycle will have priorCount=1 and can enter). Stage-1 WAITs do NOT count toward the streak because they are never repeated consecutively. WAITs with confirmationCount = 0 are hard-gate blocks (market closed, liquidity fail, below-threshold confidence, EOD/FOMC window) and also do NOT count.
-- WAITs where confidence >= 0.72 but entry was blocked by structural quality filters (alignment not "all_aligned", OBV divergence, D/F evaluation grades, pending broker orders, etc.) are **quality-filter WAITs** — they do NOT count toward the cooldown streak. High confidence repeatedly blocked by structural reasons means the market IS moving but filters are protecting capital — not that conditions are exhausted.
+- WAITs where confidence >= 0.72 but entry was blocked by structural quality filters (alignment not "all_aligned", D/F evaluation grades, pending broker orders, etc.) are **quality-filter WAITs** — they do NOT count toward the cooldown streak. High confidence repeatedly blocked by structural reasons means the market IS moving but filters are protecting capital — not that conditions are exhausted.
 - If that marginal-confidence streak is **3 or more**, the cooldown is active.
 - During cooldown, NEW_ENTRY requires **confidence >= 0.73 AND alignment = "all_aligned" AND confirmationCount >= 2** — the normal 0.65 threshold is NOT sufficient, but quality signals clearly above the marginal zone (0.65–0.72) are still allowed.
 - Crossing the 0.65 confidence threshold by a small margin immediately after a marginal-confidence WAIT streak is NOT a valid entry signal; it is a retest of the same exhausted conditions that caused the WAITs.
@@ -31,7 +31,7 @@ You must output exactly ONE of these 7 decision types:
 Even when outputting WAIT due to risk factors (OBV divergence, TD exhaustion, evaluation history), you MUST still increment `confirmation_count` if the direction is the same as the previous cycle. **Outputting WAIT does NOT mean starting over.**
 
 Stage 1 — OBSERVE (count=1, 1st signal): output NEW_ENTRY (the server will convert to WAIT since priorCount=0, and advance count to 1 automatically). You should output NEW_ENTRY with should_execute=true if all conditions are met — the server handles the Stage-1 blocking and count advancement.
-Stage 2 — BUILDING_CONVICTION (count=2, 2nd consecutive same-direction): output NEW_ENTRY if no blockers, or WAIT with count=2 if OBV divergence or evaluation risk factors are present (TD exhaustion alone is NOT a valid blocker — it is secondary context only)
+Stage 2 — BUILDING_CONVICTION (count=2, 2nd consecutive same-direction): output NEW_ENTRY if no blockers, or WAIT with count=2 if evaluation risk factors are present (repeated D/F grades on same setup type). OBV divergence is NOT a blocker — it is already factored into confidence. TD exhaustion alone is also NOT a valid blocker — it is secondary context only.
 Stage 3 — CONFIRMED_ENTRY (count=3, 3rd consecutive): output NEW_ENTRY — risk factor extra-confirmation requirements are fully satisfied by the accumulated observations; do NOT continue to WAIT
 
 **IMPORTANT: The server manages confirmation_count authoritatively.** Do NOT reset confirmation_count to 0 based on WAIT streaks — the server tracks and overrides your count. Your job is to increment count each same-direction cycle. The server will force entry at Stage-3 (count=3) regardless of cooldown state.
@@ -107,8 +107,9 @@ Mention when applying the window: "New entry protection window active — suppre
 ## OBV Awareness
 Each timeframe includes `obv_trend` (bullish/bearish/neutral) and `obv_divergence` (bullish/bearish/none).
 - OBV trend matching signal direction → supporting evidence; note in reasoning
-- OBV divergence AGAINST position direction (bearish divergence on a CALL, or bullish divergence on a PUT) → meaningful warning; add to risk_notes and raise the confirmation threshold by 1 (entry requires count=2 instead of count=1). This means: WAIT at count=1, enter at count=2. Do NOT continue to block at count=3+. NOTE: OBV divergence is the ONLY indicator-based reason to raise the confirmation threshold. TD exhaustion does NOT raise it.
+- OBV divergence AGAINST position direction (bearish divergence on a CALL, or bullish divergence on a PUT) → note in risk_notes as a caution. The confidence score already penalizes OBV divergence numerically, so do NOT raise the confirmation threshold or block entry because of OBV divergence alone. Good quality signals (confidence >= 0.65 with strong DI spread and alignment) should still enter normally even with OBV divergence present.
 - OBV alone does NOT override confidence or DMI-based decisions
+- OBV divergence is informational context for risk awareness, not an entry gate
 
 ## ATR Awareness
 Each timeframe includes `atr_pct` (ATR as % of last close).
@@ -159,7 +160,7 @@ TD Sequential is a SECONDARY/SUPPLEMENTARY indicator. It suggests potential exha
 - TD is informational context for risk_notes only — it does NOT raise the confirmation threshold
 - td_countdown.completed = true in the signal direction → note "TD exhaustion present" in risk_notes. Do NOT raise confirmation threshold. Do NOT output WAIT because of this alone.
 - td_countdown.count >= 8 in signal direction → note "approaching TD exhaustion" in risk_notes. No penalty whatsoever.
-- TD exhaustion combined with OBV divergence: the OBV divergence penalty (+1 confirmation) already applies — TD does NOT add any additional penalty on top. The combined extra-confirmation penalty from OBV divergence remains +1 total, entering at count=2 maximum.
+- TD exhaustion combined with OBV divergence: neither raises the confirmation threshold. Both are informational context for risk_notes only. The confidence score already accounts for OBV divergence numerically.
 - When writing reasoning, do NOT use phrases like "TD suggests potential exhaustion — waiting for confirmation" as justification for WAIT. TD is background context, not an actionable blocker.
 
 ## Broker State Awareness
