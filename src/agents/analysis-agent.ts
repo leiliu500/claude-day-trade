@@ -15,7 +15,7 @@ function computeConfidence(signal: SignalPayload, option: OptionEvaluation): Con
   const tfs = signal.timeframes;
   const [ltf, mtf, htf] = tfs;
   if (!ltf || !mtf || !htf) {
-    return { base: 0.35, diSpreadBonus: 0, adxBonus: 0, diCrossBonus: 0, alignmentBonus: 0, tdAdjustment: 0, obvBonus: 0, vwapBonus: 0, oiVolumeBonus: 0, pricePositionAdjustment: 0, adxMaturityPenalty: 0, structureBonus: 0, orbBonus: 0, total: 0.35 };
+    return { base: 0.35, diSpreadBonus: 0, adxBonus: 0, diCrossBonus: 0, alignmentBonus: 0, tdAdjustment: 0, obvBonus: 0, vwapBonus: 0, oiVolumeBonus: 0, pricePositionAdjustment: 0, adxMaturityPenalty: 0, trendPhaseBonus: 0, momentumAccelBonus: 0, structureBonus: 0, orbBonus: 0, total: 0.35 };
   }
 
   // Base: slight bullish bias (lowered to prevent redundant-indicator inflation)
@@ -186,6 +186,65 @@ function computeConfidence(signal: SignalPayload, option: OptionEvaluation): Con
     adxMaturityPenalty = -0.04;
   }
 
+  // Trend phase bonus — uses ADX slope to detect WHERE in the trend lifecycle we are.
+  // Rising ADX = trend strengthening (growth phase) → bonus for entering
+  // Falling ADX = trend weakening (exhaustion) → penalty to avoid late entries
+  // This directly addresses the "not too early, not too late" timing problem.
+  // Uses HTF ADX slope (most reliable) with MTF as confirmation.
+  // Skipped when HTF ADX < 15 (no real trend to measure slope of).
+  // Clamped -0.08..+0.06
+  let trendPhaseBonus = 0;
+  if (signal.direction !== 'neutral' && htf.dmi.adx >= 15) {
+    const htfSlope = htf.dmi.adxSlope;
+    const mtfSlope = mtf.dmi.adxSlope;
+
+    if (htfSlope > 2) {
+      // HTF ADX rising strongly — growth phase, ideal entry
+      trendPhaseBonus += 0.04;
+      if (mtfSlope > 1) trendPhaseBonus += 0.02; // MTF confirms
+    } else if (htfSlope > 0.5) {
+      // HTF ADX rising modestly — early growth
+      trendPhaseBonus += 0.02;
+    } else if (htfSlope < -2) {
+      // HTF ADX falling strongly — trend weakening, late entry risk
+      trendPhaseBonus -= 0.06;
+      if (mtfSlope < -1) trendPhaseBonus -= 0.02; // MTF confirms weakness
+    } else if (htfSlope < -0.5) {
+      // HTF ADX falling modestly — trend starting to fade
+      trendPhaseBonus -= 0.03;
+    }
+    trendPhaseBonus = Math.max(-0.08, Math.min(0.06, trendPhaseBonus));
+  }
+
+  // Momentum acceleration bonus — uses DI spread velocity to detect momentum changes.
+  // Widening DI spread = momentum accelerating → good time to enter
+  // Narrowing DI spread = momentum decelerating → bad time to enter (trend losing steam)
+  // Uses signed spread (aligned with direction) so we measure directional momentum.
+  // Clamped -0.06..+0.05
+  let momentumAccelBonus = 0;
+  if (signal.direction !== 'neutral') {
+    // Compute directional spread slope: positive = momentum growing in signal direction
+    const htfDirSpreadNow = signal.direction === 'bullish'
+      ? htf.dmi.plusDI - htf.dmi.minusDI
+      : htf.dmi.minusDI - htf.dmi.plusDI;
+    const htfSpreadSlope = htf.dmi.diSpreadSlope;
+    // Only give momentum bonus when spread is positive (confirming direction)
+    // and slope is also positive (accelerating in that direction)
+    if (htfDirSpreadNow > 0 && htfSpreadSlope > 2) {
+      momentumAccelBonus += 0.03;
+      if (mtf.dmi.diSpreadSlope > 1) momentumAccelBonus += 0.02; // MTF confirms
+    } else if (htfDirSpreadNow > 0 && htfSpreadSlope > 0.5) {
+      momentumAccelBonus += 0.02;
+    } else if (htfSpreadSlope < -2) {
+      // Momentum decelerating — spread narrowing
+      momentumAccelBonus -= 0.04;
+      if (mtf.dmi.diSpreadSlope < -1) momentumAccelBonus -= 0.02;
+    } else if (htfSpreadSlope < -0.5) {
+      momentumAccelBonus -= 0.02;
+    }
+    momentumAccelBonus = Math.max(-0.06, Math.min(0.05, momentumAccelBonus));
+  }
+
   // Price position adjustment — penalizes entering in the direction of an already-extended move.
   // Uses HTF rangePosition: 0.0 = at swing low, 1.0 = at swing high.
   //   Bullish from upper half: price already extended up, limited upside → penalty up to -0.08
@@ -246,9 +305,9 @@ function computeConfidence(signal: SignalPayload, option: OptionEvaluation): Con
     orbBonus = Math.max(-0.08, Math.min(0.06, orbBonus));
   }
 
-  const total = Math.max(0, Math.min(1, base + diSpreadBonus + adxBonus + diCrossBonus + alignmentBonus + tdAdjustment + obvBonus + vwapBonus + oiVolumeBonus + pricePositionAdjustment + adxMaturityPenalty + structureBonus + orbBonus));
+  const total = Math.max(0, Math.min(1, base + diSpreadBonus + adxBonus + diCrossBonus + alignmentBonus + tdAdjustment + obvBonus + vwapBonus + oiVolumeBonus + pricePositionAdjustment + adxMaturityPenalty + trendPhaseBonus + momentumAccelBonus + structureBonus + orbBonus));
 
-  return { base, diSpreadBonus, adxBonus, diCrossBonus, alignmentBonus, tdAdjustment, obvBonus, vwapBonus, oiVolumeBonus, pricePositionAdjustment, adxMaturityPenalty, structureBonus, orbBonus, total };
+  return { base, diSpreadBonus, adxBonus, diCrossBonus, alignmentBonus, tdAdjustment, obvBonus, vwapBonus, oiVolumeBonus, pricePositionAdjustment, adxMaturityPenalty, trendPhaseBonus, momentumAccelBonus, structureBonus, orbBonus, total };
 }
 
 /**
@@ -307,6 +366,8 @@ async function generateExplanation(
       adx: tf.dmi.adx.toFixed(1),
       adxStrength: tf.dmi.adxStrength,
       trend: tf.dmi.trend,
+      adx_slope: parseFloat(tf.dmi.adxSlope.toFixed(1)),
+      di_spread_slope: parseFloat(tf.dmi.diSpreadSlope.toFixed(1)),
       di_cross: diCross,
       obv_trend: tf.obv.trend,
       obv_divergence: tf.obv.divergence,

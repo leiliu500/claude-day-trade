@@ -10,6 +10,8 @@ export interface ConfidenceBreakdown {
   oiVolumeBonus: number;           // 0..0.05 — triggered when option volume is extremely high
   pricePositionAdjustment: number; // -0.08..0 — penalty for trading against range position
   adxMaturityPenalty: number;      // -0.08..0 — penalty when HTF ADX has been above 25 for many bars
+  trendPhaseBonus: number;         // -0.08..+0.06 — ADX slope: rising=growth phase bonus, falling=late phase penalty
+  momentumAccelBonus: number;      // -0.06..+0.05 — DI spread velocity: widening=accelerating, narrowing=decelerating
   structureBonus: number;          // -0.08..+0.06 — prior day levels (PDH/PDL) alignment bonus/penalty
   orbBonus: number;                // -0.08..+0.06 — opening range breakout direction alignment
   total: number;                   // clamped 0..1

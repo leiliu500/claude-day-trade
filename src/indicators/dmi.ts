@@ -9,7 +9,7 @@ import type { DMIResult } from '../types/indicators.js';
  */
 export function computeDMI(bars: OHLCVBar[], period = 14, skipSessionGaps = false): DMIResult {
   if (bars.length < period + 1) {
-    return { plusDI: 0, minusDI: 0, adx: 0, trend: 'neutral', adxStrength: 'weak', crossedUp: false, crossedDown: false, adxBarsAbove25: 0 };
+    return { plusDI: 0, minusDI: 0, adx: 0, trend: 'neutral', adxStrength: 'weak', crossedUp: false, crossedDown: false, adxBarsAbove25: 0, adxSlope: 0, diSpreadSlope: 0 };
   }
 
   const n = bars.length;
@@ -101,5 +101,23 @@ export function computeDMI(bars: OHLCVBar[], period = 14, skipSessionGaps = fals
   const crossedUp = plusDI > minusDI && prevPlusDI <= prevMinusDI;
   const crossedDown = minusDI > plusDI && prevMinusDI <= prevPlusDI;
 
-  return { plusDI, minusDI, adx, trend, adxStrength, crossedUp, crossedDown, adxBarsAbove25 };
+  // ADX slope: change over last 3 bars — positive = trend strengthening (growth phase)
+  // negative = trend weakening (exhaustion phase)
+  const slopeLookback = 3;
+  let adxSlope = 0;
+  if (adxHistory.length >= slopeLookback + 1) {
+    const adxNow = adxHistory[adxHistory.length - 1] ?? 0;
+    const adxPrev = adxHistory[adxHistory.length - 1 - slopeLookback] ?? 0;
+    adxSlope = adxNow - adxPrev;
+  }
+
+  // DI spread slope: change in |DI+ - DI-| over last 3 bars — positive = momentum growing
+  let diSpreadSlope = 0;
+  if (diPlusArr.length >= slopeLookback + 1) {
+    const spreadNow = Math.abs((diPlusArr[diPlusArr.length - 1] ?? 0) - (diMinusArr[diMinusArr.length - 1] ?? 0));
+    const spreadPrev = Math.abs((diPlusArr[diPlusArr.length - 1 - slopeLookback] ?? 0) - (diMinusArr[diMinusArr.length - 1 - slopeLookback] ?? 0));
+    diSpreadSlope = spreadNow - spreadPrev;
+  }
+
+  return { plusDI, minusDI, adx, trend, adxStrength, crossedUp, crossedDown, adxBarsAbove25, adxSlope, diSpreadSlope };
 }

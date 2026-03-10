@@ -10,6 +10,8 @@ export interface DMIResult {
   crossedUp: boolean;    // DI+ crossed above DI- on last bar
   crossedDown: boolean;  // DI- crossed above DI+ on last bar
   adxBarsAbove25: number; // consecutive recent bars where ADX > 25 (trend maturity)
+  adxSlope: number;       // ADX change over last 3 bars (positive = strengthening trend)
+  diSpreadSlope: number;  // directional DI spread change over last 3 bars (positive = widening)
 }
 
 export interface ATRResult {

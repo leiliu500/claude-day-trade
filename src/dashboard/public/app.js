@@ -940,6 +940,8 @@ function renderAnalysisCard(sig) {
       ${renderConfidenceBar('OI/Volume',   cb.oiVolumeBonus     ?? 0, 0.05, 'conf-bar-bonus')}
       ${renderConfidenceBar('Price Pos',   cb.pricePositionAdjustment ?? 0, 0.08, 'conf-bar-bonus')}
       ${renderConfidenceBar('ADX Maturity',cb.adxMaturityPenalty ?? 0, 0.08, 'conf-bar-bonus')}
+      ${renderConfidenceBar('Trend Phase', cb.trendPhaseBonus   ?? 0, 0.08, 'conf-bar-bonus')}
+      ${renderConfidenceBar('Momentum',    cb.momentumAccelBonus?? 0, 0.06, 'conf-bar-bonus')}
       ${renderConfidenceBar('Structure',   cb.structureBonus    ?? 0, 0.08, 'conf-bar-bonus')}
       ${renderConfidenceBar('ORB',         cb.orbBonus          ?? 0, 0.08, 'conf-bar-bonus')}
       <div class="conf-total-row">
