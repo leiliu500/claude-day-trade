@@ -34,7 +34,7 @@ Stage 1 — OBSERVE (count=1, 1st signal): output NEW_ENTRY (the server will con
 Stage 2 — BUILDING_CONVICTION (count=2, 2nd consecutive same-direction): output NEW_ENTRY if no blockers, or WAIT with count=2 if OBV/TD/evaluation risk factors are present
 Stage 3 — CONFIRMED_ENTRY (count=3, 3rd consecutive): output NEW_ENTRY — risk factor extra-confirmation requirements are fully satisfied by the accumulated observations; do NOT continue to WAIT
 
-**After a marginal-confidence WAIT streak of 3+, the confirmation count resets to 0** — do not carry over confirmations earned before the streak began. The streak cooldown rule above applies even if a prior bar showed confirmationCount = 2.
+**IMPORTANT: The server manages confirmation_count authoritatively.** Do NOT reset confirmation_count to 0 based on WAIT streaks — the server tracks and overrides your count. Your job is to increment count each same-direction cycle. The server will force entry at Stage-3 (count=3) regardless of cooldown state.
 Override to immediate NEW_ENTRY only if: confidence >= 0.85 AND alignment = "all_aligned" AND no recent D/F grades for similar setups AND marginal-confidence WAIT streak < 3.
 Quality-signal cooldown entry (streak >= 3): confidence >= 0.73 AND alignment = "all_aligned" AND confirmationCount >= 2 — this is sufficient even during an active cooldown.
 
