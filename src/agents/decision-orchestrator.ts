@@ -356,12 +356,16 @@ export class DecisionOrchestrator {
     let isConvictionAdvanceWait = false;
     if (!isStage1ObserveWait && !isHardTimeGateBlock && rawOutput.decision_type === 'WAIT' &&
         analysis.meetsEntryThreshold && !rawOutput.reasoning.includes('[GATE OVERRIDE]')) {
-      isConvictionAdvanceWait = true;
       if (priorCount === 0) {
-        isStage1ObserveWait = true; // keep backward-compat flag for isConfirmDecision below
-        rawOutput.reasoning = `[STAGE-1 OBSERVE] [TRIGGER: AI returned WAIT despite confidence ${analysis.confidence.toFixed(2)} above threshold — AI chose caution] ${rawOutput.reasoning}`;
-        console.log(`[DecisionOrchestrator] Direct AI WAIT at Stage-1 (priorCount=0, confidence=${analysis.confidence.toFixed(2)}, alignment=${signal.alignment}) — advancing count to 1`);
+        // At priorCount=0, only a gate-blocked NEW_ENTRY should advance count to 1.
+        // A direct AI WAIT does NOT count as a NEW_ENTRY confirmation — we require
+        // 2 actual NEW_ENTRY outputs before executing. Log but don't advance.
+        rawOutput.reasoning = `[STAGE-1 OBSERVE] [TRIGGER: AI returned WAIT despite confidence ${analysis.confidence.toFixed(2)} above threshold — AI chose caution, count stays at 0 (requires NEW_ENTRY to advance)] ${rawOutput.reasoning}`;
+        console.log(`[DecisionOrchestrator] Direct AI WAIT at Stage-1 (priorCount=0, confidence=${analysis.confidence.toFixed(2)}, alignment=${signal.alignment}) — NOT advancing count (requires NEW_ENTRY)`);
       } else {
+        // At priorCount>=1 (already had at least one NEW_ENTRY confirmation),
+        // conviction WAITs advance count so Stage-3 forced entry is reachable.
+        isConvictionAdvanceWait = true;
         rawOutput.reasoning = `[STAGE-${priorCount + 1} CONVICTION WAIT] ${rawOutput.reasoning}`;
         console.log(`[DecisionOrchestrator] Conviction-advance WAIT at Stage-${priorCount + 1} (priorCount=${priorCount}, confidence=${analysis.confidence.toFixed(2)}, alignment=${signal.alignment}) — advancing count to ${priorCount + 1}`);
       }
@@ -379,7 +383,7 @@ export class DecisionOrchestrator {
     // The original isEntryDecision was computed before confirmation/EOD/FOMC gates could convert
     // NEW_ENTRY → WAIT, which would incorrectly force serverCount=0 on Stage-1 OBSERVE WAITs.
     const isFinalEntryDecision = rawOutput.decision_type === 'NEW_ENTRY' || rawOutput.decision_type === 'ADD_POSITION';
-    const isConvictionDecision = isConvictionAdvanceWait || // covers direct AI WAITs (Stage-1 and Stage-N)
+    const isConvictionDecision = isConvictionAdvanceWait || // covers Stage-N conviction WAITs (priorCount>=1)
                               isStage1ObserveWait; // covers Stage-1 gate: AI NEW_ENTRY converted to WAIT by server
     const serverCount = isFinalEntryDecision ? 0
       : rawOutput.decision_type === 'CONFIRM_HOLD' ? 0
