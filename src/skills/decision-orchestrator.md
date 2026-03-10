@@ -6,7 +6,7 @@ You must output exactly ONE of these 7 decision types:
 
 ## Entry Decisions (NEW_ENTRY, ADD_POSITION)
 - Require confidence >= 0.65
-- NEW_ENTRY requires confirmationCount >= 2 OR (confidence >= 0.92 AND alignment = "all_aligned")
+- NEW_ENTRY requires at least 1 prior same-direction confirmation (server enforces this) OR (confidence >= 0.92 AND alignment = "all_aligned")
 - **NEW_ENTRY is FORBIDDEN if open_positions has any entries for this ticker** — if a position is already open, use ADD_POSITION to intentionally scale, or CONFIRM_HOLD to hold. Never issue NEW_ENTRY for a ticker that already has an open position.
 - ADD_POSITION is only valid when a position is already open AND you want to increase exposure due to very high conviction (confidence >= 0.80 AND alignment = "all_aligned"). Maximum of 2 concurrent positions per ticker.
 - Must not have a conflicting pending broker order for the same symbol
@@ -18,9 +18,9 @@ You must output exactly ONE of these 7 decision types:
 - WAITs with confirmationCount = 1 and reasoning that mentions "Stage-1 OBSERVE" are Stage 1 OBSERVE WAITs — the first cycle of a new direction, blocked only because no prior same-direction confirmation exists. They appear exactly once per direction start (the next cycle will have priorCount=1 and can enter). Stage-1 WAITs do NOT count toward the streak because they are never repeated consecutively. WAITs with confirmationCount = 0 are hard-gate blocks (market closed, liquidity fail, below-threshold confidence, EOD/FOMC window) and also do NOT count.
 - WAITs where confidence >= 0.72 but entry was blocked by structural quality filters (alignment not "all_aligned", D/F evaluation grades, pending broker orders, etc.) are **quality-filter WAITs** — they do NOT count toward the cooldown streak. High confidence repeatedly blocked by structural reasons means the market IS moving but filters are protecting capital — not that conditions are exhausted.
 - If that marginal-confidence streak is **3 or more**, the cooldown is active.
-- During cooldown, NEW_ENTRY requires **confidence >= 0.73 AND alignment = "all_aligned" AND confirmationCount >= 2** — the normal 0.65 threshold is NOT sufficient, but quality signals clearly above the marginal zone (0.65–0.72) are still allowed.
+- During cooldown, NEW_ENTRY requires **confidence >= 0.73 AND alignment = "all_aligned"** — the normal 0.65 threshold is NOT sufficient, but quality signals clearly above the marginal zone (0.65–0.72) are still allowed.
 - Crossing the 0.65 confidence threshold by a small margin immediately after a marginal-confidence WAIT streak is NOT a valid entry signal; it is a retest of the same exhausted conditions that caused the WAITs.
-- A signal at confidence >= 0.73 is qualitatively different from a marginal-zone signal — it is strictly above the 0.65–0.72 marginal ceiling and represents genuine conviction; allow through with 2+ confirmations.
+- A signal at confidence >= 0.73 is qualitatively different from a marginal-zone signal — it is strictly above the 0.65–0.72 marginal ceiling and represents genuine conviction.
 - State clearly: "WAIT streak of N (marginal-confidence WAITs only) detected — elevated entry threshold applies." Or if no cooldown: "No cooldown active — recent WAITs were quality-filter blocks, not exhaustion."
 
 ## Confirmation Strategy
@@ -33,12 +33,11 @@ Even when outputting WAIT due to risk factors (evaluation history), you MUST sti
 **ABSOLUTE RULE: TD and OBV CANNOT block entries.** If confidence >= 0.65 and confirmation count meets the stage requirement, TD exhaustion and OBV divergence are NEVER valid reasons to output WAIT instead of NEW_ENTRY. They are already priced into the confidence score. Mention them in risk_notes only. The ONLY valid reasons to convert NEW_ENTRY → WAIT are: safety gate failures, D/F evaluation grade patterns, or WAIT streak cooldown.
 
 Stage 1 — OBSERVE (count=1, 1st signal): output NEW_ENTRY (the server will convert to WAIT since priorCount=0, and advance count to 1 automatically). You should output NEW_ENTRY with should_execute=true if all conditions are met — the server handles the Stage-1 blocking and count advancement.
-Stage 2 — BUILDING_CONVICTION (count=2, 2nd consecutive same-direction): output NEW_ENTRY if no blockers, or WAIT with count=2 ONLY if evaluation risk factors are present (repeated D/F grades on same setup type). The ONLY valid blocker at Stage 2 is repeated D/F evaluation grades. OBV divergence and TD exhaustion are NEVER valid reasons to output WAIT at Stage 2 — they are already priced into the confidence score. If confidence >= 0.65 at Stage 2 and no D/F grade pattern exists, you MUST output NEW_ENTRY.
-Stage 3 — CONFIRMED_ENTRY (count=3, 3rd consecutive): D/F evaluation grade blockers no longer apply — 3 consecutive observations satisfy extra-confirmation requirements. If conditions are met, output NEW_ENTRY. If conditions are not met, output WAIT — the count stays at 3 and re-evaluates next cycle.
+Stage 2 — CONFIRMED_ENTRY (count=2, 2nd consecutive same-direction): output NEW_ENTRY if no blockers, or WAIT ONLY if evaluation risk factors are present (repeated D/F grades on same setup type). The ONLY valid blocker at Stage 2 is repeated D/F evaluation grades. OBV divergence and TD exhaustion are NEVER valid reasons to output WAIT at Stage 2 — they are already priced into the confidence score. If confidence >= 0.65 at Stage 2 and no D/F grade pattern exists, you MUST output NEW_ENTRY.
 
-**IMPORTANT: The server manages confirmation_count authoritatively.** Do NOT reset confirmation_count to 0 based on WAIT streaks — the server tracks and overrides your count. Your job is to increment count each same-direction cycle. At Stage 3, the count caps at 3 — WAIT keeps it at 3 for re-evaluation.
+**IMPORTANT: The server manages confirmation_count authoritatively.** Do NOT reset confirmation_count to 0 based on WAIT streaks — the server tracks and overrides your count. There are only 2 stages: Stage 1 (observe) and Stage 2 (entry). The server blocks at Stage 1 and allows entry at Stage 2.
 Override to immediate NEW_ENTRY only if: confidence >= 0.92 AND alignment = "all_aligned" AND no recent D/F grades for similar setups AND marginal-confidence WAIT streak < 3.
-Quality-signal cooldown entry (streak >= 3): confidence >= 0.73 AND alignment = "all_aligned" AND confirmationCount >= 2 — this is sufficient even during an active cooldown.
+Quality-signal cooldown entry (streak >= 3): confidence >= 0.73 AND alignment = "all_aligned" — this is sufficient even during an active cooldown.
 
 ## Protective Decisions (CONFIRM_HOLD, WAIT)
 - CONFIRM_HOLD: have open position, signals still confirm direction
@@ -124,8 +123,8 @@ The signal includes `prior_day` with `pdh` (prior day high), `pdl` (prior day lo
 The `confidence_breakdown` includes `structure_bonus` (−0.08 to +0.06) showing its net contribution.
 
 **Hard filters for new entries:**
-- CALL entry when price is below PDL (`below_pdl = true`): this is a strong structural headwind — price cannot hold yesterday's floor. Require confirmation_count >= 3 before entry. Note in risk_notes: "Price below prior day low — structural weakness, elevated entry threshold"
-- PUT entry when price is above PDH (`above_pdh = true`): price is breaking out above yesterday's high. Require confirmation_count >= 3 before entry. Note in risk_notes: "Price above prior day high — counter-trend put entry, elevated entry threshold"
+- CALL entry when price is below PDL (`below_pdl = true`): this is a strong structural headwind — price cannot hold yesterday's floor. Require extra caution — add to risk_notes. Note in risk_notes: "Price below prior day low — structural weakness, elevated entry threshold"
+- PUT entry when price is above PDH (`above_pdh = true`): price is breaking out above yesterday's high. Require extra caution — add to risk_notes. Note in risk_notes: "Price above prior day high — counter-trend put entry, elevated entry threshold"
 
 **Confirming context:**
 - CALL entry when `above_pdh = true` (`structure_bias = bullish`): strongest structural setup — price broke above prior day resistance. Note as confirming evidence.
@@ -198,7 +197,7 @@ You receive `recent_evaluations` — up to 5 most recent closed trades for this 
   "urgency": "immediate|standard|low",
   "should_execute": true,
   "entry_strategy": {
-    "stage": "OBSERVE|BUILDING_CONVICTION|CONFIRMED_ENTRY|OVERRIDE_ENTRY|NOT_APPLICABLE",
+    "stage": "OBSERVE|CONFIRMED_ENTRY|OVERRIDE_ENTRY|NOT_APPLICABLE",
     "confirmation_count": 0,
     "signal_direction": "call|put|null",
     "confirmations_needed": 2,

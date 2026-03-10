@@ -74,8 +74,6 @@ function computeEodWindow(): { isEodWindow: boolean; minutesToClose: number } {
  * direction carries the accumulated streak forward.  Only a direction flip, a hard reset
  * (WAIT with count=0), or running out of history returns 0.
  *
- * This correctly handles the skill's Stage-2 "WAIT with count=2" pattern where the AI
- * waits one extra cycle due to OBV/TD risk, then enters at Stage-3 with count=3.
  * Historical data that pre-dates this fix has count=0 for WAITs and degrades gracefully:
  * those WAITs will break the loop as if they were fresh OBSERVE cycles.
  */
@@ -376,7 +374,7 @@ export class DecisionOrchestrator {
     const isConvictionDecision = isStage1ObserveWait; // only gate-blocked NEW_ENTRY→WAIT advances count
     const serverCount = isFinalEntryDecision ? 0
       : rawOutput.decision_type === 'CONFIRM_HOLD' ? 0
-      : Math.min(3, priorCount + (isConvictionDecision ? 1 : 0));
+      : priorCount + (isConvictionDecision ? 1 : 0);
     if (serverCount !== rawOutput.confirmation_count) {
       console.log(`[DecisionOrchestrator] Overriding AI count (${rawOutput.confirmation_count}) with server count (${serverCount})`);
       rawOutput.confirmation_count = serverCount;
