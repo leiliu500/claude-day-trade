@@ -937,7 +937,6 @@ function renderAnalysisCard(sig) {
       ${renderConfidenceBar('TD Seq',      cb.tdAdjustment      ?? 0, 0.08, 'conf-bar-bonus')}
       ${renderConfidenceBar('OBV',         cb.obvBonus          ?? 0, 0.10, 'conf-bar-bonus')}
       ${renderConfidenceBar('VWAP',        cb.vwapBonus         ?? 0, 0.12, 'conf-bar-bonus')}
-      ${renderConfidenceBar('RSI',         cb.rsiBonus          ?? 0, 0.08, 'conf-bar-bonus')}
       ${renderConfidenceBar('OI/Volume',   cb.oiVolumeBonus     ?? 0, 0.05, 'conf-bar-bonus')}
       ${renderConfidenceBar('Price Pos',   cb.pricePositionAdjustment ?? 0, 0.08, 'conf-bar-bonus')}
       ${renderConfidenceBar('ADX Maturity',cb.adxMaturityPenalty ?? 0, 0.08, 'conf-bar-bonus')}
@@ -997,7 +996,7 @@ function renderAnalysisCard(sig) {
     <div class="stats-section-label">Timeframe Indicators</div>
     <table class="analysis-tf-table">
       <thead>
-        <tr><th>TF</th><th>DI+</th><th>DI-</th><th>ADX</th><th>Trend</th><th>DI Cross</th><th>RSI</th><th>OBV</th><th>VWAP Band</th><th>TD Setup</th><th>Patterns</th></tr>
+        <tr><th>TF</th><th>DI+</th><th>DI-</th><th>ADX</th><th>Trend</th><th>DI Cross</th><th>OBV</th><th>VWAP Band</th><th>TD Setup</th><th>Patterns</th></tr>
       </thead>
       <tbody>
         ${tfs.map(tf => {
@@ -1005,7 +1004,6 @@ function renderAnalysisCard(sig) {
           const td   = tf.td?.setup || {};
           const cp   = tf.allCandlePatterns || {};
           const vwap = tf.vwap || {};
-          const rsi  = tf.rsi || {};
           const obv  = tf.obv || {};
           const patterns = [
             cp.hammer?.present          ? 'Hammer' : null,
@@ -1034,14 +1032,6 @@ function renderAnalysisCard(sig) {
             else if (price < vwap.vwap - dev) vwapBandStr = '<span class="bullish">−1σ</span>';
             else                              vwapBandStr = 'near';
           }
-          // RSI display
-          let rsiStr = '—';
-          if (rsi.value != null) {
-            const rsiCls = rsi.overbought ? 'bearish' : rsi.oversold ? 'bullish' : rsi.trend === 'bullish' ? 'bullish' : rsi.trend === 'bearish' ? 'bearish' : '';
-            const rsiFlag = rsi.overbought ? ' 🔴' : rsi.oversold ? ' 🟢' : '';
-            const rsiDiv = rsi.divergence !== 'none' ? ` <span style="font-size:0.65rem;opacity:0.7">(${rsi.divergence} div)</span>` : '';
-            rsiStr = `<span class="${rsiCls}">${rsi.value}${rsiFlag}</span>${rsiDiv}`;
-          }
           // OBV display
           const obvTrendCls = obv.trend === 'bullish' ? 'bullish' : obv.trend === 'bearish' ? 'bearish' : '';
           const obvDivStr = obv.divergence && obv.divergence !== 'none'
@@ -1055,7 +1045,6 @@ function renderAnalysisCard(sig) {
             <td>${dmi.adx != null ? dmi.adx.toFixed(1) : '—'}</td>
             <td class="${trendCls}">${dmi.trend || '—'}</td>
             <td style="font-size:0.75rem">${diCrossStr}</td>
-            <td style="font-size:0.75rem">${rsiStr}</td>
             <td style="font-size:0.75rem">${obvStr}</td>
             <td style="font-size:0.75rem">${vwapBandStr}</td>
             <td>${tdStr}</td>

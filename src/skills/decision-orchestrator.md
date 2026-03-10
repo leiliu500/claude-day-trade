@@ -31,7 +31,7 @@ You must output exactly ONE of these 7 decision types:
 Even when outputting WAIT due to risk factors (OBV divergence, TD exhaustion, evaluation history), you MUST still increment `confirmation_count` if the direction is the same as the previous cycle. **Outputting WAIT does NOT mean starting over.**
 
 Stage 1 — OBSERVE (count=1, 1st signal): output NEW_ENTRY (the server will convert to WAIT since priorCount=0, and advance count to 1 automatically). You should output NEW_ENTRY with should_execute=true if all conditions are met — the server handles the Stage-1 blocking and count advancement.
-Stage 2 — BUILDING_CONVICTION (count=2, 2nd consecutive same-direction): output NEW_ENTRY if no blockers, or WAIT with count=2 if OBV/TD/evaluation risk factors are present
+Stage 2 — BUILDING_CONVICTION (count=2, 2nd consecutive same-direction): output NEW_ENTRY if no blockers, or WAIT with count=2 if OBV divergence or evaluation risk factors are present (TD exhaustion alone is NOT a valid blocker — it is secondary context only)
 Stage 3 — CONFIRMED_ENTRY (count=3, 3rd consecutive): output NEW_ENTRY — risk factor extra-confirmation requirements are fully satisfied by the accumulated observations; do NOT continue to WAIT
 
 **IMPORTANT: The server manages confirmation_count authoritatively.** Do NOT reset confirmation_count to 0 based on WAIT streaks — the server tracks and overrides your count. Your job is to increment count each same-direction cycle. The server will force entry at Stage-3 (count=3) regardless of cooldown state.
@@ -107,17 +107,8 @@ Mention when applying the window: "New entry protection window active — suppre
 ## OBV Awareness
 Each timeframe includes `obv_trend` (bullish/bearish/neutral) and `obv_divergence` (bullish/bearish/none).
 - OBV trend matching signal direction → supporting evidence; note in reasoning
-- OBV divergence AGAINST position direction (bearish divergence on a CALL, or bullish divergence on a PUT) → meaningful warning; add to risk_notes and raise the confirmation threshold by 1 (entry requires count=2 instead of count=1). This means: WAIT at count=1, enter at count=2. Do NOT continue to block at count=3+.
+- OBV divergence AGAINST position direction (bearish divergence on a CALL, or bullish divergence on a PUT) → meaningful warning; add to risk_notes and raise the confirmation threshold by 1 (entry requires count=2 instead of count=1). This means: WAIT at count=1, enter at count=2. Do NOT continue to block at count=3+. NOTE: OBV divergence is the ONLY indicator-based reason to raise the confirmation threshold. TD exhaustion does NOT raise it.
 - OBV alone does NOT override confidence or DMI-based decisions
-
-## RSI Awareness
-Each timeframe includes `rsi` (0–100), `rsi_trend` (bullish/bearish/neutral), `rsi_overbought` (>70), `rsi_oversold` (<30), `rsi_divergence` (bullish/bearish/none).
-The `confidence_breakdown` includes `rsi_bonus` showing its net contribution.
-- For CALL setups: HTF/MTF RSI overbought → headwind; add to risk_notes; caution about chasing exhaustion
-- For PUT setups: HTF/MTF RSI oversold → headwind; add to risk_notes; caution about chasing exhaustion
-- RSI divergence against signal direction → treat same as OBV divergence; raise confirmation threshold by 1 (max combined penalty with OBV: +1 extra confirmation, not +2)
-- rsi_bonus > 0.04: RSI provides strong momentum support — note as confirming evidence
-- rsi_bonus < −0.05: RSI warns of momentum exhaustion — add to risk_notes
 
 ## ATR Awareness
 Each timeframe includes `atr_pct` (ATR as % of last close).
@@ -159,11 +150,17 @@ The `confidence_breakdown` includes `vwap_bonus` (−0.12 to +0.10) showing its 
 - vwap_bonus < −0.02: VWAP contradicts signal direction — add to risk_notes; treat as one additional reason for caution
 - VWAP alone does NOT override confidence or DMI-based decisions
 
-## TD Countdown Awareness
-Each timeframe includes `td_countdown` (direction/count/completed) alongside `td_setup`.
-- td_countdown.completed = true in the signal direction → exhaustion signal; raise the confirmation threshold by 1 (same as OBV divergence — WAIT at count=1, enter at count=2). Do NOT block indefinitely at count=3+. Mention in risk_notes.
-- td_countdown.count >= 8 in signal direction → approaching exhaustion; note in risk_notes; no additional confirmation penalty (count >= 8 is caution only, not exhaustion)
-- If BOTH td_countdown.completed AND OBV divergence are present simultaneously, the combined extra-confirmation penalty is still +1 (they do not stack to +2). Enter at count=2 maximum.
+## TD Countdown Awareness — SECONDARY INDICATOR
+TD Sequential is a SECONDARY/SUPPLEMENTARY indicator. It suggests potential exhaustion zones but does NOT predict reversals. Many strong trends continue well beyond TD exhaustion signals. TD alone must NEVER turn a good-quality signal into WAIT or block an entry.
+
+**Critical rules:**
+- TD exhaustion does NOT mean "the trend is reversing" — it means "a pause is possible but not guaranteed"
+- A high-confidence signal (confidence >= 0.65) with strong DI spread, good alignment, and confirming OBV should NEVER be blocked solely because TD suggests exhaustion
+- TD is informational context for risk_notes only — it does NOT raise the confirmation threshold
+- td_countdown.completed = true in the signal direction → note "TD exhaustion present" in risk_notes. Do NOT raise confirmation threshold. Do NOT output WAIT because of this alone.
+- td_countdown.count >= 8 in signal direction → note "approaching TD exhaustion" in risk_notes. No penalty whatsoever.
+- TD exhaustion combined with OBV divergence: the OBV divergence penalty (+1 confirmation) already applies — TD does NOT add any additional penalty on top. The combined extra-confirmation penalty from OBV divergence remains +1 total, entering at count=2 maximum.
+- When writing reasoning, do NOT use phrases like "TD suggests potential exhaustion — waiting for confirmation" as justification for WAIT. TD is background context, not an actionable blocker.
 
 ## Broker State Awareness
 - broker_open_orders: NEVER submit NEW_ENTRY or ADD_POSITION if a BUY order already pending for this symbol

@@ -1,6 +1,5 @@
 import type { OHLCVBar, Timeframe } from './market.js';
 import type { AllCandlePatterns } from '../indicators/candle-patterns.js';
-import type { RSIResult } from '../indicators/rsi.js';
 
 export interface DMIResult {
   plusDI: number;
@@ -85,7 +84,6 @@ export interface TimeframeIndicators {
   obv: OBVResult;
   td: TDResult;
   vwap: VWAPResult;
-  rsi: RSIResult;
   candlePattern: CandlePattern;
   allCandlePatterns: AllCandlePatterns;  // all 4 patterns checked independently
   priceStructure: PriceStructure;
@@ -119,7 +117,5 @@ export interface ORBResult {
   breakoutStrength: number;  // 0–1: how far price has moved beyond the ORB boundary (as fraction of range)
   orbFormed: boolean;        // false if before 10:00 ET or no bars in the window
 }
-
-export type { RSIResult };
 
 export type { AllCandlePatterns };

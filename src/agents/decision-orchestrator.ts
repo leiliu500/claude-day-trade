@@ -118,7 +118,6 @@ export class DecisionOrchestrator {
       confidence_breakdown: {
         di_cross_bonus: analysis.confidenceBreakdown.diCrossBonus,
         vwap_bonus: analysis.confidenceBreakdown.vwapBonus,
-        rsi_bonus: analysis.confidenceBreakdown.rsiBonus,
         price_position_adjustment: analysis.confidenceBreakdown.pricePositionAdjustment,
         price_half: signal.timeframes[2]?.priceStructure.priceHalf ?? signal.timeframes[0]?.priceStructure.priceHalf ?? 'lower',
         range_position: parseFloat((signal.timeframes[2]?.priceStructure.rangePosition ?? signal.timeframes[0]?.priceStructure.rangePosition ?? 0.5).toFixed(2)),
@@ -177,11 +176,6 @@ export class DecisionOrchestrator {
           td_countdown: tf.td.countdown,
           obv_trend: tf.obv.trend,
           obv_divergence: tf.obv.divergence,
-          rsi: tf.rsi.value,
-          rsi_trend: tf.rsi.trend,
-          rsi_overbought: tf.rsi.overbought,
-          rsi_oversold: tf.rsi.oversold,
-          rsi_divergence: tf.rsi.divergence,
           candle: tf.candlePattern,
           atr_pct: tf.atr.atrPct.toFixed(2),
           price_vs_vwap: parseFloat(tf.vwap.priceVsVwap.toFixed(2)),
@@ -352,7 +346,7 @@ export class DecisionOrchestrator {
     // threshold, and no hard gate override is in the reasoning, advance the server count.
     // This covers:
     //   Stage-1 (priorCount=0) — first observation, tagged [STAGE-1 OBSERVE]
-    //   Stage-N (priorCount>=1) — AI deferring due to OBV/TD/RSI risk factors but still building
+    //   Stage-N (priorCount>=1) — AI deferring due to OBV/TD risk factors but still building
     //     conviction; the count must advance so we eventually reach Stage-3 forced entry.
     //
     // Without this, a Stage-2 WAIT keeps priorCount=1 forever and Stage-3 is never reached.

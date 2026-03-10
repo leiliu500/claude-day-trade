@@ -8,7 +8,6 @@ import { computeTD } from '../indicators/td-sequential.js';
 import { detectCandlePattern, detectAllPatterns } from '../indicators/candle-patterns.js';
 import { computePriceStructure } from '../indicators/price-structure.js';
 import { computeVWAP } from '../indicators/vwap.js';
-import { computeRSI } from '../indicators/rsi.js';
 import { computePriorDayLevels, computeORB } from '../indicators/market-structure.js';
 import { PROFILE_TIMEFRAMES, normalizeAlpacaBars } from '../types/market.js';
 import type { OHLCVBar, Timeframe, TradingProfile, AlpacaBarsResponse } from '../types/market.js';
@@ -90,7 +89,6 @@ function computeTimeframeIndicators(
     obv: computeOBV(bars, 14),
     td: computeTD(bars),
     vwap: computeVWAP(bars),
-    rsi: computeRSI(bars, 14),
     candlePattern: detectCandlePattern(bars),
     allCandlePatterns: detectAllPatterns(bars),
     priceStructure: computePriceStructure(bars, 20, direction),

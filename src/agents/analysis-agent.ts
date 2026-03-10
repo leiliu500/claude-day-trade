@@ -15,7 +15,7 @@ function computeConfidence(signal: SignalPayload, option: OptionEvaluation): Con
   const tfs = signal.timeframes;
   const [ltf, mtf, htf] = tfs;
   if (!ltf || !mtf || !htf) {
-    return { base: 0.40, diSpreadBonus: 0, adxBonus: 0, diCrossBonus: 0, alignmentBonus: 0, tdAdjustment: 0, obvBonus: 0, vwapBonus: 0, oiVolumeBonus: 0, rsiBonus: 0, pricePositionAdjustment: 0, adxMaturityPenalty: 0, structureBonus: 0, orbBonus: 0, total: 0.40 };
+    return { base: 0.40, diSpreadBonus: 0, adxBonus: 0, diCrossBonus: 0, alignmentBonus: 0, tdAdjustment: 0, obvBonus: 0, vwapBonus: 0, oiVolumeBonus: 0, pricePositionAdjustment: 0, adxMaturityPenalty: 0, structureBonus: 0, orbBonus: 0, total: 0.40 };
   }
 
   // Base: slight bullish bias
@@ -63,8 +63,10 @@ function computeConfidence(signal: SignalPayload, option: OptionEvaluation): Con
   };
   const alignmentBonus = alignmentBonusMap[signal.alignment] ?? 0;
 
-  // TD adjustment — late-stage confirming setups (7-9) are highest quality entries;
-  // opposing completed setups are exhaustion signals (penalize).
+  // TD adjustment — SECONDARY indicator. Late-stage confirming setups (7-9) are quality entries;
+  // opposing completed setups are mild exhaustion signals. TD does NOT mean immediate reversal —
+  // it is supplementary context, not a primary decision driver. Penalties are intentionally small
+  // so TD alone cannot push a good-quality signal below the entry threshold.
   let tdAdjustment = 0;
   for (const tf of tfs) {
     const setup = tf.td.setup;
@@ -72,8 +74,8 @@ function computeConfidence(signal: SignalPayload, option: OptionEvaluation): Con
     const opposingDir = signal.direction === 'bullish' ? 'sell' : 'buy';
 
     if (setup.completed) {
-      // Penalize if opposing setup just completed (9-bar exhaustion on wrong side)
-      if (setup.completedDirection === opposingDir) tdAdjustment -= 0.05;
+      // Mild penalty if opposing setup just completed (9-bar exhaustion on wrong side)
+      if (setup.completedDirection === opposingDir) tdAdjustment -= 0.02;
     } else if (setup.direction === confirmDir) {
       // Confirming setup in progress — reward late-stage (7-9) more than early (1-4)
       if (setup.count >= 7) {
@@ -84,11 +86,11 @@ function computeConfidence(signal: SignalPayload, option: OptionEvaluation): Con
         tdAdjustment += 0.005; // Early-stage: forming, minor support
       }
     } else if (setup.direction === opposingDir && setup.count >= 7) {
-      // Opposing setup near completion → exhaustion risk
-      tdAdjustment -= 0.03;
+      // Opposing setup near completion → mild caution
+      tdAdjustment -= 0.01;
     }
   }
-  tdAdjustment = Math.max(-0.08, Math.min(0.05, tdAdjustment));
+  tdAdjustment = Math.max(-0.04, Math.min(0.05, tdAdjustment));
 
   // OBV bonus — HTF and MTF only; LTF OBV is too noisy to score
   // +0.05 per TF whose OBV trend matches signal direction (max +0.10)
@@ -171,37 +173,6 @@ function computeConfidence(signal: SignalPayload, option: OptionEvaluation): Con
   }
   oiVolumeBonus = Math.min(oiVolumeBonus, 0.05);
 
-  // RSI bonus — momentum confirmation and extreme-level filters.
-  // Uses HTF and MTF RSI (LTF RSI is too noisy).
-  // Momentum alignment (+0.02 per TF where RSI trend matches signal direction)
-  // Oversold for bullish entry / overbought for bearish entry = momentum reversal support (+0.02)
-  // Overbought for bullish entry / oversold for bearish entry = entering against exhaustion (-0.06)
-  // RSI divergence against signal direction = warning (-0.05)
-  // Clamped -0.08..+0.05
-  let rsiBonus = 0;
-  if (signal.direction !== 'neutral') {
-    for (const tf of [htf, mtf]) {
-      // Momentum alignment: RSI trend matches signal direction
-      if (tf.rsi.trend === signal.direction) rsiBonus += 0.02;
-
-      // Overbought/oversold extremes
-      if (signal.direction === 'bullish') {
-        if (tf.rsi.oversold)    rsiBonus += 0.02;  // bullish entry from oversold = high-quality reversal
-        if (tf.rsi.overbought)  rsiBonus -= 0.06;  // bullish entry when overbought = chasing exhaustion
-      } else {
-        if (tf.rsi.overbought)  rsiBonus += 0.02;  // bearish entry from overbought = high-quality reversal
-        if (tf.rsi.oversold)    rsiBonus -= 0.06;  // bearish entry when oversold = chasing exhaustion
-      }
-
-      // RSI divergence against signal direction
-      const badDiv =
-        (signal.direction === 'bullish' && tf.rsi.divergence === 'bearish') ||
-        (signal.direction === 'bearish' && tf.rsi.divergence === 'bullish');
-      if (badDiv) rsiBonus -= 0.05;
-    }
-    rsiBonus = Math.max(-0.08, Math.min(0.05, rsiBonus));
-  }
-
   // ADX maturity penalty — penalizes entering a trend that has already been running strong for many bars.
   // Skipped when a fresh DI cross is present on HTF (cross signals new momentum regardless of maturity).
   // HTF adxBarsAbove25 >= 10 bars: trend is very mature → -0.08
@@ -275,9 +246,9 @@ function computeConfidence(signal: SignalPayload, option: OptionEvaluation): Con
     orbBonus = Math.max(-0.08, Math.min(0.06, orbBonus));
   }
 
-  const total = Math.max(0, Math.min(1, base + diSpreadBonus + adxBonus + diCrossBonus + alignmentBonus + tdAdjustment + obvBonus + vwapBonus + oiVolumeBonus + rsiBonus + pricePositionAdjustment + adxMaturityPenalty + structureBonus + orbBonus));
+  const total = Math.max(0, Math.min(1, base + diSpreadBonus + adxBonus + diCrossBonus + alignmentBonus + tdAdjustment + obvBonus + vwapBonus + oiVolumeBonus + pricePositionAdjustment + adxMaturityPenalty + structureBonus + orbBonus));
 
-  return { base, diSpreadBonus, adxBonus, diCrossBonus, alignmentBonus, tdAdjustment, obvBonus, vwapBonus, oiVolumeBonus, rsiBonus, pricePositionAdjustment, adxMaturityPenalty, structureBonus, orbBonus, total };
+  return { base, diSpreadBonus, adxBonus, diCrossBonus, alignmentBonus, tdAdjustment, obvBonus, vwapBonus, oiVolumeBonus, pricePositionAdjustment, adxMaturityPenalty, structureBonus, orbBonus, total };
 }
 
 /**
@@ -342,11 +313,6 @@ async function generateExplanation(
       td_setup: tf.td.setup,
       td_countdown: tf.td.countdown,
       vwap_band_position: vwapBandPosition,
-      rsi: tf.rsi.value,
-      rsi_trend: tf.rsi.trend,
-      rsi_overbought: tf.rsi.overbought,
-      rsi_oversold: tf.rsi.oversold,
-      rsi_divergence: tf.rsi.divergence,
       // Individual pattern flags for explicit formatting rules
       hammer: {
         present: tf.allCandlePatterns.hammer.present,

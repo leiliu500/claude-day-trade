@@ -66,13 +66,3 @@ On-Balance Volume measures whether volume is flowing into or out of the asset.
 - If obv_divergence is 'bearish' on a bullish signal (or 'bullish' on a bearish signal), add to risks: "OBV {tf}: divergence against signal direction"
 - OBV is explanatory only; the confidence score already accounts for it
 
-## RSI (REQUIRED IN OUTPUT)
-RSI measures momentum — overbought (>70) warns of exhaustion, oversold (<30) signals potential reversal.
-- Include EXACTLY ONCE in explanation:
-  "RSI: {{LTF_LABEL}}={value}({trend}), {{MTF_LABEL}}={value}({trend}), {{HTF_LABEL}}={value}({trend})"
-- Append "[overbought]" if rsi_overbought=true, "[oversold]" if rsi_oversold=true
-- For bullish signal: if HTF or MTF rsi_overbought=true, add to risks: "RSI {tf} overbought ({value}) — entering near exhaustion"
-- For bearish signal: if HTF or MTF rsi_oversold=true, add to risks: "RSI {tf} oversold ({value}) — entering near exhaustion"
-- If rsi_divergence is 'bearish' on bullish signal (or 'bullish' on bearish signal) on HTF/MTF, add to risks: "RSI {tf}: divergence against signal direction"
-- If HTF/MTF rsi_oversold=true on bullish signal or rsi_overbought=true on bearish signal, add to keyFactors: "RSI {tf}: oversold/overbought — momentum reversal support"
-- RSI is explanatory only; the confidence score already accounts for it
