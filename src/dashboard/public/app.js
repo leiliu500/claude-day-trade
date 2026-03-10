@@ -998,7 +998,7 @@ function renderAnalysisCard(sig) {
     <div class="stats-section-label">Timeframe Indicators</div>
     <table class="analysis-tf-table">
       <thead>
-        <tr><th>TF</th><th>DI+</th><th>DI-</th><th>ADX</th><th>Trend</th><th>DI Cross</th><th>OBV</th><th>VWAP Band</th><th>TD Setup</th><th>Patterns</th></tr>
+        <tr><th>TF</th><th>DI+</th><th>DI-</th><th>ADX</th><th>ADX Slope</th><th>Trend</th><th>DI Cross</th><th>OBV</th><th>VWAP Band</th><th>TD Setup</th><th>Patterns</th></tr>
       </thead>
       <tbody>
         ${tfs.map(tf => {
@@ -1017,8 +1017,15 @@ function renderAnalysisCard(sig) {
           const tdStr = td.count != null
             ? `${td.direction === 'buy' ? '▲' : '▼'} ${td.count}${td.completed ? ' ✓' : ''}`
             : '—';
-          // DI cross indicator
-          const diCrossStr = dmi.crossedUp ? '<span class="bullish">▲ cross</span>'
+          // ADX slope display
+          const adxSlope = dmi.adxSlope != null ? dmi.adxSlope : null;
+          const adxSlopeStr = adxSlope != null
+            ? `<span class="${adxSlope > 0 ? 'bullish' : adxSlope < 0 ? 'bearish' : ''}">${adxSlope > 0 ? '+' : ''}${adxSlope.toFixed(1)}</span>`
+            : '—';
+          // DI cross indicator — highlight growth crosses (phase-change signal)
+          const diCrossStr = dmi.growthCrossUp ? '<span class="bullish" style="font-weight:bold">▲ GROWTH</span>'
+            : dmi.growthCrossDown ? '<span class="bearish" style="font-weight:bold">▼ GROWTH</span>'
+            : dmi.crossedUp ? '<span class="bullish">▲ cross</span>'
             : dmi.crossedDown ? '<span class="bearish">▼ cross</span>'
             : '—';
           // VWAP band position (computed from stored vwap fields)
@@ -1045,6 +1052,7 @@ function renderAnalysisCard(sig) {
             <td class="bullish">${dmi.plusDI != null ? dmi.plusDI.toFixed(1) : '—'}</td>
             <td class="bearish">${dmi.minusDI != null ? dmi.minusDI.toFixed(1) : '—'}</td>
             <td>${dmi.adx != null ? dmi.adx.toFixed(1) : '—'}</td>
+            <td style="font-size:0.75rem">${adxSlopeStr}</td>
             <td class="${trendCls}">${dmi.trend || '—'}</td>
             <td style="font-size:0.75rem">${diCrossStr}</td>
             <td style="font-size:0.75rem">${obvStr}</td>

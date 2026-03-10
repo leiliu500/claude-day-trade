@@ -326,6 +326,7 @@ export class DecisionOrchestrator {
     // and can enter at Stage-2, preventing an infinite Stage-1 loop where entries are permanently
     // blocked because WAIT decisions never advance the count.
     let isStage1ObserveWait = false;
+    let isPhaseChangeOverride = false;
     if (rawOutput.decision_type === 'NEW_ENTRY' && rawOutput.should_execute) {
       const overrideOk = analysis.confidence >= 0.92 && signal.alignment === 'all_aligned';
       const lastEvalWasWin = context.recentEvaluations.length > 0 &&
@@ -334,12 +335,28 @@ export class DecisionOrchestrator {
       const postWinRelaxOk = lastEvalWasWin &&
         analysis.confidence >= 0.72 &&
         signal.alignment !== 'mixed';
-      if (!overrideOk && !postWinRelaxOk && priorCount < 1) {
+
+      // (C) Phase-change override: HTF DI just crossed in signal direction with rising ADX
+      //     (growth phase). This is a definitive trend-change signal — enter immediately
+      //     without waiting for the 2-stage confirmation gate.
+      //     Requires confidence >= 0.72 and non-mixed alignment to filter noise.
+      const htfTf = signal.timeframes[2] ?? signal.timeframes[0];
+      const phaseChangeOk = !!htfTf &&
+        analysis.confidence >= 0.72 &&
+        signal.alignment !== 'mixed' &&
+        (signal.direction === 'bullish' ? htfTf.dmi.growthCrossUp : htfTf.dmi.growthCrossDown);
+
+      if (!overrideOk && !postWinRelaxOk && !phaseChangeOk && priorCount < 1) {
         rawOutput.decision_type = 'WAIT';
         rawOutput.should_execute = false;
-        rawOutput.reasoning = `[STAGE-1 OBSERVE] [TRIGGER: AI recommended NEW_ENTRY but server gate blocked — priorCount=${priorCount}, needs ≥1 confirm] Building conviction (count will advance to 1). Override requires confidence>=0.92 + all_aligned, or post-WIN relaxation (confidence>=0.72 + non-mixed alignment). ${rawOutput.reasoning}`;
+        rawOutput.reasoning = `[STAGE-1 OBSERVE] [TRIGGER: AI recommended NEW_ENTRY but server gate blocked — priorCount=${priorCount}, needs ≥1 confirm] Building conviction (count will advance to 1). Override requires confidence>=0.92 + all_aligned, or post-WIN relaxation (confidence>=0.72 + non-mixed alignment), or phase-change (HTF DI cross + rising ADX). ${rawOutput.reasoning}`;
         isStage1ObserveWait = true; // count advances to 1 so next cycle can enter at Stage-2
         console.log(`[DecisionOrchestrator] NEW_ENTRY blocked by confirmation gate (Stage-1 OBSERVE, priorCount=${priorCount}, confidence=${analysis.confidence.toFixed(2)}, alignment=${signal.alignment}, lastEvalWasWin=${lastEvalWasWin})`);
+      } else if (phaseChangeOk && priorCount < 1 && !overrideOk && !postWinRelaxOk) {
+        isPhaseChangeOverride = true;
+        const side = signal.direction === 'bullish' ? 'CALL' : 'PUT';
+        rawOutput.reasoning = `[PHASE-CHANGE OVERRIDE] HTF DI cross ${signal.direction} + rising ADX → immediate ${side} entry (no 2-stage wait). ${rawOutput.reasoning}`;
+        console.log(`[DecisionOrchestrator] NEW_ENTRY phase-change override applied — ${side} (priorCount=${priorCount}, confidence=${analysis.confidence.toFixed(2)}, alignment=${signal.alignment}, htfADXSlope=${htfTf!.dmi.adxSlope.toFixed(1)})`);
       } else if (postWinRelaxOk && priorCount < 1 && !overrideOk) {
         console.log(`[DecisionOrchestrator] NEW_ENTRY post-WIN relaxation applied (priorCount=${priorCount}, confidence=${analysis.confidence.toFixed(2)}, alignment=${signal.alignment})`);
       }
@@ -401,7 +418,14 @@ export class DecisionOrchestrator {
       reasoning: rawOutput.reasoning,
       urgency: rawOutput.urgency,
       shouldExecute: rawOutput.should_execute,
-      entryStrategy: rawOutput.entry_strategy ? {
+      entryStrategy: isPhaseChangeOverride ? {
+        stage: 'OVERRIDE_ENTRY' as const,
+        confirmationCount: 0,
+        signalDirection: (signal.direction === 'bullish' ? 'call' : 'put') as 'call' | 'put',
+        confirmationsNeeded: 2,
+        overrideTriggered: true,
+        notes: `Phase-change override: HTF DI cross ${signal.direction} + rising ADX (slope ${(signal.timeframes[2] ?? signal.timeframes[0])!.dmi.adxSlope.toFixed(1)}) → immediate entry`,
+      } : rawOutput.entry_strategy ? {
         stage: rawOutput.entry_strategy.stage as 'OBSERVE' | 'BUILDING_CONVICTION' | 'CONFIRMED_ENTRY' | 'OVERRIDE_ENTRY' | 'NOT_APPLICABLE',
         confirmationCount: rawOutput.entry_strategy.confirmation_count,
         signalDirection: rawOutput.entry_strategy.signal_direction as 'call' | 'put' | null,

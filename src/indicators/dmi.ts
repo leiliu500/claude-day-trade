@@ -9,7 +9,7 @@ import type { DMIResult } from '../types/indicators.js';
  */
 export function computeDMI(bars: OHLCVBar[], period = 14, skipSessionGaps = false): DMIResult {
   if (bars.length < period + 1) {
-    return { plusDI: 0, minusDI: 0, adx: 0, trend: 'neutral', adxStrength: 'weak', crossedUp: false, crossedDown: false, adxBarsAbove25: 0, adxSlope: 0, diSpreadSlope: 0 };
+    return { plusDI: 0, minusDI: 0, adx: 0, trend: 'neutral', adxStrength: 'weak', crossedUp: false, crossedDown: false, adxBarsAbove25: 0, adxSlope: 0, diSpreadSlope: 0, growthCrossUp: false, growthCrossDown: false };
   }
 
   const n = bars.length;
@@ -119,5 +119,10 @@ export function computeDMI(bars: OHLCVBar[], period = 14, skipSessionGaps = fals
     diSpreadSlope = spreadNow - spreadPrev;
   }
 
-  return { plusDI, minusDI, adx, trend, adxStrength, crossedUp, crossedDown, adxBarsAbove25, adxSlope, diSpreadSlope };
+  // Phase-change signals: DI just crossed AND ADX is rising (growth phase).
+  // These mark the exact bar where a new directional trend begins with momentum.
+  const growthCrossUp   = crossedUp   && adxSlope > 0;
+  const growthCrossDown = crossedDown && adxSlope > 0;
+
+  return { plusDI, minusDI, adx, trend, adxStrength, crossedUp, crossedDown, adxBarsAbove25, adxSlope, diSpreadSlope, growthCrossUp, growthCrossDown };
 }
