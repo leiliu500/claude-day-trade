@@ -223,8 +223,13 @@ function computeConfidence(signal: SignalPayload, option: OptionEvaluation): Con
   // Widening DI spread = momentum accelerating → good time to enter
   // Narrowing DI spread = momentum decelerating → bad time to enter (trend losing steam)
   // Uses signed spread (aligned with direction) so we measure directional momentum.
+  //
+  // IMPORTANT: When the trend is mature AND ADX is declining (exhaustion), a still-widening
+  // DI spread is a lagging artifact — it reflects the tail end of a move, not fresh momentum.
+  // In this state, positive accel bonus is suppressed to avoid entering at tops/bottoms.
   // Clamped -0.06..+0.05
   let momentumAccelBonus = 0;
+  const isExhaustingTrend = adxMaturityPenalty < 0 && trendPhaseBonus < 0;
   if (signal.direction !== 'neutral') {
     // Compute directional spread slope: positive = momentum growing in signal direction
     const htfDirSpreadNow = signal.direction === 'bullish'
@@ -244,6 +249,11 @@ function computeConfidence(signal: SignalPayload, option: OptionEvaluation): Con
       if (mtf.dmi.diSpreadSlope < -1) momentumAccelBonus -= 0.02;
     } else if (htfSpreadSlope < -0.5) {
       momentumAccelBonus -= 0.02;
+    }
+    // Suppress positive accel during exhaustion: mature trend + declining ADX means
+    // a widening DI spread is lagging, not a genuine momentum signal.
+    if (isExhaustingTrend && momentumAccelBonus > 0) {
+      momentumAccelBonus = 0;
     }
     momentumAccelBonus = Math.max(-0.06, Math.min(0.05, momentumAccelBonus));
   }

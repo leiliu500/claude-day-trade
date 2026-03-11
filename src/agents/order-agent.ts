@@ -1136,7 +1136,18 @@ export class OrderAgent {
       }
     }
 
-    // Stuck-negative: position NEVER reached 1% profit and has been losing for 5+ ticks.
+    // Early bleed: position NEVER profitable and already -5% within the first ~50s.
+    // Catches mistimed entries that go immediately underwater — waiting longer rarely recovers.
+    // The SPY260312C00677000 loss (-9.6%) would have been cut to ~-5% with this rule.
+    if (this.peakPnlPct < 1.0 && pnlPctNow <= -5 && this.tickCount >= 5) {
+      await this._executeExit(
+        `EARLY_BLEED: peak=+${this.peakPnlPct.toFixed(1)}%, now=${pnlPctNow.toFixed(1)}%` +
+        ` — never profitable after ${this.tickCount} ticks, cutting losses`,
+      );
+      return;
+    }
+
+    // Stuck-negative: position NEVER reached 1% profit and has been losing for 15+ ticks.
     // Catches slow-bleed entries that oscillate down without 3 consecutive drops (RAPID_DECLINE
     // never fires because any uptick resets consecutiveDeclines). Exit at -5% before hard stop.
     if (this.peakPnlPct < 1.0 && pnlPctNow <= -5 && this.tickCount >= 15) {
