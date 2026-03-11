@@ -57,6 +57,34 @@ function quoteAgeSeconds(timestamp?: string): number {
   return (Date.now() - new Date(timestamp).getTime()) / 1000;
 }
 
+/**
+ * Dynamic stop/TP multipliers based on HTF ADX trend strength.
+ *
+ *   Strong trend  (ADX > 30): wider TP, standard stop  → higher R:R (~3.0)
+ *     — trend has room to run; don't cap the upside too early.
+ *   Moderate trend (ADX 20–30): standard multipliers   → balanced R:R (~2.0)
+ *     — default behavior, reasonable in directional moves.
+ *   Weak/range    (ADX < 20): tighter stop AND tighter TP → lower R:R (~1.6)
+ *     — choppy market; take smaller wins, limit losses quickly.
+ *
+ * Returns { stopMult, tpMult } as multipliers of optionATR.
+ */
+function dynamicRRMultipliers(signal: SignalPayload): { stopMult: number; tpMult: number } {
+  const htf = signal.timeframes[signal.timeframes.length - 1];
+  const adx = htf?.dmi.adx ?? 20;
+
+  if (adx > 30) {
+    // Strong trend: standard stop (0.8), wide TP (2.4) → R:R ≈ 3.0
+    return { stopMult: 0.8, tpMult: 2.4 };
+  }
+  if (adx >= 20) {
+    // Moderate trend: standard stop (0.8), standard TP (1.6) → R:R ≈ 2.0
+    return { stopMult: 0.8, tpMult: 1.6 };
+  }
+  // Weak/range: tight stop (0.5), tight TP (0.8) → R:R ≈ 1.6
+  return { stopMult: 0.5, tpMult: 0.8 };
+}
+
 export class OptionAgent {
   private headers: Record<string, string>;
 
@@ -205,12 +233,14 @@ export class OptionAgent {
     // R:R computation using ATR scaled to option-premium units via delta.
     // Underlying ATR × |delta| converts the underlying move to an expected premium move.
     // Fallback delta = 0.5 (ATM assumption) when Greeks are unavailable.
+    // Stop/TP multipliers adapt to HTF ADX trend strength (see dynamicRRMultipliers).
     const optionAtr = signal.atr * Math.abs(contract.delta ?? 0.5);
+    const { stopMult, tpMult } = dynamicRRMultipliers(signal);
     let rrRatio = 0;
     if (optionAtr > 0 && contract.mid > 0) {
-      const stopDist = 0.8 * optionAtr;
-      const tpDist   = 1.6 * optionAtr;
-      rrRatio = tpDist / stopDist; // = 2.0 (fixed ratio, sanity check vs premium)
+      const stopDist = stopMult * optionAtr;
+      const tpDist   = tpMult * optionAtr;
+      rrRatio = stopDist > 0 ? tpDist / stopDist : 0;
       if (contract.mid - stopDist <= 0) rrRatio = 0;
     }
 
@@ -241,9 +271,11 @@ export class OptionAgent {
     const entry = contract.mid;
 
     // Scale underlying ATR to option-premium units via |delta| (fallback 0.5 for ATM).
+    // Stop/TP multipliers adapt to HTF ADX trend strength.
     const optionAtr = signal.atr * Math.abs(contract.delta ?? 0.5);
-    const stop = Math.max(0.01, entry - 0.8 * optionAtr);
-    const tp   = entry + 1.6 * optionAtr;
+    const { stopMult, tpMult } = dynamicRRMultipliers(signal);
+    const stop = Math.max(0.01, entry - stopMult * optionAtr);
+    const tp   = entry + tpMult * optionAtr;
 
     const rrRatio = entry - stop > 0 ? (tp - entry) / (entry - stop) : 0;
 

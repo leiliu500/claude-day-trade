@@ -38,9 +38,9 @@ export interface OptionCandidate {
   contract: OptionContract;
   score: OptionScore;
   entryPremium: number;     // mid at eval time
-  stopPremium: number;      // entry - 0.8 × ATR (calls) / entry + 0.8 × ATR (puts)
-  tpPremium: number;        // entry + 1.6 × ATR (calls) / entry - 1.6 × ATR (puts)
-  rrRatio: number;          // (tp - entry) / (entry - stop)
+  stopPremium: number;      // entry - stopMult × optionATR (dynamic: 0.5–0.8 based on ADX)
+  tpPremium: number;        // entry + tpMult × optionATR   (dynamic: 0.8–2.4 based on ADX)
+  rrRatio: number;          // (tp - entry) / (entry - stop) — varies ~1.6–3.0 by trend strength
 }
 
 export interface OptionEvaluation {
