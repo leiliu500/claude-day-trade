@@ -1252,6 +1252,7 @@ async function refreshAll() {
   loadPositions();
   loadPnl();
   loadSignals();
+  loadDecisions();
   loadEvaluations();
   loadAgents();
   loadApprovals();   // keeps the pending-approvals card updated

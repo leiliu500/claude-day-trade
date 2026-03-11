@@ -238,7 +238,10 @@ export class OptionAgent {
     const { stopMult, tpMult } = dynamicRRMultipliers(signal);
     let rrRatio = 0;
     if (optionAtr > 0 && contract.mid > 0) {
-      const stopDist = stopMult * optionAtr;
+      // Use the same trailing-stop floor as buildCandidate so R:R reflects the real stop
+      const atrStopDist = stopMult * optionAtr;
+      const trailingStopDist = contract.mid * 0.13; // entry × 0.87 → distance = entry × 0.13
+      const stopDist = Math.max(atrStopDist, trailingStopDist);
       const tpDist   = tpMult * optionAtr;
       rrRatio = stopDist > 0 ? tpDist / stopDist : 0;
       if (contract.mid - stopDist <= 0) rrRatio = 0;
@@ -274,7 +277,12 @@ export class OptionAgent {
     // Stop/TP multipliers adapt to HTF ADX trend strength.
     const optionAtr = signal.atr * Math.abs(contract.delta ?? 0.5);
     const { stopMult, tpMult } = dynamicRRMultipliers(signal);
-    const stop = Math.max(0.01, entry - stopMult * optionAtr);
+    // Floor: initial stop must never be tighter than the trailing stop's starting level
+    // (entry × 0.87). Otherwise the DB stop overrides the trailing stop via Math.max()
+    // in order-agent, causing hair-trigger exits on low-ATR entries.
+    const atrStop = entry - stopMult * optionAtr;
+    const trailingFloor = entry * 0.87;
+    const stop = Math.max(0.01, Math.min(atrStop, trailingFloor));
     const tp   = entry + tpMult * optionAtr;
 
     const rrRatio = entry - stop > 0 ? (tp - entry) / (entry - stop) : 0;
