@@ -332,20 +332,26 @@ async function loadDecisions() {
   const s = paging.decisions;
   const data = await fetch(`${API}/api/decisions?limit=${s.limit}&page=${s.page}&${filterQuery()}`).then(r => r.json()).catch(() => ({ decisions: [] }));
   s.total = data.total ?? 0;
-  const rows = (data.decisions || []).map(d => `
+  const rows = (data.decisions || []).map(d => {
+    const es = d.entry_strategy;
+    const stageLbl = es ? es.stage.replace(/_/g, ' ') : '—';
+    const stageClass = es?.overrideTriggered ? 'bullish' : '';
+    const overrideBadge = es?.overrideTriggered ? ' <span style="font-size:0.75em;background:#e67e22;color:#fff;padding:1px 4px;border-radius:3px">OVERRIDE</span>' : '';
+    return `
     <tr>
       <td>${fmtTime(d.created_at)}</td>
       <td><b>${d.ticker}</b></td>
       <td>${d.profile}</td>
       <td class="${d.direction ?? ''}">${d.direction ?? '—'}</td>
       <td class="decision-${d.decision_type}"><b>${d.decision_type}</b></td>
+      <td class="${stageClass}">${stageLbl}${overrideBadge}</td>
       <td>${d.confirmation_count}</td>
       <td>${d.orchestration_confidence ? (parseFloat(d.orchestration_confidence) * 100).toFixed(0) + '%' : '—'}</td>
       <td>${d.urgency ?? '—'}</td>
       <td>${d.should_execute ? '✅' : '—'}</td>
       <td class="reasoning" title="${d.reasoning || ''}">${d.reasoning || '—'}</td>
     </tr>
-  `);
+  `; });
   setRows('tbl-decisions', rows);
   renderPagination('decisions', loadDecisions);
 }

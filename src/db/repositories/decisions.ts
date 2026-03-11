@@ -7,8 +7,8 @@ export async function insertDecision(decision: DecisionResult): Promise<string> 
     `INSERT INTO trading.trading_decisions (
       id, session_id, signal_snapshot_id, ticker, profile, trade_date,
       decision_type, direction, confirmation_count, orchestration_confidence,
-      reasoning, urgency, should_execute
-    ) VALUES ($1,$2,$3,$4,$5,(CURRENT_TIMESTAMP AT TIME ZONE 'America/New_York')::date,$6,$7,$8,$9,$10,$11,$12)
+      reasoning, urgency, should_execute, entry_strategy
+    ) VALUES ($1,$2,$3,$4,$5,(CURRENT_TIMESTAMP AT TIME ZONE 'America/New_York')::date,$6,$7,$8,$9,$10,$11,$12,$13)
     RETURNING id`,
     [
       decision.id,
@@ -23,6 +23,7 @@ export async function insertDecision(decision: DecisionResult): Promise<string> 
       decision.reasoning,
       decision.urgency,
       decision.shouldExecute,
+      decision.entryStrategy ? JSON.stringify(decision.entryStrategy) : null,
     ]
   );
   return rows[0]!.id;

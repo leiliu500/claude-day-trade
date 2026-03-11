@@ -135,7 +135,7 @@ export function startDashboard(port: number): void {
       const [{ rows }, { rows: countRows }] = await Promise.all([
         pool.query(
           `SELECT id, ticker, profile, direction, decision_type, confirmation_count,
-                  orchestration_confidence, urgency, should_execute, reasoning, created_at
+                  orchestration_confidence, urgency, should_execute, reasoning, entry_strategy, created_at
            FROM trading.trading_decisions
            ${whereClause}
            ORDER BY created_at DESC
