@@ -183,6 +183,8 @@ export class OrderAgent {
   private lastStreamPrice: number | null = null;
   /** Consecutive stream-level price declines (5s granularity) — feeds profit-lock rules in stream handler. */
   private streamConsecutiveDeclines = 0;
+  /** Rolling price+timestamp buffer for velocity detection — keeps last 20 entries (~100s at 5s stream cadence). */
+  private priceHistory: { price: number; ts: number }[] = [];
 
   constructor(private readonly cfg: OrderAgentConfig | RestoredOrderAgentConfig) {
     if ('positionId' in cfg) {
@@ -806,6 +808,10 @@ export class OrderAgent {
     }
     this.lastStreamPrice = midPrice;
 
+    // ── Record into velocity buffer (ring buffer of 20) ──
+    this.priceHistory.push({ price: midPrice, ts: now });
+    if (this.priceHistory.length > 20) this.priceHistory.shift();
+
     // ── Hard stop ──
     if (midPrice <= streamStop) {
       console.log(
@@ -886,7 +892,51 @@ export class OrderAgent {
       return;
     }
 
+    // ── Velocity-based exits (rate of P&L change within a rolling window) ──
+    // A sharp drop within any 15s window is a strong reversal signal regardless of absolute level.
+    if (this.priceHistory.length >= 3) {
+      const windowMs = 15_000;
+      const cutoffTs = now - windowMs;
+      const oldest = this.priceHistory.find(p => p.ts >= cutoffTs) ?? this.priceHistory[0]!;
+      if (oldest.price > 0) {
+        const velocityPct = ((midPrice - oldest.price) / oldest.price) * 100;
+        // Fast crash: dropped 4%+ in ≤15s — exit immediately regardless of peak/ticks
+        if (velocityPct <= -4) {
+          await this._executeExit(`VELOCITY_CRASH [stream]: ${velocityPct.toFixed(1)}% in ${((now - oldest.ts) / 1000).toFixed(0)}s — rapid price collapse`);
+          return;
+        }
+        // Fast fade: dropped 2.5%+ in ≤15s while already losing — entry is wrong
+        if (velocityPct <= -2.5 && pnlPct < 0) {
+          await this._executeExit(`VELOCITY_FADE [stream]: ${velocityPct.toFixed(1)}% in ${((now - oldest.ts) / 1000).toFixed(0)}s, pnl=${pnlPct.toFixed(1)}% — accelerating loss`);
+          return;
+        }
+        // Profit velocity reversal: dropped 3%+ in ≤15s from profitable position
+        if (velocityPct <= -3 && pnlPct > 0 && this.peakPnlPct >= 5) {
+          await this._executeExit(`VELOCITY_PROFIT_DROP [stream]: ${velocityPct.toFixed(1)}% in ${((now - oldest.ts) / 1000).toFixed(0)}s, pnl=+${pnlPct.toFixed(1)}%, peak=+${this.peakPnlPct.toFixed(1)}% — rapid profit erosion`);
+          return;
+        }
+      }
+    }
+
+    // ── Small-gain profit protection (peak 2-4% range) ──
+    // Catches positions that had modest gains but are giving them all back.
+    // Without this, peaks of 2-4% have zero protection until they hit the trailing stop at -13%.
+    if (this.peakPnlPct >= 3 && this.peakPnlPct < 5 && pnlPct <= 0 && this.tickCount >= 4) {
+      await this._executeExit(`SMALL_GAIN_GONE [stream]: peak=+${this.peakPnlPct.toFixed(1)}%, now=${pnlPct.toFixed(1)}% — modest gains fully surrendered`);
+      return;
+    }
+    if (this.peakPnlPct >= 2 && this.peakPnlPct < 3 && pnlPct <= -0.5 && this.tickCount >= 6) {
+      await this._executeExit(`TINY_GAIN_REVERSED [stream]: peak=+${this.peakPnlPct.toFixed(1)}%, now=${pnlPct.toFixed(1)}% — small gain reversed to loss`);
+      return;
+    }
+
     // ── Bad entry fast-cut rules (minimize loss on entries that were immediately wrong) ──
+
+    // Never confirmed: position never went positive within first 3 ticks (~30s) and already -1.5%
+    if (this.peakPnlPct < 0.3 && pnlPct <= -1.5 && this.tickCount >= 3 && this.tickCount <= 8) {
+      await this._executeExit(`NEVER_CONFIRMED [stream]: peak=+${this.peakPnlPct.toFixed(1)}%, now=${pnlPct.toFixed(1)}% — price never went positive, cutting early`);
+      return;
+    }
 
     // Immediate adverse: price has fallen every tick since fill and already -3%
     if (this.peakPnlPct < 0.5 && pnlPct <= -3 && this.streamConsecutiveDeclines >= 3 && this.tickCount >= 3) {
@@ -894,14 +944,14 @@ export class OrderAgent {
       return;
     }
 
-    // Bad entry cut: never confirmed (peak < +1%) after 60s and losing -2%+
-    if (this.peakPnlPct < 1.0 && pnlPct <= -2 && this.tickCount >= 6) {
+    // Bad entry cut: never confirmed (peak < +1%) after 40s and losing -1.5%+ (tightened from -2%/60s)
+    if (this.peakPnlPct < 1.0 && pnlPct <= -1.5 && this.tickCount >= 4) {
       await this._executeExit(`BAD_ENTRY_CUT [stream]: peak=+${this.peakPnlPct.toFixed(1)}%, now=${pnlPct.toFixed(1)}% — thesis never confirmed after ${Math.round(this.tickCount * 10 / 60)}+ min`);
       return;
     }
 
-    // Early bleed: never profitable and already -4% (tightened from -5%)
-    if (this.peakPnlPct < 1.0 && pnlPct <= -4 && this.tickCount >= 4) {
+    // Early bleed: never profitable and already -3% (tightened from -4%/4 ticks)
+    if (this.peakPnlPct < 1.0 && pnlPct <= -3 && this.tickCount >= 3) {
       await this._executeExit(`EARLY_BLEED [stream]: peak=+${this.peakPnlPct.toFixed(1)}%, now=${pnlPct.toFixed(1)}% — never profitable`);
       return;
     }
@@ -973,6 +1023,11 @@ export class OrderAgent {
         this.consecutiveDeclines = 0;
       }
     }
+
+    // Record into velocity buffer (shared with stream handler)
+    const nowMs = Date.now();
+    this.priceHistory.push({ price: currentPrice, ts: nowMs });
+    if (this.priceHistory.length > 20) this.priceHistory.shift();
 
     // ── 1. Hard stop / TP (deterministic, no AI override) ─────────────────
     if (currentPrice <= stop) {
@@ -1156,7 +1211,58 @@ export class OrderAgent {
       }
     }
 
+    // ── Velocity-based exits (rate of P&L change within a rolling window) ──
+    if (this.priceHistory.length >= 3) {
+      const windowMs = 15_000;
+      const cutoffTs = nowMs - windowMs;
+      const oldest = this.priceHistory.find(p => p.ts >= cutoffTs) ?? this.priceHistory[0]!;
+      if (oldest.price > 0) {
+        const velocityPct = ((currentPrice - oldest.price) / oldest.price) * 100;
+        if (velocityPct <= -4) {
+          await this._executeExit(
+            `VELOCITY_CRASH: ${velocityPct.toFixed(1)}% in ${((nowMs - oldest.ts) / 1000).toFixed(0)}s — rapid price collapse`,
+          );
+          return;
+        }
+        if (velocityPct <= -2.5 && pnlPctNow < 0) {
+          await this._executeExit(
+            `VELOCITY_FADE: ${velocityPct.toFixed(1)}% in ${((nowMs - oldest.ts) / 1000).toFixed(0)}s, pnl=${pnlPctNow.toFixed(1)}% — accelerating loss`,
+          );
+          return;
+        }
+        if (velocityPct <= -3 && pnlPctNow > 0 && this.peakPnlPct >= 5) {
+          await this._executeExit(
+            `VELOCITY_PROFIT_DROP: ${velocityPct.toFixed(1)}% in ${((nowMs - oldest.ts) / 1000).toFixed(0)}s, pnl=+${pnlPctNow.toFixed(1)}%, peak=+${this.peakPnlPct.toFixed(1)}% — rapid profit erosion`,
+          );
+          return;
+        }
+      }
+    }
+
+    // ── Small-gain profit protection (peak 2-4% range) ──
+    if (this.peakPnlPct >= 3 && this.peakPnlPct < 5 && pnlPctNow <= 0 && this.tickCount >= 4) {
+      await this._executeExit(
+        `SMALL_GAIN_GONE: peak=+${this.peakPnlPct.toFixed(1)}%, now=${pnlPctNow.toFixed(1)}% — modest gains fully surrendered`,
+      );
+      return;
+    }
+    if (this.peakPnlPct >= 2 && this.peakPnlPct < 3 && pnlPctNow <= -0.5 && this.tickCount >= 6) {
+      await this._executeExit(
+        `TINY_GAIN_REVERSED: peak=+${this.peakPnlPct.toFixed(1)}%, now=${pnlPctNow.toFixed(1)}% — small gain reversed to loss`,
+      );
+      return;
+    }
+
     // ── Bad entry fast-cut rules (minimize loss on entries that were immediately wrong) ──
+
+    // Never confirmed: position never went positive within first 3 ticks (~30s) and already -1.5%
+    if (this.peakPnlPct < 0.3 && pnlPctNow <= -1.5 && this.tickCount >= 3 && this.tickCount <= 8) {
+      await this._executeExit(
+        `NEVER_CONFIRMED: peak=+${this.peakPnlPct.toFixed(1)}%, now=${pnlPctNow.toFixed(1)}%` +
+        ` — price never went positive, cutting early`,
+      );
+      return;
+    }
 
     // Immediate adverse: price has fallen every tick since fill and already -3%
     // Catches entries where price moved against us from the moment we filled.
@@ -1168,9 +1274,8 @@ export class OrderAgent {
       return;
     }
 
-    // Bad entry cut: never confirmed (peak < +1%) after 60s and losing -2%+.
-    // If the entry thesis was correct, we'd expect at least +1% within the first minute.
-    if (this.peakPnlPct < 1.0 && pnlPctNow <= -2 && this.tickCount >= 6) {
+    // Bad entry cut: never confirmed (peak < +1%) after 40s and losing -1.5%+ (tightened from -2%/60s).
+    if (this.peakPnlPct < 1.0 && pnlPctNow <= -1.5 && this.tickCount >= 4) {
       await this._executeExit(
         `BAD_ENTRY_CUT: peak=+${this.peakPnlPct.toFixed(1)}%, now=${pnlPctNow.toFixed(1)}%` +
         ` — thesis never confirmed after ${Math.round(this.tickCount * 10 / 60)} min, cutting early`,
@@ -1178,9 +1283,8 @@ export class OrderAgent {
       return;
     }
 
-    // Early bleed: position NEVER profitable and already -4% within the first ~40s.
-    // Tightened from -5%/5 ticks — bad entries rarely recover after bleeding this much.
-    if (this.peakPnlPct < 1.0 && pnlPctNow <= -4 && this.tickCount >= 4) {
+    // Early bleed: position NEVER profitable and already -3% (tightened from -4%/4 ticks).
+    if (this.peakPnlPct < 1.0 && pnlPctNow <= -3 && this.tickCount >= 3) {
       await this._executeExit(
         `EARLY_BLEED: peak=+${this.peakPnlPct.toFixed(1)}%, now=${pnlPctNow.toFixed(1)}%` +
         ` — never profitable after ${this.tickCount} ticks, cutting losses`,
@@ -1754,6 +1858,10 @@ export class OrderAgent {
                  : reason.startsWith('HOLD_TRAP')       ? '📉'
                  : reason.startsWith('PRE_EMPTIVE')     ? '✂️'
                  : reason.startsWith('PROFIT_REVERSED') ? '🔄'
+                 : reason.startsWith('VELOCITY')          ? '💨'
+                 : reason.startsWith('SMALL_GAIN')      ? '📉'
+                 : reason.startsWith('TINY_GAIN')       ? '📉'
+                 : reason.startsWith('NEVER_CONFIRMED') ? '❌'
                  : reason.startsWith('IMMEDIATE_ADVERSE') ? '❌'
                  : reason.startsWith('IMMEDIATE')       ? '⚡'
                  : reason.startsWith('BAD_ENTRY')       ? '❌'
@@ -1770,9 +1878,13 @@ export class OrderAgent {
             ? 'Orchestrator (immediate)'
             : reason.startsWith('UNFILLED_')
               ? 'Fill timeout'
-              : reason.startsWith('IMMEDIATE_ADVERSE') || reason.startsWith('BAD_ENTRY')
-                ? 'Bad entry fast-cut'
-                : 'Deterministic rule';
+              : reason.startsWith('VELOCITY')
+                ? 'Velocity exit'
+                : reason.startsWith('SMALL_GAIN') || reason.startsWith('TINY_GAIN')
+                  ? 'Small-gain protection'
+                  : reason.startsWith('NEVER_CONFIRMED') || reason.startsWith('IMMEDIATE_ADVERSE') || reason.startsWith('BAD_ENTRY')
+                    ? 'Bad entry fast-cut'
+                    : 'Deterministic rule';
 
     await notifyAlert(
       `${emoji} <b>Exit: ${ticker}</b> — ${sourceLabel}\n` +
