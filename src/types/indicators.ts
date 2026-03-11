@@ -12,8 +12,8 @@ export interface DMIResult {
   adxBarsAbove25: number; // consecutive recent bars where ADX > 25 (trend maturity)
   adxSlope: number;       // ADX change over last 3 bars (positive = strengthening trend)
   diSpreadSlope: number;  // directional DI spread change over last 3 bars (positive = widening)
-  growthCrossUp: boolean;   // DI+ just crossed above DI- AND ADX slope > 0 (bullish phase change)
-  growthCrossDown: boolean; // DI- just crossed above DI+ AND ADX slope > 0 (bearish phase change)
+  growthCrossUp: boolean;   // DI+ crossed above DI- within last 2 bars (still holding) AND ADX slope > 0 (bullish phase change)
+  growthCrossDown: boolean; // DI- crossed above DI+ within last 2 bars (still holding) AND ADX slope > 0 (bearish phase change)
 }
 
 export interface ATRResult {

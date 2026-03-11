@@ -336,20 +336,22 @@ export class DecisionOrchestrator {
         analysis.confidence >= 0.72 &&
         signal.alignment !== 'mixed';
 
-      // (C) Phase-change override: HTF DI just crossed in signal direction with rising ADX
-      //     (growth phase). This is a definitive trend-change signal — enter immediately
-      //     without waiting for the 2-stage confirmation gate.
-      //     Requires confidence >= 0.72 and non-mixed alignment to filter noise.
+      // (C) Phase-change override: HTF DI crossed in signal direction within last 2 bars
+      //     (still holding) with rising ADX (growth phase). This is a definitive trend-change
+      //     signal — enter immediately without waiting for the 2-stage confirmation gate.
+      //     Requires confidence >= 0.60 and non-mixed alignment to filter noise.
+      //     Threshold is lower than other overrides because the structural signal (growth cross
+      //     + rising ADX + non-mixed alignment) already provides strong filtering.
       const htfTf = signal.timeframes[2] ?? signal.timeframes[0];
       const phaseChangeOk = !!htfTf &&
-        analysis.confidence >= 0.72 &&
+        analysis.confidence >= 0.60 &&
         signal.alignment !== 'mixed' &&
         (signal.direction === 'bullish' ? htfTf.dmi.growthCrossUp : htfTf.dmi.growthCrossDown);
 
       if (!overrideOk && !postWinRelaxOk && !phaseChangeOk && priorCount < 1) {
         rawOutput.decision_type = 'WAIT';
         rawOutput.should_execute = false;
-        rawOutput.reasoning = `[STAGE-1 OBSERVE] [TRIGGER: AI recommended NEW_ENTRY but server gate blocked — priorCount=${priorCount}, needs ≥1 confirm] Building conviction (count will advance to 1). Override requires confidence>=0.92 + all_aligned, or post-WIN relaxation (confidence>=0.72 + non-mixed alignment), or phase-change (HTF DI cross + rising ADX). ${rawOutput.reasoning}`;
+        rawOutput.reasoning = `[STAGE-1 OBSERVE] [TRIGGER: AI recommended NEW_ENTRY but server gate blocked — priorCount=${priorCount}, needs ≥1 confirm] Building conviction (count will advance to 1). Override requires confidence>=0.92 + all_aligned, or post-WIN relaxation (confidence>=0.72 + non-mixed alignment), or phase-change (confidence>=0.60 + HTF DI cross within 2 bars + rising ADX). ${rawOutput.reasoning}`;
         isStage1ObserveWait = true; // count advances to 1 so next cycle can enter at Stage-2
         console.log(`[DecisionOrchestrator] NEW_ENTRY blocked by confirmation gate (Stage-1 OBSERVE, priorCount=${priorCount}, confidence=${analysis.confidence.toFixed(2)}, alignment=${signal.alignment}, lastEvalWasWin=${lastEvalWasWin})`);
       } else if (phaseChangeOk && priorCount < 1 && !overrideOk && !postWinRelaxOk) {
@@ -359,6 +361,30 @@ export class DecisionOrchestrator {
         console.log(`[DecisionOrchestrator] NEW_ENTRY phase-change override applied — ${side} (priorCount=${priorCount}, confidence=${analysis.confidence.toFixed(2)}, alignment=${signal.alignment}, htfADXSlope=${htfTf!.dmi.adxSlope.toFixed(1)})`);
       } else if (postWinRelaxOk && priorCount < 1 && !overrideOk) {
         console.log(`[DecisionOrchestrator] NEW_ENTRY post-WIN relaxation applied (priorCount=${priorCount}, confidence=${analysis.confidence.toFixed(2)}, alignment=${signal.alignment})`);
+      }
+    }
+
+    // (D) Phase-change rescue: AI output WAIT but phase change conditions are met.
+    //     This closes the gap where confidence is 0.60–0.64 (below AI's 0.65 threshold
+    //     so AI outputs WAIT) but the structural phase-change signal is strong enough
+    //     to warrant immediate entry. Without this, phase changes in that confidence
+    //     range are lost entirely — the server override above only checks NEW_ENTRY.
+    if (!isPhaseChangeOverride && !isHardTimeGateBlock &&
+        rawOutput.decision_type === 'WAIT' && !rawOutput.reasoning.includes('[GATE OVERRIDE]')) {
+      const htfTf = signal.timeframes[2] ?? signal.timeframes[0];
+      const phaseChangeRescue = !!htfTf &&
+        analysis.confidence >= 0.60 &&
+        signal.alignment !== 'mixed' &&
+        signal.direction &&
+        (signal.direction === 'bullish' ? htfTf.dmi.growthCrossUp : htfTf.dmi.growthCrossDown);
+      if (phaseChangeRescue) {
+        const side = signal.direction === 'bullish' ? 'CALL' : 'PUT';
+        rawOutput.decision_type = 'NEW_ENTRY';
+        rawOutput.should_execute = true;
+        rawOutput.reasoning = `[PHASE-CHANGE RESCUE] AI output WAIT (confidence ${analysis.confidence.toFixed(2)} below 0.65 threshold) but HTF DI cross ${signal.direction} + rising ADX detected → overriding to ${side} entry. ${rawOutput.reasoning}`;
+        isPhaseChangeOverride = true;
+        isStage1ObserveWait = false;
+        console.log(`[DecisionOrchestrator] Phase-change rescue: WAIT → NEW_ENTRY (confidence=${analysis.confidence.toFixed(2)}, alignment=${signal.alignment}, htfADXSlope=${htfTf!.dmi.adxSlope.toFixed(1)})`);
       }
     }
 

@@ -101,6 +101,13 @@ export function computeDMI(bars: OHLCVBar[], period = 14, skipSessionGaps = fals
   const crossedUp = plusDI > minusDI && prevPlusDI <= prevMinusDI;
   const crossedDown = minusDI > plusDI && prevMinusDI <= prevPlusDI;
 
+  // Recent cross: DI crossed within the last 2 bars AND still in the crossed state now.
+  // Wider window than crossedUp/Down (single-bar) to avoid missing crosses between evaluation cycles.
+  const prev2PlusDI = diPlusArr[diPlusArr.length - 3] ?? 0;
+  const prev2MinusDI = diMinusArr[diMinusArr.length - 3] ?? 0;
+  const recentCrossUp = plusDI > minusDI && (prevPlusDI <= prevMinusDI || prev2PlusDI <= prev2MinusDI);
+  const recentCrossDown = minusDI > plusDI && (prevMinusDI <= prevPlusDI || prev2MinusDI <= prev2PlusDI);
+
   // ADX slope: change over last 3 bars — positive = trend strengthening (growth phase)
   // negative = trend weakening (exhaustion phase)
   const slopeLookback = 3;
@@ -119,10 +126,11 @@ export function computeDMI(bars: OHLCVBar[], period = 14, skipSessionGaps = fals
     diSpreadSlope = spreadNow - spreadPrev;
   }
 
-  // Phase-change signals: DI just crossed AND ADX is rising (growth phase).
-  // These mark the exact bar where a new directional trend begins with momentum.
-  const growthCrossUp   = crossedUp   && adxSlope > 0;
-  const growthCrossDown = crossedDown && adxSlope > 0;
+  // Phase-change signals: DI crossed within last 2 bars AND still in crossed state AND ADX is rising.
+  // Uses recentCross (2-bar window) instead of single-bar crossedUp/Down to avoid missing
+  // phase changes between evaluation cycles.
+  const growthCrossUp   = recentCrossUp   && adxSlope > 0;
+  const growthCrossDown = recentCrossDown && adxSlope > 0;
 
   return { plusDI, minusDI, adx, trend, adxStrength, crossedUp, crossedDown, adxBarsAbove25, adxSlope, diSpreadSlope, growthCrossUp, growthCrossDown };
 }
