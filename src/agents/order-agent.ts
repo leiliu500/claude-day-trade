@@ -886,8 +886,22 @@ export class OrderAgent {
       return;
     }
 
-    // ── Early bleed: never profitable and already -5% (mirrors 10s tick EARLY_BLEED) ──
-    if (this.peakPnlPct < 1.0 && pnlPct <= -5 && this.tickCount >= 5) {
+    // ── Bad entry fast-cut rules (minimize loss on entries that were immediately wrong) ──
+
+    // Immediate adverse: price has fallen every tick since fill and already -3%
+    if (this.peakPnlPct < 0.5 && pnlPct <= -3 && this.streamConsecutiveDeclines >= 3 && this.tickCount >= 3) {
+      await this._executeExit(`IMMEDIATE_ADVERSE [stream]: peak=+${this.peakPnlPct.toFixed(1)}%, now=${pnlPct.toFixed(1)}%, ${this.streamConsecutiveDeclines} consecutive drops — entry immediately wrong`);
+      return;
+    }
+
+    // Bad entry cut: never confirmed (peak < +1%) after 60s and losing -2%+
+    if (this.peakPnlPct < 1.0 && pnlPct <= -2 && this.tickCount >= 6) {
+      await this._executeExit(`BAD_ENTRY_CUT [stream]: peak=+${this.peakPnlPct.toFixed(1)}%, now=${pnlPct.toFixed(1)}% — thesis never confirmed after ${Math.round(this.tickCount * 10 / 60)}+ min`);
+      return;
+    }
+
+    // Early bleed: never profitable and already -4% (tightened from -5%)
+    if (this.peakPnlPct < 1.0 && pnlPct <= -4 && this.tickCount >= 4) {
       await this._executeExit(`EARLY_BLEED [stream]: peak=+${this.peakPnlPct.toFixed(1)}%, now=${pnlPct.toFixed(1)}% — never profitable`);
       return;
     }
@@ -1142,10 +1156,31 @@ export class OrderAgent {
       }
     }
 
-    // Early bleed: position NEVER profitable and already -5% within the first ~50s.
-    // Catches mistimed entries that go immediately underwater — waiting longer rarely recovers.
-    // The SPY260312C00677000 loss (-9.6%) would have been cut to ~-5% with this rule.
-    if (this.peakPnlPct < 1.0 && pnlPctNow <= -5 && this.tickCount >= 5) {
+    // ── Bad entry fast-cut rules (minimize loss on entries that were immediately wrong) ──
+
+    // Immediate adverse: price has fallen every tick since fill and already -3%
+    // Catches entries where price moved against us from the moment we filled.
+    if (this.peakPnlPct < 0.5 && pnlPctNow <= -3 && this.consecutiveDeclines >= 3 && this.tickCount >= 3) {
+      await this._executeExit(
+        `IMMEDIATE_ADVERSE: peak=+${this.peakPnlPct.toFixed(1)}%, now=${pnlPctNow.toFixed(1)}%` +
+        ` — ${this.consecutiveDeclines} consecutive drops, entry immediately wrong`,
+      );
+      return;
+    }
+
+    // Bad entry cut: never confirmed (peak < +1%) after 60s and losing -2%+.
+    // If the entry thesis was correct, we'd expect at least +1% within the first minute.
+    if (this.peakPnlPct < 1.0 && pnlPctNow <= -2 && this.tickCount >= 6) {
+      await this._executeExit(
+        `BAD_ENTRY_CUT: peak=+${this.peakPnlPct.toFixed(1)}%, now=${pnlPctNow.toFixed(1)}%` +
+        ` — thesis never confirmed after ${Math.round(this.tickCount * 10 / 60)} min, cutting early`,
+      );
+      return;
+    }
+
+    // Early bleed: position NEVER profitable and already -4% within the first ~40s.
+    // Tightened from -5%/5 ticks — bad entries rarely recover after bleeding this much.
+    if (this.peakPnlPct < 1.0 && pnlPctNow <= -4 && this.tickCount >= 4) {
       await this._executeExit(
         `EARLY_BLEED: peak=+${this.peakPnlPct.toFixed(1)}%, now=${pnlPctNow.toFixed(1)}%` +
         ` — never profitable after ${this.tickCount} ticks, cutting losses`,
@@ -1719,7 +1754,9 @@ export class OrderAgent {
                  : reason.startsWith('HOLD_TRAP')       ? '📉'
                  : reason.startsWith('PRE_EMPTIVE')     ? '✂️'
                  : reason.startsWith('PROFIT_REVERSED') ? '🔄'
+                 : reason.startsWith('IMMEDIATE_ADVERSE') ? '❌'
                  : reason.startsWith('IMMEDIATE')       ? '⚡'
+                 : reason.startsWith('BAD_ENTRY')       ? '❌'
                  : '🚪';
 
     // Label the source so the notification is unambiguous
@@ -1733,7 +1770,9 @@ export class OrderAgent {
             ? 'Orchestrator (immediate)'
             : reason.startsWith('UNFILLED_')
               ? 'Fill timeout'
-              : 'Deterministic rule';
+              : reason.startsWith('IMMEDIATE_ADVERSE') || reason.startsWith('BAD_ENTRY')
+                ? 'Bad entry fast-cut'
+                : 'Deterministic rule';
 
     await notifyAlert(
       `${emoji} <b>Exit: ${ticker}</b> — ${sourceLabel}\n` +

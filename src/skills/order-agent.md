@@ -94,6 +94,9 @@ The system fires these exits deterministically (no AI needed) before your evalua
 - **Profit reversed**: peak ≥ +1% AND current P&L < 0% → auto EXIT (after 60s hold; or immediately if peak ≥ +5%) (profitable position turned to loss)
 - **Small-peak reversal**: peak ≥ +5% AND current P&L ≤ -5% → auto EXIT (now mostly superseded by above)
 - **Hold trap**: position was profitable (peak > 0%), last 3 ticks all showed P&L ≤ -2% → auto EXIT
+- **Immediate adverse**: peak < +0.5% AND P&L ≤ -3% AND 3+ consecutive declines AND held ≥ 30s → auto EXIT (entry immediately wrong)
+- **Bad entry cut**: peak < +1% AND P&L ≤ -2% AND held ≥ 60s → auto EXIT (thesis never confirmed)
+- **Early bleed**: peak < +1% AND P&L ≤ -4% AND held ≥ 40s → auto EXIT (never profitable, tightened from -5%)
 - **Pre-emptive loss**: P&L ≤ -10% AND held ≥ 3 min → auto EXIT
 
 If you are called, these conditions have NOT triggered. Adjust your reasoning accordingly.
