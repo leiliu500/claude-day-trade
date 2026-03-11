@@ -881,8 +881,14 @@ export class OrderAgent {
       await this._executeExit(`PEAK_REVERSAL_SMALL [stream]: peak=+${this.peakPnlPct.toFixed(1)}%, now=${pnlPct.toFixed(1)}%`);
       return;
     }
-    if (pnlPct <= -10 && this.tickCount >= 18) {
+    if (pnlPct <= -10 && this.tickCount >= 9) {
       await this._executeExit(`PRE_EMPTIVE_LOSS [stream]: pnl=${pnlPct.toFixed(1)}%`);
+      return;
+    }
+
+    // ── Early bleed: never profitable and already -5% (mirrors 10s tick EARLY_BLEED) ──
+    if (this.peakPnlPct < 1.0 && pnlPct <= -5 && this.tickCount >= 5) {
+      await this._executeExit(`EARLY_BLEED [stream]: peak=+${this.peakPnlPct.toFixed(1)}%, now=${pnlPct.toFixed(1)}% — never profitable`);
       return;
     }
   }
