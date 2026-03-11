@@ -38,7 +38,7 @@ function computeConfidence(signal: SignalPayload, option: OptionEvaluation): Con
   const adxBonus = htf.dmi.adx > 25 ? 0.05 : 0;
 
   // DI cross bonus — fresh DI crossover on the most recent bar is a strong timing signal.
-  // HTF aligned cross: +0.05 | MTF aligned cross: +0.03  (cap +0.06 combined)
+  // HTF aligned cross: +0.05 | MTF aligned cross: +0.03 | HTF growth cross: +0.04 extra (cap +0.10)
   // HTF adverse cross: -0.05 | MTF adverse cross: -0.03  (cap -0.06 combined)
   // Adverse cross means momentum just flipped opposite to signal direction.
   let diCrossBonus = 0;
@@ -51,7 +51,10 @@ function computeConfidence(signal: SignalPayload, option: OptionEvaluation): Con
     if (mtfAligned) diCrossBonus += 0.03;
     if (htfAdverse) diCrossBonus -= 0.05;
     if (mtfAdverse) diCrossBonus -= 0.03;
-    diCrossBonus = Math.max(-0.06, Math.min(0.06, diCrossBonus));
+    // Growth cross (DI cross + rising ADX) is a phase-change signal — extra bonus
+    const htfGrowth = signal.direction === 'bullish' ? htf.dmi.growthCrossUp : htf.dmi.growthCrossDown;
+    if (htfGrowth) diCrossBonus += 0.04;
+    diCrossBonus = Math.max(-0.06, Math.min(0.10, diCrossBonus));
   }
 
   // Alignment bonus
@@ -357,6 +360,8 @@ async function generateExplanation(
         tfPrice < tfLower             ? 'below_2sigma' :
         tfPrice < tfVwap - tfDev      ? 'below_1sigma' : 'near_vwap';
       const diCross =
+        tf.dmi.growthCrossUp  ? 'bullish_growth' :
+        tf.dmi.growthCrossDown ? 'bearish_growth' :
         tf.dmi.crossedUp   ? 'bullish' :
         tf.dmi.crossedDown ? 'bearish' : 'none';
       return {

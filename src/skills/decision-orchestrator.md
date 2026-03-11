@@ -113,6 +113,13 @@ Each timeframe includes `obv_trend` (bullish/bearish/neutral) and `obv_divergenc
 - OBV divergence MUST NEVER raise the confirmation threshold or delay entry.
 - If confidence >= 0.65 and confirmation count is sufficient, OBV divergence cannot block entry.
 
+## Phase-Change (Growth Cross) Awareness
+Each timeframe's `di_cross` can be `bullish_growth` or `bearish_growth` — this means a DI crossover happened AND ADX slope is positive (trend strengthening). This is a **phase-change signal** indicating a new trend is forming with rising momentum.
+- HTF `di_cross` = `bullish_growth` or `bearish_growth`: strongest phase-change signal — note as high-conviction supporting evidence in reasoning
+- If the phase-change direction matches the signal direction, treat this as a strong confirming factor at Stage-2. Mention: "HTF growth cross confirms trend phase-change"
+- A phase-change signal that falls to the normal 2-cycle path (confidence was below override threshold) still carries extra conviction — it should reinforce the Stage-2 NEW_ENTRY decision, not be ignored
+- Phase-change signals are already reflected in the confidence score via an extra DI cross bonus, but you should still note them explicitly in reasoning for transparency
+
 ## ATR Awareness
 Each timeframe includes `atr_pct` (ATR as % of last close).
 - HTF atr_pct > 1.5% = elevated volatility — note in risk_notes
