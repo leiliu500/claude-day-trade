@@ -1,5 +1,5 @@
 export interface ConfidenceBreakdown {
-  base: number;                    // 0.40-0.45 starting point
+  base: number;                    // 0.38 starting point (direction-neutral)
   diSpreadBonus: number;           // 0..0.25
   adxBonus: number;                // 0 or +0.05
   diCrossBonus: number;            // -0.06..+0.06 — fresh DI crossover timing signal (HTF ±0.05, MTF ±0.03)

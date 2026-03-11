@@ -15,11 +15,11 @@ function computeConfidence(signal: SignalPayload, option: OptionEvaluation): Con
   const tfs = signal.timeframes;
   const [ltf, mtf, htf] = tfs;
   if (!ltf || !mtf || !htf) {
-    return { base: 0.35, diSpreadBonus: 0, adxBonus: 0, diCrossBonus: 0, alignmentBonus: 0, tdAdjustment: 0, obvBonus: 0, vwapBonus: 0, oiVolumeBonus: 0, pricePositionAdjustment: 0, adxMaturityPenalty: 0, trendPhaseBonus: 0, momentumAccelBonus: 0, structureBonus: 0, orbBonus: 0, total: 0.35 };
+    return { base: 0.38, diSpreadBonus: 0, adxBonus: 0, diCrossBonus: 0, alignmentBonus: 0, tdAdjustment: 0, obvBonus: 0, vwapBonus: 0, oiVolumeBonus: 0, pricePositionAdjustment: 0, adxMaturityPenalty: 0, trendPhaseBonus: 0, momentumAccelBonus: 0, structureBonus: 0, orbBonus: 0, total: 0.38 };
   }
 
-  // Base: slight bullish bias (lowered to prevent redundant-indicator inflation)
-  const base = signal.direction === 'bullish' ? 0.40 : 0.35;
+  // Base: direction-neutral starting point
+  const base = 0.38;
 
   // DI spread bonus — signed spread aligned with signal direction, scaled -0.15..+0.15
   // Positive = DI dominance confirms signal direction (bonus)
