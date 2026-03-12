@@ -976,24 +976,32 @@ export function startDashboard(port: number): void {
           ORDER BY pj.closed_at DESC
         `, [days]),
 
-        // 3. Stop adjustment effectiveness — ADJUST_STOP ticks
+        // 3. Stop adjustment effectiveness — trailing stop trail per position
+        //    Trailing stops are automatic (not ADJUST_STOP ticks), so we derive
+        //    the stop trail from position_journal + tick price history.
         pool.query(`
           SELECT
-            t.position_id,
+            pj.id AS position_id,
             pj.ticker,
             te.outcome,
             te.pnl_pct::text AS final_pnl_pct,
-            count(*)::int AS total_adjustments,
-            min(t.new_stop)::text AS first_stop,
-            max(t.new_stop)::text AS last_stop,
-            min(t.pnl_pct)::text AS min_pnl_at_adjust,
-            max(t.pnl_pct)::text AS max_pnl_at_adjust
-          FROM trading.order_agent_ticks t
-          JOIN trading.position_journal pj ON pj.id = t.position_id
+            t.tick_count AS total_adjustments,
+            pj.entry_price::text AS first_stop,
+            pj.current_stop::text AS last_stop,
+            t.min_pnl::text AS min_pnl_at_adjust,
+            t.max_pnl::text AS max_pnl_at_adjust
+          FROM trading.position_journal pj
           JOIN trading.trade_evaluations te ON te.position_id = pj.id
+          JOIN LATERAL (
+            SELECT count(*)::int AS tick_count,
+                   min(ot.pnl_pct) AS min_pnl,
+                   max(ot.pnl_pct) AS max_pnl
+            FROM trading.order_agent_ticks ot
+            WHERE ot.position_id = pj.id
+          ) t ON true
           WHERE te.evaluated_at >= NOW() - make_interval(days => $1)
-            AND t.action = 'ADJUST_STOP'
-          GROUP BY t.position_id, pj.ticker, te.outcome, te.pnl_pct
+            AND pj.current_stop IS NOT NULL
+          ORDER BY pj.closed_at DESC
         `, [days]),
 
         // 4. Override analysis — when agent overrides orchestrator
@@ -1034,7 +1042,7 @@ export function startDashboard(port: number): void {
           JOIN trading.trade_evaluations te ON te.position_id = pj.id
           WHERE te.evaluated_at >= NOW() - make_interval(days => $1)
             AND pj.hold_duration_min IS NOT NULL
-          GROUP BY 1, 2
+          GROUP BY 1
           ORDER BY band_min
         `, [days]),
 

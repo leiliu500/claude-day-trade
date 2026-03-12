@@ -106,7 +106,39 @@ main { padding: 24px; max-width: 1400px; margin: 0 auto; }
   border-color: #8b949e;
 }
 
-/* Tabs */
+/* Page-level navigation */
+.pages {
+  display: flex;
+  gap: 0;
+  margin-bottom: 8px;
+  background: #161b22;
+  border-radius: 8px;
+  border: 1px solid #30363d;
+  overflow: hidden;
+}
+
+.page-btn {
+  background: none;
+  border: none;
+  color: #8b949e;
+  padding: 10px 24px;
+  cursor: pointer;
+  font-size: 14px;
+  font-weight: 600;
+  transition: background 0.15s, color 0.15s;
+  border-right: 1px solid #30363d;
+}
+
+.page-btn:last-child { border-right: none; }
+
+.page-btn:hover { color: #e6edf3; background: #1c2128; }
+
+.page-btn.active {
+  color: #58a6ff;
+  background: #1c2128;
+}
+
+/* Tabs (sub-level) */
 .tabs {
   display: flex;
   gap: 4px;

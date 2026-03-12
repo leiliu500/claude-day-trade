@@ -44,21 +44,35 @@
       </div>
     </section>
 
-    <!-- Tab navigation -->
-    <nav class="tabs">
+    <!-- Page navigation (top-level) -->
+    <nav class="pages">
+      <button class="page-btn active" data-page="trading">Trading</button>
+      <button class="page-btn" data-page="signals">Signals &amp; Analysis</button>
+      <button class="page-btn" data-page="performance">Performance</button>
+      <button class="page-btn" data-page="system">System</button>
+    </nav>
+
+    <!-- Sub-tab navigation (per page) -->
+    <nav class="tabs" id="tabs-trading">
       <button class="tab active" data-tab="positions">Positions</button>
-      <button class="tab" data-tab="signals">Signals</button>
-      <button class="tab" data-tab="decisions">Decisions</button>
-      <button class="tab" data-tab="evaluations">Evaluations</button>
+      <button class="tab" data-tab="alpaca">Alpaca Live</button>
       <button class="tab" data-tab="orders">Orders</button>
       <button class="tab" data-tab="agents">Agent Team</button>
+    </nav>
+    <nav class="tabs" id="tabs-signals" style="display:none">
+      <button class="tab active" data-tab="signals">Signals</button>
+      <button class="tab" data-tab="decisions">Decisions</button>
+      <button class="tab" data-tab="analysis">Analysis Output</button>
       <button class="tab" data-tab="dispatches">Dispatches</button>
-      <button class="tab" data-tab="analysis">Analysis</button>
-      <button class="tab" data-tab="scheduler">Scheduler</button>
-      <button class="tab" data-tab="activity">Human Activity</button>
-      <button class="tab" data-tab="alpaca">Alpaca</button>
+    </nav>
+    <nav class="tabs" id="tabs-performance" style="display:none">
+      <button class="tab active" data-tab="evaluations">Evaluations</button>
       <button class="tab" data-tab="entry-analysis">Entry Analysis</button>
       <button class="tab" data-tab="agent-analysis">Agent Analysis</button>
+    </nav>
+    <nav class="tabs" id="tabs-system" style="display:none">
+      <button class="tab active" data-tab="scheduler">Scheduler</button>
+      <button class="tab" data-tab="activity">Human Activity</button>
       <button class="tab" data-tab="database">Database</button>
     </nav>
 

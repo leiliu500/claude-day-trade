@@ -83,19 +83,64 @@ const paging = {
   dispatches:   { page: 1, limit: 100, total: 0 },
 };
 
+// ── Page definitions ─────────────────────────────────────────────────────────
+const PAGE_TABS = {
+  trading:     ['positions', 'alpaca', 'orders', 'agents'],
+  signals:     ['signals', 'decisions', 'analysis', 'dispatches'],
+  performance: ['evaluations', 'entry-analysis', 'agent-analysis'],
+  system:      ['scheduler', 'activity', 'database'],
+};
+let currentPage = 'trading';
+
+// ── Page switching ──────────────────────────────────────────────────────────
+document.querySelectorAll('.page-btn').forEach(btn => {
+  btn.addEventListener('click', () => {
+    const page = btn.dataset.page;
+    if (page === currentPage) return;
+
+    // Update page buttons
+    document.querySelectorAll('.page-btn').forEach(b => b.classList.remove('active'));
+    btn.classList.add('active');
+
+    // Show/hide tab navs
+    ['trading', 'signals', 'performance', 'system'].forEach(p => {
+      const nav = document.getElementById(`tabs-${p}`);
+      if (nav) nav.style.display = p === page ? '' : 'none';
+    });
+
+    currentPage = page;
+
+    // Activate the first tab of this page
+    const firstTab = PAGE_TABS[page][0];
+    switchTab(firstTab, page);
+  });
+});
+
 // ── Tab switching ──────────────────────────────────────────────────────────────
+function switchTab(tab, page) {
+  page = page || currentPage;
+  const tabNav = document.getElementById(`tabs-${page}`);
+  if (tabNav) {
+    tabNav.querySelectorAll('.tab').forEach(b => b.classList.remove('active'));
+    const activeBtn = tabNav.querySelector(`.tab[data-tab="${tab}"]`);
+    if (activeBtn) activeBtn.classList.add('active');
+  }
+
+  document.querySelectorAll('.tab-content').forEach(s => s.classList.remove('active'));
+  currentTab = tab;
+  const el = document.getElementById(`tab-${currentTab}`);
+  if (el) el.classList.add('active');
+
+  const filterBar = document.getElementById('filter-bar');
+  if (filterBar) filterBar.style.display = FILTERABLE_TABS.has(currentTab) ? '' : 'none';
+  const decisionGroup = document.getElementById('filter-decision-group');
+  if (decisionGroup) decisionGroup.style.display = currentTab === 'decisions' ? '' : 'none';
+  loadTab(currentTab);
+}
+
 document.querySelectorAll('.tab').forEach(btn => {
   btn.addEventListener('click', () => {
-    document.querySelectorAll('.tab').forEach(b => b.classList.remove('active'));
-    document.querySelectorAll('.tab-content').forEach(s => s.classList.remove('active'));
-    btn.classList.add('active');
-    currentTab = btn.dataset.tab;
-    document.getElementById(`tab-${currentTab}`).classList.add('active');
-    const filterBar = document.getElementById('filter-bar');
-    if (filterBar) filterBar.style.display = FILTERABLE_TABS.has(currentTab) ? '' : 'none';
-    const decisionGroup = document.getElementById('filter-decision-group');
-    if (decisionGroup) decisionGroup.style.display = currentTab === 'decisions' ? '' : 'none';
-    loadTab(currentTab);
+    switchTab(btn.dataset.tab);
   });
 });
 
@@ -1693,7 +1738,7 @@ function renderAAstopAdjustments(rows) {
   if (rows.length === 0) { container.innerHTML = '<div class="empty-state" style="margin-top:8px">No stop adjustments recorded.</div>'; return; }
 
   container.innerHTML = `<table class="ea-table" style="margin-top:8px">
-    <thead><tr><th>Ticker</th><th>Outcome</th><th>Adjustments</th><th>First Stop</th><th>Last Stop</th><th>Stop Delta</th><th>P&L Range at Adj</th><th>Final P&L%</th></tr></thead>
+    <thead><tr><th>Ticker</th><th>Outcome</th><th>Ticks</th><th>Entry</th><th>Final Stop</th><th>Stop Delta</th><th>P&L Range</th><th>Final P&L%</th></tr></thead>
     <tbody>${rows.map(r => {
       const firstStop = parseFloat(r.first_stop || 0);
       const lastStop = parseFloat(r.last_stop || 0);

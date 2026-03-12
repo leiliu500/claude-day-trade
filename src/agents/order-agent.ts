@@ -792,6 +792,7 @@ export class OrderAgent {
     else if (this.peakPnlPct >= 15) profitFloor = parseFloat((entry * 1.03).toFixed(2));
     else if (this.peakPnlPct >= 10) profitFloor = parseFloat(entry.toFixed(2));
     else if (this.peakPnlPct >= 5)  profitFloor = parseFloat(entry.toFixed(2)); // breakeven floor once 5% peak reached
+    else if (this.peakPnlPct >= 3)  profitFloor = parseFloat((entry * 0.995).toFixed(2)); // near-breakeven floor for small gains
     // currentStop is the last DB-synced value; use it as a floor too (never regress below DB stop)
     const streamStop = Math.max(rawTrailingStop, profitFloor, this.currentStop ?? 0);
 
@@ -841,50 +842,47 @@ export class OrderAgent {
     // Stream handler uses same thresholds as 10s tick for consistency.
     const streamRetainedPct = this.peakPnlPct > 0 ? (pnlPct / this.peakPnlPct) * 100 : 100;
 
-    if (this.peakPnlPct >= 35 && streamRetainedPct < 60 && pnlPct > 0 && this.tickCount >= 6) {
+    if (this.peakPnlPct >= 35 && streamRetainedPct < 60 && pnlPct > 0 && this.tickCount >= 4) {
       await this._executeExit(`PROFIT_LOCK_EXTREME [stream]: peak=+${this.peakPnlPct.toFixed(1)}%, now=+${pnlPct.toFixed(1)}% (${streamRetainedPct.toFixed(0)}% of peak)`);
       return;
     }
-    if (this.peakPnlPct >= 25 && streamRetainedPct < 50 && pnlPct > 0 && this.tickCount >= 6) {
+    if (this.peakPnlPct >= 25 && streamRetainedPct < 50 && pnlPct > 0 && this.tickCount >= 4) {
       await this._executeExit(`PROFIT_LOCK_LARGE [stream]: peak=+${this.peakPnlPct.toFixed(1)}%, now=+${pnlPct.toFixed(1)}% (${streamRetainedPct.toFixed(0)}% of peak)`);
       return;
     }
-    if (this.peakPnlPct >= 20 && streamRetainedPct < 50 && pnlPct > 0 && this.tickCount >= 9) {
+    if (this.peakPnlPct >= 20 && streamRetainedPct < 50 && pnlPct > 0 && this.tickCount >= 4) {
       await this._executeExit(`PROFIT_LOCK_MEDIUM [stream]: peak=+${this.peakPnlPct.toFixed(1)}%, now=+${pnlPct.toFixed(1)}% (${streamRetainedPct.toFixed(0)}% of peak)`);
       return;
     }
-    if (this.peakPnlPct >= 15 && streamRetainedPct < 45 && pnlPct > 0 && this.tickCount >= 9) {
+    if (this.peakPnlPct >= 15 && streamRetainedPct < 45 && pnlPct > 0 && this.tickCount >= 6) {
       await this._executeExit(`PROFIT_LOCK_MODERATE [stream]: peak=+${this.peakPnlPct.toFixed(1)}%, now=+${pnlPct.toFixed(1)}% (${streamRetainedPct.toFixed(0)}% of peak)`);
       return;
     }
-    if (this.peakPnlPct >= 10 && streamRetainedPct < 40 && pnlPct > 0 && this.tickCount >= 12) {
+    if (this.peakPnlPct >= 10 && streamRetainedPct < 40 && pnlPct > 0 && this.tickCount >= 8) {
       await this._executeExit(`PROFIT_LOCK_SMALL [stream]: peak=+${this.peakPnlPct.toFixed(1)}%, now=+${pnlPct.toFixed(1)}% (${streamRetainedPct.toFixed(0)}% of peak)`);
       return;
     }
 
-    // ── Peak-erosion / profit-reversal exits (no consecutiveDeclines dependency) ──
-    if (this.peakPnlPct >= 20 && pnlPct <= 10) {
-      await this._executeExit(`PEAK_EROSION [stream]: peak=+${this.peakPnlPct.toFixed(1)}%, now=${pnlPct >= 0 ? '+' : ''}${pnlPct.toFixed(1)}%`);
+    // ── Peak-erosion exits: exit while still in profit, never let profit turn to loss ──
+    if (this.peakPnlPct >= 20 && pnlPct <= 8) {
+      await this._executeExit(`PEAK_EROSION [stream]: peak=+${this.peakPnlPct.toFixed(1)}%, now=+${pnlPct.toFixed(1)}% — protecting remaining profit`);
       return;
     }
-    if (this.peakPnlPct >= 12 && pnlPct <= 4) {
-      await this._executeExit(`PEAK_GONE [stream]: peak=+${this.peakPnlPct.toFixed(1)}%, now=${pnlPct >= 0 ? '+' : ''}${pnlPct.toFixed(1)}%`);
+    if (this.peakPnlPct >= 12 && pnlPct <= 3) {
+      await this._executeExit(`PEAK_GONE [stream]: peak=+${this.peakPnlPct.toFixed(1)}%, now=+${pnlPct.toFixed(1)}% — locking last gains`);
       return;
     }
-    if (this.peakPnlPct >= 10 && pnlPct <= -3) {
-      await this._executeExit(`PEAK_REVERSAL [stream]: peak=+${this.peakPnlPct.toFixed(1)}%, now=${pnlPct.toFixed(1)}%`);
+    if (this.peakPnlPct >= 10 && pnlPct <= 2) {
+      await this._executeExit(`PEAK_REVERSAL [stream]: peak=+${this.peakPnlPct.toFixed(1)}%, now=+${pnlPct.toFixed(1)}% — gains nearly gone`);
       return;
     }
-    if (this.peakPnlPct >= 5 && pnlPct <= 1.0) {
-      await this._executeExit(`PEAK_GAINS_GONE [stream]: peak=+${this.peakPnlPct.toFixed(1)}%, now=${pnlPct >= 0 ? '+' : ''}${pnlPct.toFixed(1)}%`);
+    if (this.peakPnlPct >= 5 && pnlPct <= 0.5) {
+      await this._executeExit(`PEAK_GAINS_GONE [stream]: peak=+${this.peakPnlPct.toFixed(1)}%, now=+${pnlPct.toFixed(1)}% — locking remainder before loss`);
       return;
     }
-    if (this.peakPnlPct >= 1.0 && pnlPct < 0 && (this.tickCount >= 6 || this.peakPnlPct >= 5)) {
-      await this._executeExit(`PROFIT_REVERSED [stream]: peak=+${this.peakPnlPct.toFixed(1)}%, now=${pnlPct.toFixed(1)}%`);
-      return;
-    }
-    if (this.peakPnlPct >= 5 && pnlPct <= -5) {
-      await this._executeExit(`PEAK_REVERSAL_SMALL [stream]: peak=+${this.peakPnlPct.toFixed(1)}%, now=${pnlPct.toFixed(1)}%`);
+    // Last resort for any profitable position turning negative — exit immediately at breakeven
+    if (this.peakPnlPct >= 1.0 && pnlPct <= 0 && (this.tickCount >= 4 || this.peakPnlPct >= 5)) {
+      await this._executeExit(`PROFIT_REVERSED [stream]: peak=+${this.peakPnlPct.toFixed(1)}%, now=${pnlPct.toFixed(1)}% — exiting at breakeven`);
       return;
     }
     if (pnlPct <= -10 && this.tickCount >= 9) {
@@ -918,15 +916,19 @@ export class OrderAgent {
       }
     }
 
-    // ── Small-gain profit protection (peak 2-4% range) ──
-    // Catches positions that had modest gains but are giving them all back.
-    // Without this, peaks of 2-4% have zero protection until they hit the trailing stop at -13%.
-    if (this.peakPnlPct >= 3 && this.peakPnlPct < 5 && pnlPct <= 0 && this.tickCount >= 4) {
-      await this._executeExit(`SMALL_GAIN_GONE [stream]: peak=+${this.peakPnlPct.toFixed(1)}%, now=${pnlPct.toFixed(1)}% — modest gains fully surrendered`);
+    // ── Small-gain profit protection (peak 1-5% range) ──
+    // Exit while still slightly positive to lock in small profits instead of giving them all back.
+    // Without this, peaks of 1-5% have zero protection until they hit the trailing stop at -13%.
+    if (this.peakPnlPct >= 3 && this.peakPnlPct < 5 && pnlPct <= 0.5 && this.tickCount >= 4) {
+      await this._executeExit(`SMALL_GAIN_LOCK [stream]: peak=+${this.peakPnlPct.toFixed(1)}%, now=+${pnlPct.toFixed(1)}% — locking remaining small profit`);
       return;
     }
-    if (this.peakPnlPct >= 2 && this.peakPnlPct < 3 && pnlPct <= -0.5 && this.tickCount >= 6) {
-      await this._executeExit(`TINY_GAIN_REVERSED [stream]: peak=+${this.peakPnlPct.toFixed(1)}%, now=${pnlPct.toFixed(1)}% — small gain reversed to loss`);
+    if (this.peakPnlPct >= 2 && this.peakPnlPct < 3 && pnlPct <= 0.3 && this.tickCount >= 4) {
+      await this._executeExit(`TINY_GAIN_LOCK [stream]: peak=+${this.peakPnlPct.toFixed(1)}%, now=+${pnlPct.toFixed(1)}% — locking remaining tiny profit`);
+      return;
+    }
+    if (this.peakPnlPct >= 1.0 && this.peakPnlPct < 2 && pnlPct <= 0.2 && this.tickCount >= 4) {
+      await this._executeExit(`MICRO_GAIN_LOCK [stream]: peak=+${this.peakPnlPct.toFixed(1)}%, now=+${pnlPct.toFixed(1)}% — locking remaining micro profit`);
       return;
     }
 
@@ -1096,36 +1098,36 @@ export class OrderAgent {
 
     const pnlRetainedPct = this.peakPnlPct > 0 ? (pnlPctNow / this.peakPnlPct) * 100 : 100;
 
-    // Extreme peak (≥35%): gave back 40%+ of gains after 60s → lock in
-    if (this.peakPnlPct >= 35 && pnlRetainedPct < 60 && pnlPctNow > 0 && this.tickCount >= 6) {
+    // Extreme peak (≥35%): gave back 40%+ of gains → lock in
+    if (this.peakPnlPct >= 35 && pnlRetainedPct < 60 && pnlPctNow > 0 && this.tickCount >= 4) {
       await this._executeExit(
         `PROFIT_LOCK_EXTREME: peak=+${this.peakPnlPct.toFixed(1)}%, now=+${pnlPctNow.toFixed(1)}% (${pnlRetainedPct.toFixed(0)}% of peak) — locking exceptional profit`,
       );
       return;
     }
-    // Large peak (≥25%): gave back 50%+ of gains after 60s
-    if (this.peakPnlPct >= 25 && pnlRetainedPct < 50 && pnlPctNow > 0 && this.tickCount >= 6) {
+    // Large peak (≥25%): gave back 50%+ of gains
+    if (this.peakPnlPct >= 25 && pnlRetainedPct < 50 && pnlPctNow > 0 && this.tickCount >= 4) {
       await this._executeExit(
         `PROFIT_LOCK_LARGE: peak=+${this.peakPnlPct.toFixed(1)}%, now=+${pnlPctNow.toFixed(1)}% (${pnlRetainedPct.toFixed(0)}% of peak) — locking profit`,
       );
       return;
     }
-    // Medium peak (≥20%): gave back 50%+ of gains after 90s
-    if (this.peakPnlPct >= 20 && pnlRetainedPct < 50 && pnlPctNow > 0 && this.tickCount >= 9) {
+    // Medium peak (≥20%): gave back 50%+ of gains
+    if (this.peakPnlPct >= 20 && pnlRetainedPct < 50 && pnlPctNow > 0 && this.tickCount >= 4) {
       await this._executeExit(
         `PROFIT_LOCK_MEDIUM: peak=+${this.peakPnlPct.toFixed(1)}%, now=+${pnlPctNow.toFixed(1)}% (${pnlRetainedPct.toFixed(0)}% of peak) — locking profit`,
       );
       return;
     }
-    // Moderate peak (≥15%): gave back 55%+ of gains after 90s
-    if (this.peakPnlPct >= 15 && pnlRetainedPct < 45 && pnlPctNow > 0 && this.tickCount >= 9) {
+    // Moderate peak (≥15%): gave back 55%+ of gains
+    if (this.peakPnlPct >= 15 && pnlRetainedPct < 45 && pnlPctNow > 0 && this.tickCount >= 6) {
       await this._executeExit(
         `PROFIT_LOCK_MODERATE: peak=+${this.peakPnlPct.toFixed(1)}%, now=+${pnlPctNow.toFixed(1)}% (${pnlRetainedPct.toFixed(0)}% of peak) — locking profit`,
       );
       return;
     }
-    // Small peak (≥10%): gave back 60%+ of gains after 120s
-    if (this.peakPnlPct >= 10 && pnlRetainedPct < 40 && pnlPctNow > 0 && this.tickCount >= 12) {
+    // Small peak (≥10%): gave back 60%+ of gains
+    if (this.peakPnlPct >= 10 && pnlRetainedPct < 40 && pnlPctNow > 0 && this.tickCount >= 8) {
       await this._executeExit(
         `PROFIT_LOCK_SMALL: peak=+${this.peakPnlPct.toFixed(1)}%, now=+${pnlPctNow.toFixed(1)}% (${pnlRetainedPct.toFixed(0)}% of peak) — locking remaining profit`,
       );
@@ -1149,50 +1151,35 @@ export class OrderAgent {
       return;
     }
 
-    // ── Peak-erosion exits: fire when ALL gains are gone (tightened thresholds) ──
-    // These are the last-resort catches when profit-lock rules didn't fire (no declining momentum).
-    if (this.peakPnlPct >= 20 && pnlPctNow <= 10) {
+    // ── Peak-erosion exits: exit while still in profit, never let profit turn to loss ──
+    if (this.peakPnlPct >= 20 && pnlPctNow <= 8) {
       await this._executeExit(
-        `PEAK_EROSION: peak=+${this.peakPnlPct.toFixed(1)}%, now=${pnlPctNow >= 0 ? '+' : ''}${pnlPctNow.toFixed(1)}%`,
+        `PEAK_EROSION: peak=+${this.peakPnlPct.toFixed(1)}%, now=+${pnlPctNow.toFixed(1)}% — protecting remaining profit`,
       );
       return;
     }
-    if (this.peakPnlPct >= 12 && pnlPctNow <= 4) {
+    if (this.peakPnlPct >= 12 && pnlPctNow <= 3) {
       await this._executeExit(
-        `PEAK_GONE: peak=+${this.peakPnlPct.toFixed(1)}%, now=${pnlPctNow >= 0 ? '+' : ''}${pnlPctNow.toFixed(1)}%`,
+        `PEAK_GONE: peak=+${this.peakPnlPct.toFixed(1)}%, now=+${pnlPctNow.toFixed(1)}% — locking last gains`,
       );
       return;
     }
-    if (this.peakPnlPct >= 10 && pnlPctNow <= -3) {
+    if (this.peakPnlPct >= 10 && pnlPctNow <= 2) {
       await this._executeExit(
-        `PEAK_REVERSAL: peak=+${this.peakPnlPct.toFixed(1)}%, now=${pnlPctNow.toFixed(1)}%`,
+        `PEAK_REVERSAL: peak=+${this.peakPnlPct.toFixed(1)}%, now=+${pnlPctNow.toFixed(1)}% — gains nearly gone`,
       );
       return;
     }
-    // Small-peak fully eroded: peak 5%+ but all gains are gone (pnl ≤ +1%).
-    // Fires before the position goes negative — earlier than PEAK_REVERSAL_SMALL.
-    // Catches the "held through peak back to zero" pattern deterministically.
-    if (this.peakPnlPct >= 5 && pnlPctNow <= 1.0) {
+    if (this.peakPnlPct >= 5 && pnlPctNow <= 0.5) {
       await this._executeExit(
-        `PEAK_GAINS_GONE: peak=+${this.peakPnlPct.toFixed(1)}%, now=${pnlPctNow >= 0 ? '+' : ''}${pnlPctNow.toFixed(1)}% — all gains surrendered`,
+        `PEAK_GAINS_GONE: peak=+${this.peakPnlPct.toFixed(1)}%, now=+${pnlPctNow.toFixed(1)}% — locking remainder before loss`,
       );
       return;
     }
-    // Profit-to-loss reversal: any position that peaked at 1%+ is now showing a loss.
-    // Removes AI discretion from a situation the AI repeatedly fails to handle correctly.
-    // tickCount >= 3 guard avoids hair-trigger exits on entry-bar noise (first ~30s).
-    if (this.peakPnlPct >= 1.0 && pnlPctNow < 0 && (this.tickCount >= 3 || this.peakPnlPct >= 5)) {
+    // Last resort for any profitable position turning negative — exit immediately at breakeven
+    if (this.peakPnlPct >= 1.0 && pnlPctNow <= 0 && (this.tickCount >= 3 || this.peakPnlPct >= 5)) {
       await this._executeExit(
-        `PROFIT_REVERSED: peak=+${this.peakPnlPct.toFixed(1)}%, now=${pnlPctNow.toFixed(1)}% — profitable position turned to loss`,
-      );
-      return;
-    }
-    // Small-peak reversal: any 5%+ profit peak that fully reverses into a loss.
-    // The trailing stop catches these eventually (~-7%), but this fires earlier at -5%.
-    // Now mostly superseded by PEAK_GAINS_GONE above, kept as a safety net.
-    if (this.peakPnlPct >= 5 && pnlPctNow <= -5) {
-      await this._executeExit(
-        `PEAK_REVERSAL_SMALL: peak=+${this.peakPnlPct.toFixed(1)}%, now=${pnlPctNow.toFixed(1)}% — profit reversed to loss`,
+        `PROFIT_REVERSED: peak=+${this.peakPnlPct.toFixed(1)}%, now=${pnlPctNow.toFixed(1)}% — exiting at breakeven`,
       );
       return;
     }
@@ -1239,16 +1226,22 @@ export class OrderAgent {
       }
     }
 
-    // ── Small-gain profit protection (peak 2-4% range) ──
-    if (this.peakPnlPct >= 3 && this.peakPnlPct < 5 && pnlPctNow <= 0 && this.tickCount >= 4) {
+    // ── Small-gain profit protection (peak 1-5% range) ──
+    if (this.peakPnlPct >= 3 && this.peakPnlPct < 5 && pnlPctNow <= 0.5 && this.tickCount >= 4) {
       await this._executeExit(
-        `SMALL_GAIN_GONE: peak=+${this.peakPnlPct.toFixed(1)}%, now=${pnlPctNow.toFixed(1)}% — modest gains fully surrendered`,
+        `SMALL_GAIN_LOCK: peak=+${this.peakPnlPct.toFixed(1)}%, now=+${pnlPctNow.toFixed(1)}% — locking remaining small profit`,
       );
       return;
     }
-    if (this.peakPnlPct >= 2 && this.peakPnlPct < 3 && pnlPctNow <= -0.5 && this.tickCount >= 6) {
+    if (this.peakPnlPct >= 2 && this.peakPnlPct < 3 && pnlPctNow <= 0.3 && this.tickCount >= 4) {
       await this._executeExit(
-        `TINY_GAIN_REVERSED: peak=+${this.peakPnlPct.toFixed(1)}%, now=${pnlPctNow.toFixed(1)}% — small gain reversed to loss`,
+        `TINY_GAIN_LOCK: peak=+${this.peakPnlPct.toFixed(1)}%, now=+${pnlPctNow.toFixed(1)}% — locking remaining tiny profit`,
+      );
+      return;
+    }
+    if (this.peakPnlPct >= 1.0 && this.peakPnlPct < 2 && pnlPctNow <= 0.2 && this.tickCount >= 4) {
+      await this._executeExit(
+        `MICRO_GAIN_LOCK: peak=+${this.peakPnlPct.toFixed(1)}%, now=+${pnlPctNow.toFixed(1)}% — locking remaining micro profit`,
       );
       return;
     }
@@ -1699,6 +1692,7 @@ export class OrderAgent {
     // Profit-protection floors — once a profit threshold is crossed, the stop never
     // falls below that floor.  This prevents giving back gains on small/moderate peaks
     // where the raw trailing stop would still be below the entry price.
+    //   Peak ≥  +3% → stop floor at -0.5% (near breakeven)
     //   Peak ≥  +5% → stop floor at breakeven (entry)
     //   Peak ≥ +10% → stop floor at breakeven (entry)
     //   Peak ≥ +15% → stop floor at +3% profit
@@ -1712,6 +1706,7 @@ export class OrderAgent {
     else if (this.peakPnlPct >= 15) profitFloor = parseFloat((entryForTrail * 1.03).toFixed(2));
     else if (this.peakPnlPct >= 10) profitFloor = parseFloat(entryForTrail.toFixed(2));
     else if (this.peakPnlPct >= 5)  profitFloor = parseFloat(entryForTrail.toFixed(2)); // breakeven floor once 5% peak reached
+    else if (this.peakPnlPct >= 3)  profitFloor = parseFloat((entryForTrail * 0.995).toFixed(2)); // near-breakeven floor for small gains
 
     const trailingStop = parseFloat(Math.max(rawTrailingStop, profitFloor).toFixed(2));
 
@@ -1859,8 +1854,9 @@ export class OrderAgent {
                  : reason.startsWith('PRE_EMPTIVE')     ? '✂️'
                  : reason.startsWith('PROFIT_REVERSED') ? '🔄'
                  : reason.startsWith('VELOCITY')          ? '💨'
-                 : reason.startsWith('SMALL_GAIN')      ? '📉'
-                 : reason.startsWith('TINY_GAIN')       ? '📉'
+                 : reason.startsWith('SMALL_GAIN')      ? '🔒'
+                 : reason.startsWith('TINY_GAIN')       ? '🔒'
+                 : reason.startsWith('MICRO_GAIN')      ? '🔒'
                  : reason.startsWith('NEVER_CONFIRMED') ? '❌'
                  : reason.startsWith('IMMEDIATE_ADVERSE') ? '❌'
                  : reason.startsWith('IMMEDIATE')       ? '⚡'

@@ -70,7 +70,18 @@
       "Bash(docker-compose logs:*)",
       "Bash(curl -s -H \"APCA-API-KEY-ID: $ALPACA_API_KEY\" -H \"APCA-API-SECRET-KEY: $ALPACA_SECRET_KEY\" \"$ALPACA_BASE_URL/v2/account/activities/FILL?after=2026-03-11T00:00:00Z\")",
       "Bash(curl -s -H \"APCA-API-KEY-ID: $ALPACA_API_KEY\" -H \"APCA-API-SECRET-KEY: $ALPACA_SECRET_KEY\" \"$ALPACA_BASE_URL/v2/orders?status=closed&after=2026-03-11T00:00:00Z&limit=20\")",
-      "Bash(curl -s -H \"APCA-API-KEY-ID: $ALPACA_API_KEY\" -H \"APCA-API-SECRET-KEY: $ALPACA_SECRET_KEY\" \"$ALPACA_BASE_URL/v2/orders?status=all&after=2026-03-11T00:00:00Z&limit=20\")"
+      "Bash(curl -s -H \"APCA-API-KEY-ID: $ALPACA_API_KEY\" -H \"APCA-API-SECRET-KEY: $ALPACA_SECRET_KEY\" \"$ALPACA_BASE_URL/v2/orders?status=all&after=2026-03-11T00:00:00Z&limit=20\")",
+      "Bash(docker exec:*)",
+      "Bash(docker ps:*)",
+      "Bash(find . -type f -name *dashboard* -o -name *DASHBOARD*)",
+      "Bash(grep -r \"analysis_payload\\\\|aiExplanation\\\\|keyFactors\\\\|confidenceBreakdown\" src/ --include=*.ts)",
+      "Bash(curl -s http://localhost:3001/api/analysis?limit=3)",
+      "Bash(curl -s http://localhost:3001/api/analysis?limit=1)",
+      "Bash(python3 -c \"import json,sys; d=json.load\\(sys.stdin\\); print\\(f''''total={d.get\\(\"\"total\"\"\\)}, signals_count={len\\(d.get\\(\"\"signals\"\",[]\\)\\)}''''\\)\")",
+      "Bash(curl -s 'http://localhost:3001/api/analysis?limit=5')",
+      "Bash(curl -s 'http://localhost:3001/api/agent-analysis?days=30')",
+      "Bash(curl -s http://localhost:3001/)",
+      "Bash(curl -s http://localhost:3001/app.js)"
     ],
     "additionalDirectories": [
       "/home/ec2-user/.claude/projects/-home-ec2-user-claude-day-trade"

@@ -55,9 +55,7 @@ export function createTelegramBot(): Telegraf {
     await ctx.reply(
       `🤖 Day Trade Bot\n\n` +
       `Send <TICKER> <PROFILE> to analyze:\n` +
-      `  <code>SPY S</code> — Scalp (2m/3m/5m)\n` +
-      `  <code>MSFT M</code> — Medium (1m/5m/15m)\n` +
-      `  <code>AAPL L</code> — Long (5m/1h/1d)\n\n` +
+      `  <code>SPY S</code> — Scalp (1m/3m/5m)\n\n` +
       `Commands:\n` +
       `/status — system status\n` +
       `/positions — open positions\n` +
