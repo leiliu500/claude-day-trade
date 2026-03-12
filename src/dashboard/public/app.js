@@ -1230,21 +1230,597 @@ window.closeAllAlpaca = async function() {
   }
 };
 
+// ── Entry Analysis tab ───────────────────────────────────────────────────────
+
+async function loadEntryAnalysis() {
+  const days = document.getElementById('ea-days')?.value ?? '30';
+  const data = await fetch(`${API}/api/entry-analysis?days=${days}`).then(r => r.json()).catch(() => ({}));
+
+  if (data.error || !data.outcomeStats) {
+    document.getElementById('ea-kpis').innerHTML = '<div class="empty-state">No trade data yet. Complete some trades to see analysis.</div>';
+    return;
+  }
+
+  // ── KPI cards ──
+  const stats = data.outcomeStats || [];
+  const totalTrades = stats.reduce((s, r) => s + r.count, 0);
+  const totalPnl = stats.reduce((s, r) => s + parseFloat(r.total_pnl || 0), 0);
+  const wins = stats.find(r => r.outcome === 'WIN');
+  const losses = stats.find(r => r.outcome === 'LOSS');
+  const winCount = wins?.count ?? 0;
+  const lossCount = losses?.count ?? 0;
+  const winRate = totalTrades > 0 ? ((winCount / totalTrades) * 100).toFixed(1) : '0';
+  const avgWin = wins ? (parseFloat(wins.avg_pnl_pct) * 100).toFixed(1) : '0';
+  const avgLoss = losses ? (parseFloat(losses.avg_pnl_pct) * 100).toFixed(1) : '0';
+  const profitFactor = lossCount > 0 && losses?.total_pnl
+    ? Math.abs(parseFloat(wins?.total_pnl ?? 0) / parseFloat(losses.total_pnl)).toFixed(2)
+    : winCount > 0 ? '∞' : '0';
+
+  const pnlCls = totalPnl >= 0 ? 'green' : 'red';
+  const countEl = document.getElementById('ea-trade-count');
+  if (countEl) countEl.textContent = `(${totalTrades} trades, ${days}d)`;
+
+  document.getElementById('ea-kpis').innerHTML = `
+    <div class="ea-kpi"><div class="ea-kpi-label">Total Trades</div><div class="ea-kpi-value">${totalTrades}</div></div>
+    <div class="ea-kpi"><div class="ea-kpi-label">Win Rate</div><div class="ea-kpi-value ${parseFloat(winRate) >= 50 ? 'green' : 'red'}">${winRate}%</div></div>
+    <div class="ea-kpi"><div class="ea-kpi-label">Total P&L</div><div class="ea-kpi-value ${pnlCls}">${totalPnl >= 0 ? '+' : ''}$${Math.abs(totalPnl).toFixed(2)}</div></div>
+    <div class="ea-kpi"><div class="ea-kpi-label">Profit Factor</div><div class="ea-kpi-value">${profitFactor}</div></div>
+    <div class="ea-kpi"><div class="ea-kpi-label">Avg Win</div><div class="ea-kpi-value green">${avgWin}%</div></div>
+    <div class="ea-kpi"><div class="ea-kpi-label">Avg Loss</div><div class="ea-kpi-value red">${avgLoss}%</div></div>
+  `;
+
+  // ── Confidence Band Chart ──
+  renderConfidenceBandChart(data.confidenceBands || []);
+
+  // ── Equity Curve ──
+  renderEquityCurve(data.dailyPnl || []);
+
+  // ── Conviction Table ──
+  renderConvictionTable(data.convictionPerf || []);
+
+  // ── Direction Table ──
+  renderDirectionTable(data.directionPerf || []);
+
+  // ── Outcome Comparison Table ──
+  renderOutcomeTable(data.outcomeStats || []);
+
+  // ── Tick Curves ──
+  renderTickCurves(data.tickCurves || []);
+
+  // ── Daily Table ──
+  renderDailyTable(data.dailyPnl || []);
+}
+
+function renderConfidenceBandChart(bands) {
+  const container = document.getElementById('ea-confidence-chart');
+  if (!container) return;
+  if (bands.length === 0) { container.innerHTML = '<div class="empty-state">No data</div>'; return; }
+
+  const maxTrades = Math.max(...bands.map(b => b.trades), 1);
+
+  container.innerHTML = `<div class="ea-bar-chart">${bands.map(b => {
+    const wr = b.trades > 0 ? ((b.wins / b.trades) * 100) : 0;
+    const h = Math.max((b.trades / maxTrades) * 85, 5);
+    const color = wr >= 60 ? '#3fb950' : wr >= 40 ? '#e3b341' : '#f85149';
+    const confLow = ((b.bucket - 1) * 10);
+    const confHigh = (b.bucket * 10);
+    return `<div class="ea-bar-group">
+      <div class="ea-bar" style="height:${h}%;background:${color}">
+        <span class="ea-bar-value" style="color:${color}">${wr.toFixed(0)}%<br><small style="font-weight:400;color:#8b949e">${b.trades}t</small></span>
+      </div>
+      <div class="ea-bar-label">${confLow}-${confHigh}%</div>
+    </div>`;
+  }).join('')}</div>`;
+}
+
+function renderEquityCurve(dailyPnl) {
+  const container = document.getElementById('ea-equity-chart');
+  if (!container) return;
+  if (dailyPnl.length === 0) { container.innerHTML = '<div class="empty-state">No data</div>'; return; }
+
+  // Build cumulative P&L
+  let cum = 0;
+  const points = dailyPnl.map(d => { cum += parseFloat(d.daily_pnl || 0); return { date: d.trade_date, pnl: cum }; });
+
+  const minPnl = Math.min(0, ...points.map(p => p.pnl));
+  const maxPnl = Math.max(0, ...points.map(p => p.pnl));
+  const range = maxPnl - minPnl || 1;
+
+  const w = 100;
+  const h = 100;
+  const pad = 5;
+
+  const pathPoints = points.map((p, i) => {
+    const x = pad + (i / Math.max(points.length - 1, 1)) * (w - 2 * pad);
+    const y = h - pad - ((p.pnl - minPnl) / range) * (h - 2 * pad);
+    return `${x},${y}`;
+  });
+
+  const zeroY = h - pad - ((0 - minPnl) / range) * (h - 2 * pad);
+  const lineColor = cum >= 0 ? '#3fb950' : '#f85149';
+
+  container.innerHTML = `
+    <svg class="ea-equity-svg" viewBox="0 0 ${w} ${h}" preserveAspectRatio="none">
+      <line x1="${pad}" y1="${zeroY}" x2="${w - pad}" y2="${zeroY}" stroke="#30363d" stroke-width="0.3"/>
+      <polyline fill="none" stroke="${lineColor}" stroke-width="1" points="${pathPoints.join(' ')}"/>
+    </svg>
+    <div style="display:flex;justify-content:space-between;font-size:11px;color:#8b949e;margin-top:4px">
+      <span>${points[0]?.date ?? ''}</span>
+      <span style="color:${lineColor};font-weight:600">${cum >= 0 ? '+' : ''}$${Math.abs(cum).toFixed(2)}</span>
+      <span>${points[points.length - 1]?.date ?? ''}</span>
+    </div>
+  `;
+}
+
+function renderConvictionTable(rows) {
+  const container = document.getElementById('ea-conviction-table');
+  if (!container) return;
+  if (rows.length === 0) { container.innerHTML = '<div class="empty-state">No data</div>'; return; }
+
+  container.innerHTML = `<table class="ea-table">
+    <thead><tr><th>Tier</th><th>Trades</th><th>Wins</th><th>Win Rate</th><th>Avg P&L%</th><th>Total P&L</th><th>Avg Score</th></tr></thead>
+    <tbody>${rows.map(r => {
+      const wr = r.trades > 0 ? ((r.wins / r.trades) * 100).toFixed(1) : '0';
+      const pnlPct = (parseFloat(r.avg_pnl_pct) * 100).toFixed(1);
+      const pnlCls = parseFloat(r.total_pnl) >= 0 ? 'bullish' : 'bearish';
+      return `<tr>
+        <td><span class="tier-${r.conviction_tier}">${(r.conviction_tier || 'UNKNOWN').replace('_', ' ')}</span></td>
+        <td>${r.trades}</td><td>${r.wins}</td>
+        <td class="${parseFloat(wr) >= 50 ? 'bullish' : 'bearish'}">${wr}%</td>
+        <td class="${parseFloat(pnlPct) >= 0 ? 'bullish' : 'bearish'}">${pnlPct}%</td>
+        <td class="${pnlCls}">${parseFloat(r.total_pnl) >= 0 ? '+' : ''}$${Math.abs(parseFloat(r.total_pnl)).toFixed(2)}</td>
+        <td>${r.avg_eval_score ?? '—'}</td>
+      </tr>`;
+    }).join('')}</tbody>
+  </table>`;
+}
+
+function renderDirectionTable(rows) {
+  const container = document.getElementById('ea-direction-table');
+  if (!container) return;
+  if (rows.length === 0) { container.innerHTML = '<div class="empty-state">No data</div>'; return; }
+
+  container.innerHTML = `<table class="ea-table">
+    <thead><tr><th>Direction</th><th>Trades</th><th>Wins</th><th>Win Rate</th><th>Avg P&L%</th><th>Total P&L</th></tr></thead>
+    <tbody>${rows.map(r => {
+      const wr = r.trades > 0 ? ((r.wins / r.trades) * 100).toFixed(1) : '0';
+      const pnlPct = (parseFloat(r.avg_pnl_pct) * 100).toFixed(1);
+      const pnlCls = parseFloat(r.total_pnl) >= 0 ? 'bullish' : 'bearish';
+      return `<tr>
+        <td class="${r.direction}">${r.direction}</td>
+        <td>${r.trades}</td><td>${r.wins}</td>
+        <td class="${parseFloat(wr) >= 50 ? 'bullish' : 'bearish'}">${wr}%</td>
+        <td class="${parseFloat(pnlPct) >= 0 ? 'bullish' : 'bearish'}">${pnlPct}%</td>
+        <td class="${pnlCls}">${parseFloat(r.total_pnl) >= 0 ? '+' : ''}$${Math.abs(parseFloat(r.total_pnl)).toFixed(2)}</td>
+      </tr>`;
+    }).join('')}</tbody>
+  </table>`;
+}
+
+function renderOutcomeTable(rows) {
+  const container = document.getElementById('ea-outcome-table');
+  if (!container) return;
+  if (rows.length === 0) { container.innerHTML = '<div class="empty-state">No data</div>'; return; }
+
+  container.innerHTML = `<table class="ea-table">
+    <thead><tr><th>Outcome</th><th>Count</th><th>Avg P&L%</th><th>Total P&L</th><th>Avg Hold (min)</th><th>Avg Confidence</th><th>Avg R:R</th><th>Avg Spread%</th><th>Avg Score</th></tr></thead>
+    <tbody>${rows.map(r => {
+      const pnlPct = (parseFloat(r.avg_pnl_pct) * 100).toFixed(1);
+      const outCls = r.outcome === 'WIN' ? 'bullish' : r.outcome === 'LOSS' ? 'bearish' : 'neutral';
+      const conf = (parseFloat(r.avg_confidence) * 100).toFixed(0);
+      return `<tr>
+        <td class="${outCls}" style="font-weight:700">${r.outcome}</td>
+        <td>${r.count}</td>
+        <td class="${outCls}">${pnlPct}%</td>
+        <td class="${outCls}">${parseFloat(r.total_pnl) >= 0 ? '+' : ''}$${Math.abs(parseFloat(r.total_pnl)).toFixed(2)}</td>
+        <td>${r.avg_hold_min ?? '—'}</td>
+        <td>${conf}%</td>
+        <td>${r.avg_rr ?? '—'}</td>
+        <td>${r.avg_spread ? (parseFloat(r.avg_spread) * 100).toFixed(1) + '%' : '—'}</td>
+        <td>${r.avg_eval_score ?? '—'}</td>
+      </tr>`;
+    }).join('')}</tbody>
+  </table>`;
+}
+
+function renderTickCurves(curves) {
+  const container = document.getElementById('ea-tick-curves');
+  if (!container) return;
+  if (curves.length === 0) { container.innerHTML = '<div class="empty-state">No tick data yet</div>'; return; }
+
+  const w = 400;
+  const h = 150;
+  const pad = 20;
+  const maxTick = 20;
+
+  // Find P&L range
+  let minPnl = 0, maxPnl = 0;
+  for (const c of curves) {
+    for (const t of c.ticks) {
+      const p = parseFloat(t.pnl_pct ?? 0);
+      if (p < minPnl) minPnl = p;
+      if (p > maxPnl) maxPnl = p;
+    }
+  }
+  const range = (maxPnl - minPnl) || 10;
+
+  const toX = (tick) => pad + (tick / maxTick) * (w - 2 * pad);
+  const toY = (pnl) => h - pad - ((pnl - minPnl) / range) * (h - 2 * pad);
+  const zeroY = toY(0);
+
+  let lines = '';
+  for (const c of curves) {
+    const color = c.outcome === 'WIN' ? '#3fb950' : c.outcome === 'LOSS' ? '#f85149' : '#8b949e';
+    const pts = c.ticks.map(t => `${toX(t.tick)},${toY(parseFloat(t.pnl_pct ?? 0))}`).join(' ');
+    if (pts) lines += `<polyline fill="none" stroke="${color}" stroke-width="0.8" opacity="0.6" points="${pts}"/>`;
+  }
+
+  // Axis labels
+  let tickLabels = '';
+  for (let i = 0; i <= maxTick; i += 5) {
+    tickLabels += `<text x="${toX(i)}" y="${h - 2}" fill="#8b949e" font-size="5" text-anchor="middle">${i}</text>`;
+  }
+
+  // P&L labels
+  const steps = 5;
+  let pnlLabels = '';
+  for (let i = 0; i <= steps; i++) {
+    const pnl = minPnl + (range * i / steps);
+    const y = toY(pnl);
+    pnlLabels += `<text x="${pad - 3}" y="${y + 2}" fill="#8b949e" font-size="4" text-anchor="end">${pnl.toFixed(0)}%</text>`;
+    pnlLabels += `<line x1="${pad}" y1="${y}" x2="${w - pad}" y2="${y}" stroke="#21262d" stroke-width="0.3"/>`;
+  }
+
+  container.innerHTML = `
+    <svg class="ea-tick-svg" viewBox="0 0 ${w} ${h}" preserveAspectRatio="xMidYMid meet">
+      ${pnlLabels}
+      <line x1="${pad}" y1="${zeroY}" x2="${w - pad}" y2="${zeroY}" stroke="#30363d" stroke-width="0.5"/>
+      ${lines}
+      ${tickLabels}
+    </svg>
+    <div class="ea-tick-legend">
+      <span class="ea-legend-win">WIN</span>
+      <span class="ea-legend-loss">LOSS</span>
+      <span class="ea-legend-be">BREAKEVEN</span>
+      <span style="margin-left:auto">${curves.length} trades</span>
+    </div>
+  `;
+}
+
+function renderDailyTable(rows) {
+  const container = document.getElementById('ea-daily-table');
+  if (!container) return;
+  if (rows.length === 0) { container.innerHTML = '<div class="empty-state">No data</div>'; return; }
+
+  // Reverse to show most recent first
+  const sorted = [...rows].reverse();
+  let cumPnl = rows.reduce((s, r) => s + parseFloat(r.daily_pnl || 0), 0);
+
+  container.innerHTML = `<table class="ea-table">
+    <thead><tr><th>Date</th><th>Trades</th><th>W</th><th>L</th><th>Win Rate</th><th>Day P&L</th><th>Avg P&L%</th><th>Cumulative</th></tr></thead>
+    <tbody>${sorted.map(r => {
+      const wr = r.trades > 0 ? ((r.wins / r.trades) * 100).toFixed(0) : '0';
+      const dp = parseFloat(r.daily_pnl || 0);
+      const pnlCls = dp >= 0 ? 'bullish' : 'bearish';
+      const avgPct = (parseFloat(r.avg_pnl_pct || 0) * 100).toFixed(1);
+      const thisCum = cumPnl;
+      cumPnl -= dp;
+      const cumCls = thisCum >= 0 ? 'bullish' : 'bearish';
+      return `<tr>
+        <td>${r.trade_date}</td>
+        <td>${r.trades}</td><td class="bullish">${r.wins}</td><td class="bearish">${r.losses}</td>
+        <td class="${parseFloat(wr) >= 50 ? 'bullish' : 'bearish'}">${wr}%</td>
+        <td class="${pnlCls}">${dp >= 0 ? '+' : ''}$${Math.abs(dp).toFixed(2)}</td>
+        <td class="${parseFloat(avgPct) >= 0 ? 'bullish' : 'bearish'}">${avgPct}%</td>
+        <td class="${cumCls}">${thisCum >= 0 ? '+' : ''}$${Math.abs(thisCum).toFixed(2)}</td>
+      </tr>`;
+    }).join('')}</tbody>
+  </table>`;
+}
+
+// ── Agent Analysis tab ───────────────────────────────────────────────────────
+
+async function loadAgentAnalysis() {
+  const days = document.getElementById('aa-days')?.value ?? '30';
+  const data = await fetch(`${API}/api/agent-analysis?days=${days}`).then(r => r.json()).catch(() => ({}));
+
+  if (data.error || !data.peakVsFinal) {
+    document.getElementById('aa-kpis').innerHTML = '<div class="empty-state">No trade data yet. Complete some trades to see agent analysis.</div>';
+    return;
+  }
+
+  // ── KPI cards ──
+  const pvf = data.peakVsFinal || [];
+  const totalTrades = pvf.reduce((s, r) => s + r.count, 0);
+  const allGivebackPct = pvf.reduce((s, r) => s + (parseFloat(r.avg_giveback_pct || 0) * r.count), 0) / (totalTrades || 1);
+  const winsRow = pvf.find(r => r.outcome === 'WIN');
+  const lossRow = pvf.find(r => r.outcome === 'LOSS');
+  const avgPeakWin = winsRow ? (parseFloat(winsRow.avg_peak_pct) * 100).toFixed(1) : '0';
+  const avgFinalWin = winsRow ? (parseFloat(winsRow.avg_final_pct) * 100).toFixed(1) : '0';
+  const avgFinalLoss = lossRow ? (parseFloat(lossRow.avg_final_pct) * 100).toFixed(1) : '0';
+  const stopAdjs = (data.stopAdjustments || []).reduce((s, r) => s + r.total_adjustments, 0);
+
+  const countEl = document.getElementById('aa-trade-count');
+  if (countEl) countEl.textContent = `(${totalTrades} trades, ${days}d)`;
+
+  const givebackCls = allGivebackPct > 50 ? 'red' : allGivebackPct > 25 ? '' : 'green';
+  document.getElementById('aa-kpis').innerHTML = `
+    <div class="ea-kpi"><div class="ea-kpi-label">Total Trades</div><div class="ea-kpi-value">${totalTrades}</div></div>
+    <div class="ea-kpi"><div class="ea-kpi-label">Avg Giveback</div><div class="ea-kpi-value ${givebackCls}">${allGivebackPct.toFixed(0)}%</div></div>
+    <div class="ea-kpi"><div class="ea-kpi-label">Avg Peak (Win)</div><div class="ea-kpi-value green">+${avgPeakWin}%</div></div>
+    <div class="ea-kpi"><div class="ea-kpi-label">Avg Final (Win)</div><div class="ea-kpi-value green">+${avgFinalWin}%</div></div>
+    <div class="ea-kpi"><div class="ea-kpi-label">Avg Final (Loss)</div><div class="ea-kpi-value red">${avgFinalLoss}%</div></div>
+    <div class="ea-kpi"><div class="ea-kpi-label">Stop Adjustments</div><div class="ea-kpi-value">${stopAdjs}</div></div>
+  `;
+
+  renderAApeakVsFinal(data.peakVsFinal || []);
+  renderAAcloseReasons(data.closeReasons || []);
+  renderAAholdDuration(data.holdDurationBands || []);
+  renderAAtickActions(data.tickActionBreakdown || []);
+  renderAAoverrides(data.overrideStats || []);
+  renderAAstopAdjustments(data.stopAdjustments || []);
+  renderAAtradeDetail(data.profitProtection || []);
+  renderAAdispatchImpact(data.dispatchUrgency || []);
+}
+
+function renderAApeakVsFinal(rows) {
+  const container = document.getElementById('aa-peak-vs-final');
+  if (!container) return;
+  if (rows.length === 0) { container.innerHTML = '<div class="empty-state">No data</div>'; return; }
+
+  container.innerHTML = `<table class="ea-table" style="margin-top:8px">
+    <thead><tr><th>Outcome</th><th>Count</th><th>Avg Peak%</th><th>Avg Final%</th><th>Avg Giveback</th><th>Max Peak%</th><th>Worst Final%</th></tr></thead>
+    <tbody>${rows.map(r => {
+      const peakPct = (parseFloat(r.avg_peak_pct || 0) * 100).toFixed(1);
+      const finalPct = (parseFloat(r.avg_final_pct || 0) * 100).toFixed(1);
+      const giveback = parseFloat(r.avg_giveback_pct || 0);
+      const gbCls = giveback > 50 ? 'bearish' : giveback > 25 ? 'neutral' : 'bullish';
+      const gbDot = giveback > 50 ? 'aa-giveback-high' : giveback > 25 ? 'aa-giveback-mid' : 'aa-giveback-low';
+      const maxPeak = (parseFloat(r.max_peak_pct || 0) * 100).toFixed(1);
+      const worstFinal = (parseFloat(r.worst_final_pct || 0) * 100).toFixed(1);
+      const outCls = r.outcome === 'WIN' ? 'bullish' : r.outcome === 'LOSS' ? 'bearish' : 'neutral';
+      return `<tr>
+        <td class="${outCls}" style="font-weight:700">${r.outcome}</td>
+        <td>${r.count}</td>
+        <td class="bullish">+${peakPct}%</td>
+        <td class="${outCls}">${parseFloat(finalPct) >= 0 ? '+' : ''}${finalPct}%</td>
+        <td class="${gbCls}"><span class="aa-giveback-indicator ${gbDot}"></span>${giveback.toFixed(0)}%</td>
+        <td>+${maxPeak}%</td>
+        <td class="bearish">${worstFinal}%</td>
+      </tr>`;
+    }).join('')}</tbody>
+  </table>`;
+}
+
+function renderAAcloseReasons(rows) {
+  const container = document.getElementById('aa-close-reasons');
+  if (!container) return;
+  if (rows.length === 0) { container.innerHTML = '<div class="empty-state">No data</div>'; return; }
+
+  container.innerHTML = `<table class="ea-table" style="margin-top:8px">
+    <thead><tr><th>Reason</th><th>Count</th><th>Wins</th><th>Losses</th><th>Win Rate</th><th>Avg P&L%</th><th>Total P&L</th><th>Avg Hold</th></tr></thead>
+    <tbody>${rows.map(r => {
+      const wr = r.count > 0 ? ((r.wins / r.count) * 100).toFixed(0) : '0';
+      const pnlPct = (parseFloat(r.avg_pnl_pct) * 100).toFixed(1);
+      const pnlCls = parseFloat(r.total_pnl) >= 0 ? 'bullish' : 'bearish';
+      return `<tr>
+        <td style="font-weight:600">${r.close_reason || 'unknown'}</td>
+        <td>${r.count}</td>
+        <td class="bullish">${r.wins}</td>
+        <td class="bearish">${r.losses}</td>
+        <td class="${parseFloat(wr) >= 50 ? 'bullish' : 'bearish'}">${wr}%</td>
+        <td class="${parseFloat(pnlPct) >= 0 ? 'bullish' : 'bearish'}">${pnlPct}%</td>
+        <td class="${pnlCls}">${parseFloat(r.total_pnl) >= 0 ? '+' : ''}$${Math.abs(parseFloat(r.total_pnl)).toFixed(2)}</td>
+        <td>${r.avg_hold_min ?? '—'}m</td>
+      </tr>`;
+    }).join('')}</tbody>
+  </table>`;
+}
+
+function renderAAholdDuration(rows) {
+  const container = document.getElementById('aa-hold-duration');
+  if (!container) return;
+  if (rows.length === 0) { container.innerHTML = '<div class="empty-state">No data</div>'; return; }
+
+  container.innerHTML = `<table class="ea-table" style="margin-top:8px">
+    <thead><tr><th>Duration</th><th>Trades</th><th>Wins</th><th>Win Rate</th><th>Avg P&L%</th><th>Total P&L</th><th>Avg Peak%</th></tr></thead>
+    <tbody>${rows.map(r => {
+      const wr = r.trades > 0 ? ((r.wins / r.trades) * 100).toFixed(0) : '0';
+      const pnlPct = (parseFloat(r.avg_pnl_pct) * 100).toFixed(1);
+      const peakPct = r.avg_peak_pnl_pct ? (parseFloat(r.avg_peak_pnl_pct) * 100).toFixed(1) : '—';
+      const pnlCls = parseFloat(r.total_pnl) >= 0 ? 'bullish' : 'bearish';
+      return `<tr>
+        <td style="font-weight:600">${r.duration_band}</td>
+        <td>${r.trades}</td>
+        <td class="bullish">${r.wins}</td>
+        <td class="${parseFloat(wr) >= 50 ? 'bullish' : 'bearish'}">${wr}%</td>
+        <td class="${parseFloat(pnlPct) >= 0 ? 'bullish' : 'bearish'}">${pnlPct}%</td>
+        <td class="${pnlCls}">${parseFloat(r.total_pnl) >= 0 ? '+' : ''}$${Math.abs(parseFloat(r.total_pnl)).toFixed(2)}</td>
+        <td>${peakPct !== '—' ? '+' + peakPct + '%' : '—'}</td>
+      </tr>`;
+    }).join('')}</tbody>
+  </table>`;
+}
+
+function renderAAtickActions(rows) {
+  const container = document.getElementById('aa-tick-actions');
+  if (!container) return;
+  if (rows.length === 0) { container.innerHTML = '<div class="empty-state">No data</div>'; return; }
+
+  const total = rows.reduce((s, r) => s + r.count, 0);
+  container.innerHTML = `<table class="ea-table" style="margin-top:8px">
+    <thead><tr><th>Action</th><th>Count</th><th>% of Ticks</th><th>Positions</th><th>Avg P&L at Action</th></tr></thead>
+    <tbody>${rows.map(r => {
+      const pct = total > 0 ? ((r.count / total) * 100).toFixed(1) : '0';
+      const pnlPct = (parseFloat(r.avg_pnl_at_action || 0) * 100).toFixed(1);
+      return `<tr>
+        <td><span class="tick-action tick-${r.action}">${r.action}</span></td>
+        <td>${r.count}</td>
+        <td>${pct}%</td>
+        <td>${r.positions_affected}</td>
+        <td class="${parseFloat(pnlPct) >= 0 ? 'bullish' : 'bearish'}">${pnlPct}%</td>
+      </tr>`;
+    }).join('')}</tbody>
+  </table>`;
+}
+
+function renderAAoverrides(rows) {
+  const container = document.getElementById('aa-overrides');
+  if (!container) return;
+  if (rows.length === 0) { container.innerHTML = '<div class="empty-state" style="margin-top:8px">No overrides recorded — agent always followed orchestrator.</div>'; return; }
+
+  container.innerHTML = `<table class="ea-table" style="margin-top:8px">
+    <thead><tr><th>Orchestrator Said</th><th>Agent Did</th><th>Count</th><th>Wins</th><th>Losses</th><th>Win Rate</th><th>Avg Final P&L%</th></tr></thead>
+    <tbody>${rows.map(r => {
+      const wr = (r.wins + r.losses) > 0 ? ((r.wins / (r.wins + r.losses)) * 100).toFixed(0) : '—';
+      const pnlPct = (parseFloat(r.avg_final_pnl_pct || 0) * 100).toFixed(1);
+      return `<tr>
+        <td><span class="decision-${r.orchestrator_suggestion}">${r.orchestrator_suggestion || '—'}</span></td>
+        <td><span class="tick-action tick-${r.agent_action}">${r.agent_action}</span></td>
+        <td>${r.count}</td>
+        <td class="bullish">${r.wins}</td>
+        <td class="bearish">${r.losses}</td>
+        <td class="${parseFloat(wr) >= 50 ? 'bullish' : parseFloat(wr) < 50 ? 'bearish' : ''}">${wr}%</td>
+        <td class="${parseFloat(pnlPct) >= 0 ? 'bullish' : 'bearish'}">${pnlPct}%</td>
+      </tr>`;
+    }).join('')}</tbody>
+  </table>`;
+}
+
+function renderAAstopAdjustments(rows) {
+  const container = document.getElementById('aa-stop-adjustments');
+  if (!container) return;
+  if (rows.length === 0) { container.innerHTML = '<div class="empty-state" style="margin-top:8px">No stop adjustments recorded.</div>'; return; }
+
+  container.innerHTML = `<table class="ea-table" style="margin-top:8px">
+    <thead><tr><th>Ticker</th><th>Outcome</th><th>Adjustments</th><th>First Stop</th><th>Last Stop</th><th>Stop Delta</th><th>P&L Range at Adj</th><th>Final P&L%</th></tr></thead>
+    <tbody>${rows.map(r => {
+      const firstStop = parseFloat(r.first_stop || 0);
+      const lastStop = parseFloat(r.last_stop || 0);
+      const delta = lastStop - firstStop;
+      const deltaCls = delta > 0 ? 'bullish' : delta < 0 ? 'bearish' : '';
+      const minPnl = (parseFloat(r.min_pnl_at_adjust || 0) * 100).toFixed(1);
+      const maxPnl = (parseFloat(r.max_pnl_at_adjust || 0) * 100).toFixed(1);
+      const finalPnl = (parseFloat(r.final_pnl_pct || 0) * 100).toFixed(1);
+      const outCls = r.outcome === 'WIN' ? 'bullish' : r.outcome === 'LOSS' ? 'bearish' : 'neutral';
+      return `<tr>
+        <td><b>${r.ticker}</b></td>
+        <td class="${outCls}">${r.outcome}</td>
+        <td>${r.total_adjustments}</td>
+        <td>$${firstStop.toFixed(2)}</td>
+        <td>$${lastStop.toFixed(2)}</td>
+        <td class="${deltaCls}">${delta >= 0 ? '+' : ''}$${delta.toFixed(2)}</td>
+        <td>${minPnl}% → ${maxPnl}%</td>
+        <td class="${outCls}">${finalPnl}%</td>
+      </tr>`;
+    }).join('')}</tbody>
+  </table>`;
+}
+
+function renderAAtradeDetail(rows) {
+  const container = document.getElementById('aa-trade-detail');
+  if (!container) return;
+  if (rows.length === 0) { container.innerHTML = '<div class="empty-state">No data</div>'; return; }
+
+  const w = 600;
+  const h = 150;
+  const pad = 30;
+  const trades = rows.slice(0, 60);
+
+  let minPnl = 0, maxPnl = 0;
+  for (const t of trades) {
+    const peak = parseFloat(t.peak_pnl_pct || 0);
+    const final_ = parseFloat(t.final_pnl_pct || 0);
+    if (peak > maxPnl) maxPnl = peak;
+    if (final_ > maxPnl) maxPnl = final_;
+    if (final_ < minPnl) minPnl = final_;
+  }
+  const range = (maxPnl - minPnl) || 0.1;
+
+  const barW = Math.max((w - 2 * pad) / trades.length - 2, 3);
+  const toY = (pnl) => h - pad - ((pnl - minPnl) / range) * (h - 2 * pad);
+  const zeroY = toY(0);
+
+  let bars = '';
+  trades.forEach((t, i) => {
+    const x = pad + i * ((w - 2 * pad) / trades.length);
+    const peak = parseFloat(t.peak_pnl_pct || 0);
+    const final_ = parseFloat(t.final_pnl_pct || 0);
+    const peakY = toY(peak);
+    const finalY = toY(final_);
+    const color = t.outcome === 'WIN' ? '#3fb950' : t.outcome === 'LOSS' ? '#f85149' : '#8b949e';
+
+    if (peak > 0) {
+      bars += `<rect x="${x}" y="${peakY}" width="${barW * 0.45}" height="${zeroY - peakY}" fill="#30363d" opacity="0.5" rx="1"/>`;
+    }
+    if (final_ >= 0) {
+      bars += `<rect x="${x + barW * 0.5}" y="${finalY}" width="${barW * 0.45}" height="${zeroY - finalY}" fill="${color}" rx="1"/>`;
+    } else {
+      bars += `<rect x="${x + barW * 0.5}" y="${zeroY}" width="${barW * 0.45}" height="${finalY - zeroY}" fill="${color}" rx="1"/>`;
+    }
+  });
+
+  let yLabels = '';
+  for (let i = 0; i <= 4; i++) {
+    const pnl = minPnl + (range * i / 4);
+    const y = toY(pnl);
+    yLabels += `<text x="${pad - 3}" y="${y + 2}" fill="#8b949e" font-size="5" text-anchor="end">${(pnl * 100).toFixed(0)}%</text>`;
+    yLabels += `<line x1="${pad}" y1="${y}" x2="${w - pad}" y2="${y}" stroke="#21262d" stroke-width="0.3"/>`;
+  }
+
+  container.innerHTML = `
+    <svg class="ea-tick-svg" viewBox="0 0 ${w} ${h}" preserveAspectRatio="xMidYMid meet">
+      ${yLabels}
+      <line x1="${pad}" y1="${zeroY}" x2="${w - pad}" y2="${zeroY}" stroke="#30363d" stroke-width="0.5"/>
+      ${bars}
+    </svg>
+    <div class="ea-tick-legend">
+      <span style="color:#30363d">■ Peak P&L%</span>
+      <span class="ea-legend-win">Final (WIN)</span>
+      <span class="ea-legend-loss">Final (LOSS)</span>
+      <span style="margin-left:auto">${trades.length} trades (most recent)</span>
+    </div>
+  `;
+}
+
+function renderAAdispatchImpact(rows) {
+  const container = document.getElementById('aa-dispatches');
+  if (!container) return;
+  if (rows.length === 0) { container.innerHTML = '<div class="empty-state" style="margin-top:8px">No dispatch data</div>'; return; }
+
+  container.innerHTML = `<table class="ea-table" style="margin-top:8px">
+    <thead><tr><th>Decision</th><th>Urgency</th><th>Count</th><th>Positions</th><th>Avg Final P&L%</th></tr></thead>
+    <tbody>${rows.map(r => {
+      const pnlPct = (parseFloat(r.avg_final_pnl_pct || 0) * 100).toFixed(1);
+      const urgCls = r.urgency === 'immediate' ? 'bearish' : r.urgency === 'standard' ? 'neutral' : '';
+      return `<tr>
+        <td><span class="decision-${r.orchestrator_decision}">${r.orchestrator_decision}</span></td>
+        <td class="${urgCls}">${r.urgency}</td>
+        <td>${r.count}</td>
+        <td>${r.positions}</td>
+        <td class="${parseFloat(pnlPct) >= 0 ? 'bullish' : 'bearish'}">${pnlPct}%</td>
+      </tr>`;
+    }).join('')}</tbody>
+  </table>`;
+}
+
 // ── Main refresh ──────────────────────────────────────────────────────────────
 function loadTab(tab) {
   switch (tab) {
-    case 'positions':   loadPositions();   break;
-    case 'signals':     loadSignals();     break;
-    case 'analysis':    loadAnalysis();    break;
-    case 'decisions':   loadDecisions();   break;
-    case 'evaluations': loadEvaluations(); break;
-    case 'orders':      loadOrders();      break;
-    case 'agents':      loadAgents();      break;
-    case 'dispatches':  loadDispatches();  break;
-    case 'scheduler':   loadScheduler();   break;
-    case 'activity':    loadApprovals(); loadInteractions(); break;
-    case 'alpaca':      loadAlpaca();      break;
-    case 'database':    /* static panel, nothing to load */ break;
+    case 'positions':       loadPositions();   break;
+    case 'signals':         loadSignals();     break;
+    case 'analysis':        loadAnalysis();    break;
+    case 'decisions':       loadDecisions();   break;
+    case 'evaluations':     loadEvaluations(); break;
+    case 'orders':          loadOrders();      break;
+    case 'agents':          loadAgents();      break;
+    case 'dispatches':      loadDispatches();  break;
+    case 'scheduler':       loadScheduler();   break;
+    case 'activity':        loadApprovals(); loadInteractions(); break;
+    case 'alpaca':          loadAlpaca();         break;
+    case 'entry-analysis':  loadEntryAnalysis();  break;
+    case 'agent-analysis':  loadAgentAnalysis();  break;
+    case 'database':        /* static panel, nothing to load */ break;
   }
 }
 

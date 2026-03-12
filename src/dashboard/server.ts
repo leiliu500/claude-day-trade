@@ -775,6 +775,333 @@ export function startDashboard(port: number): void {
     }
   });
 
+  // Entry Analysis — aggregated analytics for entry quality
+  app.get('/api/entry-analysis', async (req, res) => {
+    try {
+      const pool = getPool();
+      const days = Math.min(parseInt(String(req.query['days'] ?? '30')), 90);
+
+      const [
+        { rows: confidenceBands },
+        { rows: outcomeStats },
+        { rows: convictionPerf },
+        { rows: tickCurves },
+        { rows: dailyPnl },
+        { rows: directionPerf },
+      ] = await Promise.all([
+        // 1. Win rate by confidence band (10 buckets)
+        pool.query(`
+          SELECT
+            width_bucket(ss.confidence, 0, 1, 10) AS bucket,
+            round(avg(ss.confidence)::numeric, 3) AS avg_confidence,
+            count(*)::int AS trades,
+            sum(case when te.outcome = 'WIN' then 1 else 0 end)::int AS wins,
+            sum(case when te.outcome = 'LOSS' then 1 else 0 end)::int AS losses,
+            round(avg(te.pnl_pct)::numeric, 4) AS avg_pnl_pct,
+            round(avg(te.pnl_total)::numeric, 2) AS avg_pnl_total,
+            round(avg(ss.risk_reward)::numeric, 2) AS avg_rr
+          FROM trading.trade_evaluations te
+          JOIN trading.trading_decisions td ON td.id = te.decision_id
+          JOIN trading.signal_snapshots ss ON ss.id = td.signal_snapshot_id
+          WHERE te.evaluated_at >= NOW() - make_interval(days => $1)
+          GROUP BY 1 ORDER BY 1
+        `, [days]),
+
+        // 2. Overall outcome stats (WIN vs LOSS vs BREAKEVEN)
+        pool.query(`
+          SELECT
+            te.outcome,
+            count(*)::int AS count,
+            round(avg(te.pnl_pct)::numeric, 4) AS avg_pnl_pct,
+            round(sum(te.pnl_total)::numeric, 2) AS total_pnl,
+            round(avg(te.hold_duration_min)::numeric, 1) AS avg_hold_min,
+            round(avg(ss.confidence)::numeric, 3) AS avg_confidence,
+            round(avg(ss.risk_reward)::numeric, 2) AS avg_rr,
+            round(avg(ss.spread_pct)::numeric, 3) AS avg_spread,
+            round(avg(te.evaluation_score)::numeric, 0) AS avg_eval_score
+          FROM trading.trade_evaluations te
+          JOIN trading.trading_decisions td ON td.id = te.decision_id
+          JOIN trading.signal_snapshots ss ON ss.id = td.signal_snapshot_id
+          WHERE te.evaluated_at >= NOW() - make_interval(days => $1)
+          GROUP BY te.outcome
+          ORDER BY te.outcome
+        `, [days]),
+
+        // 3. Conviction tier performance
+        pool.query(`
+          SELECT
+            pj.conviction_tier,
+            count(*)::int AS trades,
+            sum(case when te.outcome = 'WIN' then 1 else 0 end)::int AS wins,
+            round(avg(te.pnl_pct)::numeric, 4) AS avg_pnl_pct,
+            round(sum(te.pnl_total)::numeric, 2) AS total_pnl,
+            round(avg(te.evaluation_score)::numeric, 0) AS avg_eval_score
+          FROM trading.position_journal pj
+          JOIN trading.trade_evaluations te ON te.position_id = pj.id
+          WHERE te.evaluated_at >= NOW() - make_interval(days => $1)
+          GROUP BY pj.conviction_tier
+        `, [days]),
+
+        // 4. Tick-level P&L curves — first 20 ticks for each recent position
+        pool.query(`
+          SELECT
+            t.position_id,
+            pj.ticker,
+            te.outcome,
+            t.tick_count,
+            t.pnl_pct::text,
+            t.current_price::text,
+            t.action
+          FROM trading.order_agent_ticks t
+          JOIN trading.position_journal pj ON pj.id = t.position_id
+          JOIN trading.trade_evaluations te ON te.position_id = pj.id
+          WHERE te.evaluated_at >= NOW() - make_interval(days => $1)
+            AND t.tick_count <= 20
+          ORDER BY t.position_id, t.tick_count
+        `, [days]),
+
+        // 5. Daily P&L for equity curve
+        pool.query(`
+          SELECT
+            pj.trade_date::text,
+            count(*)::int AS trades,
+            sum(case when te.outcome = 'WIN' then 1 else 0 end)::int AS wins,
+            sum(case when te.outcome = 'LOSS' then 1 else 0 end)::int AS losses,
+            round(sum(te.pnl_total)::numeric, 2) AS daily_pnl,
+            round(avg(te.pnl_pct)::numeric, 4) AS avg_pnl_pct
+          FROM trading.position_journal pj
+          JOIN trading.trade_evaluations te ON te.position_id = pj.id
+          WHERE pj.trade_date >= CURRENT_DATE - make_interval(days => $1)
+          GROUP BY pj.trade_date
+          ORDER BY pj.trade_date
+        `, [days]),
+
+        // 6. Direction performance (bullish vs bearish)
+        pool.query(`
+          SELECT
+            td.direction,
+            count(*)::int AS trades,
+            sum(case when te.outcome = 'WIN' then 1 else 0 end)::int AS wins,
+            round(avg(te.pnl_pct)::numeric, 4) AS avg_pnl_pct,
+            round(sum(te.pnl_total)::numeric, 2) AS total_pnl
+          FROM trading.trade_evaluations te
+          JOIN trading.trading_decisions td ON td.id = te.decision_id
+          WHERE te.evaluated_at >= NOW() - make_interval(days => $1)
+          GROUP BY td.direction
+        `, [days]),
+      ]);
+
+      // Group tick curves by position
+      const ticksByPosition = new Map<string, { ticker: string; outcome: string; ticks: { tick: number; pnl_pct: string | null; price: string | null; action: string }[] }>();
+      for (const t of tickCurves) {
+        if (!ticksByPosition.has(t.position_id)) {
+          ticksByPosition.set(t.position_id, { ticker: t.ticker, outcome: t.outcome, ticks: [] });
+        }
+        ticksByPosition.get(t.position_id)!.ticks.push({
+          tick: t.tick_count,
+          pnl_pct: t.pnl_pct,
+          price: t.current_price,
+          action: t.action,
+        });
+      }
+
+      res.json({
+        days,
+        confidenceBands,
+        outcomeStats,
+        convictionPerf,
+        tickCurves: Array.from(ticksByPosition.values()),
+        dailyPnl,
+        directionPerf,
+      });
+    } catch (err) {
+      res.status(500).json({ error: (err as Error).message });
+    }
+  });
+
+  // Agent Analysis — profit protection & loss minimization analytics
+  app.get('/api/agent-analysis', async (req, res) => {
+    try {
+      const pool = getPool();
+      const days = Math.min(parseInt(String(req.query['days'] ?? '30')), 90);
+
+      const [
+        { rows: closeReasons },
+        { rows: profitProtection },
+        { rows: stopAdjustments },
+        { rows: overrideStats },
+        { rows: holdDurationBands },
+        { rows: tickActionBreakdown },
+        { rows: peakVsFinal },
+        { rows: dispatchUrgency },
+      ] = await Promise.all([
+        // 1. Close reason breakdown — why positions exit
+        pool.query(`
+          SELECT
+            pj.close_reason,
+            count(*)::int AS count,
+            sum(case when te.outcome = 'WIN' then 1 else 0 end)::int AS wins,
+            sum(case when te.outcome = 'LOSS' then 1 else 0 end)::int AS losses,
+            round(avg(te.pnl_pct)::numeric, 4) AS avg_pnl_pct,
+            round(sum(te.pnl_total)::numeric, 2) AS total_pnl,
+            round(avg(te.hold_duration_min)::numeric, 1) AS avg_hold_min
+          FROM trading.position_journal pj
+          JOIN trading.trade_evaluations te ON te.position_id = pj.id
+          WHERE te.evaluated_at >= NOW() - make_interval(days => $1)
+            AND pj.close_reason IS NOT NULL
+          GROUP BY pj.close_reason
+          ORDER BY count DESC
+        `, [days]),
+
+        // 2. Profit protection — peak P&L vs realized P&L (how much given back)
+        pool.query(`
+          SELECT
+            pj.id,
+            pj.ticker,
+            pj.option_symbol,
+            pj.peak_pnl_pct::text,
+            te.pnl_pct::text AS final_pnl_pct,
+            te.pnl_total::text,
+            te.outcome,
+            pj.entry_price::text,
+            pj.exit_price::text,
+            pj.close_reason,
+            pj.hold_duration_min,
+            pj.conviction_tier,
+            pj.opened_at::text,
+            pj.closed_at::text
+          FROM trading.position_journal pj
+          JOIN trading.trade_evaluations te ON te.position_id = pj.id
+          WHERE te.evaluated_at >= NOW() - make_interval(days => $1)
+          ORDER BY pj.closed_at DESC
+        `, [days]),
+
+        // 3. Stop adjustment effectiveness — ADJUST_STOP ticks
+        pool.query(`
+          SELECT
+            t.position_id,
+            pj.ticker,
+            te.outcome,
+            te.pnl_pct::text AS final_pnl_pct,
+            count(*)::int AS total_adjustments,
+            min(t.new_stop)::text AS first_stop,
+            max(t.new_stop)::text AS last_stop,
+            min(t.pnl_pct)::text AS min_pnl_at_adjust,
+            max(t.pnl_pct)::text AS max_pnl_at_adjust
+          FROM trading.order_agent_ticks t
+          JOIN trading.position_journal pj ON pj.id = t.position_id
+          JOIN trading.trade_evaluations te ON te.position_id = pj.id
+          WHERE te.evaluated_at >= NOW() - make_interval(days => $1)
+            AND t.action = 'ADJUST_STOP'
+          GROUP BY t.position_id, pj.ticker, te.outcome, te.pnl_pct
+        `, [days]),
+
+        // 4. Override analysis — when agent overrides orchestrator
+        pool.query(`
+          SELECT
+            t.orchestrator_suggestion,
+            t.action AS agent_action,
+            count(*)::int AS count,
+            round(avg(te.pnl_pct)::numeric, 4) AS avg_final_pnl_pct,
+            sum(case when te.outcome = 'WIN' then 1 else 0 end)::int AS wins,
+            sum(case when te.outcome = 'LOSS' then 1 else 0 end)::int AS losses
+          FROM trading.order_agent_ticks t
+          JOIN trading.position_journal pj ON pj.id = t.position_id
+          JOIN trading.trade_evaluations te ON te.position_id = pj.id
+          WHERE te.evaluated_at >= NOW() - make_interval(days => $1)
+            AND t.overriding_orchestrator = true
+          GROUP BY t.orchestrator_suggestion, t.action
+          ORDER BY count DESC
+        `, [days]),
+
+        // 5. Hold duration bands — too short or too long?
+        pool.query(`
+          SELECT
+            CASE
+              WHEN pj.hold_duration_min < 5 THEN '< 5m'
+              WHEN pj.hold_duration_min < 15 THEN '5-15m'
+              WHEN pj.hold_duration_min < 30 THEN '15-30m'
+              WHEN pj.hold_duration_min < 60 THEN '30-60m'
+              ELSE '60m+'
+            END AS duration_band,
+            min(pj.hold_duration_min) AS band_min,
+            count(*)::int AS trades,
+            sum(case when te.outcome = 'WIN' then 1 else 0 end)::int AS wins,
+            round(avg(te.pnl_pct)::numeric, 4) AS avg_pnl_pct,
+            round(sum(te.pnl_total)::numeric, 2) AS total_pnl,
+            round(avg(pj.peak_pnl_pct)::numeric, 4) AS avg_peak_pnl_pct
+          FROM trading.position_journal pj
+          JOIN trading.trade_evaluations te ON te.position_id = pj.id
+          WHERE te.evaluated_at >= NOW() - make_interval(days => $1)
+            AND pj.hold_duration_min IS NOT NULL
+          GROUP BY 1, 2
+          ORDER BY band_min
+        `, [days]),
+
+        // 6. Tick action distribution — what does the agent mostly do?
+        pool.query(`
+          SELECT
+            t.action,
+            count(*)::int AS count,
+            round(avg(t.pnl_pct)::numeric, 4) AS avg_pnl_at_action,
+            count(DISTINCT t.position_id)::int AS positions_affected
+          FROM trading.order_agent_ticks t
+          JOIN trading.trade_evaluations te ON te.position_id = t.position_id
+          WHERE te.evaluated_at >= NOW() - make_interval(days => $1)
+          GROUP BY t.action
+          ORDER BY count DESC
+        `, [days]),
+
+        // 7. Peak vs final P&L summary — profit giveback stats
+        pool.query(`
+          SELECT
+            te.outcome,
+            count(*)::int AS count,
+            round(avg(pj.peak_pnl_pct)::numeric, 4) AS avg_peak_pct,
+            round(avg(te.pnl_pct)::numeric, 4) AS avg_final_pct,
+            round(avg(CASE WHEN pj.peak_pnl_pct > 0 AND te.pnl_pct::numeric < pj.peak_pnl_pct
+              THEN (pj.peak_pnl_pct - te.pnl_pct::numeric) / pj.peak_pnl_pct * 100
+              ELSE 0 END)::numeric, 1) AS avg_giveback_pct,
+            round(max(pj.peak_pnl_pct)::numeric, 4) AS max_peak_pct,
+            round(min(te.pnl_pct)::numeric, 4) AS worst_final_pct
+          FROM trading.position_journal pj
+          JOIN trading.trade_evaluations te ON te.position_id = pj.id
+          WHERE te.evaluated_at >= NOW() - make_interval(days => $1)
+          GROUP BY te.outcome
+        `, [days]),
+
+        // 8. Dispatch urgency → outcome correlation
+        pool.query(`
+          SELECT
+            d.urgency,
+            d.orchestrator_decision,
+            count(*)::int AS count,
+            count(DISTINCT d.position_id)::int AS positions,
+            round(avg(te.pnl_pct)::numeric, 4) AS avg_final_pnl_pct
+          FROM trading.order_agent_dispatches d
+          JOIN trading.trade_evaluations te ON te.position_id = d.position_id
+          WHERE te.evaluated_at >= NOW() - make_interval(days => $1)
+          GROUP BY d.urgency, d.orchestrator_decision
+          ORDER BY count DESC
+        `, [days]),
+      ]);
+
+      res.json({
+        days,
+        closeReasons,
+        profitProtection,
+        stopAdjustments,
+        overrideStats,
+        holdDurationBands,
+        tickActionBreakdown,
+        peakVsFinal,
+        dispatchUrgency,
+      });
+    } catch (err) {
+      res.status(500).json({ error: (err as Error).message });
+    }
+  });
+
   // SPA fallback
   app.get('*', (_req, res) => {
     res.sendFile(join(__dirname, 'public/index.html'));

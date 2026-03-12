@@ -57,6 +57,8 @@
       <button class="tab" data-tab="scheduler">Scheduler</button>
       <button class="tab" data-tab="activity">Human Activity</button>
       <button class="tab" data-tab="alpaca">Alpaca</button>
+      <button class="tab" data-tab="entry-analysis">Entry Analysis</button>
+      <button class="tab" data-tab="agent-analysis">Agent Analysis</button>
       <button class="tab" data-tab="database">Database</button>
     </nav>
 
@@ -300,6 +302,143 @@
           </thead>
           <tbody></tbody>
         </table>
+      </div>
+    </section>
+
+    <section id="tab-entry-analysis" class="tab-content">
+      <div class="ea-header">
+        <h2 class="agents-section-header">Entry Analysis <small id="ea-trade-count"></small></h2>
+        <div class="ea-controls">
+          <label for="ea-days">Period</label>
+          <select id="ea-days" onchange="loadEntryAnalysis()">
+            <option value="7">7 days</option>
+            <option value="14">14 days</option>
+            <option value="30" selected>30 days</option>
+            <option value="60">60 days</option>
+            <option value="90">90 days</option>
+          </select>
+        </div>
+      </div>
+
+      <!-- Summary KPI cards -->
+      <div class="ea-kpis" id="ea-kpis"></div>
+
+      <!-- Row 1: Confidence vs Win Rate + Equity Curve -->
+      <div class="ea-grid-2">
+        <div class="ea-panel">
+          <h3 class="ea-panel-title">Win Rate by Confidence Band</h3>
+          <div id="ea-confidence-chart" class="ea-chart"></div>
+        </div>
+        <div class="ea-panel">
+          <h3 class="ea-panel-title">Cumulative P&amp;L (Equity Curve)</h3>
+          <div id="ea-equity-chart" class="ea-chart"></div>
+        </div>
+      </div>
+
+      <!-- Row 2: Conviction Tier + Direction -->
+      <div class="ea-grid-2">
+        <div class="ea-panel">
+          <h3 class="ea-panel-title">Conviction Tier Performance</h3>
+          <div id="ea-conviction-table"></div>
+        </div>
+        <div class="ea-panel">
+          <h3 class="ea-panel-title">Direction Performance</h3>
+          <div id="ea-direction-table"></div>
+        </div>
+      </div>
+
+      <!-- Row 3: Win vs Loss comparison -->
+      <div class="ea-panel ea-full">
+        <h3 class="ea-panel-title">WIN vs LOSS — What Differs at Entry?</h3>
+        <div id="ea-outcome-table"></div>
+      </div>
+
+      <!-- Row 4: Tick P&L curves -->
+      <div class="ea-panel ea-full">
+        <h3 class="ea-panel-title">Early P&amp;L Trajectory (First 20 Ticks per Trade)</h3>
+        <small style="color:#8b949e">Good entries go positive within 1-3 ticks. Deep early drawdowns = mistimed entry.</small>
+        <div id="ea-tick-curves" class="ea-chart" style="height:300px"></div>
+      </div>
+
+      <!-- Row 5: Daily breakdown -->
+      <div class="ea-panel ea-full">
+        <h3 class="ea-panel-title">Daily Performance</h3>
+        <div id="ea-daily-table"></div>
+      </div>
+    </section>
+
+    <section id="tab-agent-analysis" class="tab-content">
+      <div class="ea-header">
+        <h2 class="agents-section-header">Agent Analysis <small id="aa-trade-count"></small></h2>
+        <div class="ea-controls">
+          <label for="aa-days">Period</label>
+          <select id="aa-days" onchange="loadAgentAnalysis()">
+            <option value="7">7 days</option>
+            <option value="14">14 days</option>
+            <option value="30" selected>30 days</option>
+            <option value="60">60 days</option>
+            <option value="90">90 days</option>
+          </select>
+        </div>
+      </div>
+
+      <!-- KPI summary -->
+      <div class="ea-kpis" id="aa-kpis"></div>
+
+      <!-- Row 1: Peak vs Final P&L + Close Reason -->
+      <div class="ea-grid-2">
+        <div class="ea-panel">
+          <h3 class="ea-panel-title">Profit Giveback — Peak vs Final P&amp;L</h3>
+          <small style="color:#8b949e">How much unrealized profit is returned before exit</small>
+          <div id="aa-peak-vs-final"></div>
+        </div>
+        <div class="ea-panel">
+          <h3 class="ea-panel-title">Close Reason Breakdown</h3>
+          <small style="color:#8b949e">Why positions exit — which reasons produce best outcomes</small>
+          <div id="aa-close-reasons"></div>
+        </div>
+      </div>
+
+      <!-- Row 2: Hold Duration + Tick Actions -->
+      <div class="ea-grid-2">
+        <div class="ea-panel">
+          <h3 class="ea-panel-title">Hold Duration vs Outcome</h3>
+          <small style="color:#8b949e">Optimal hold time — too short misses gains, too long gives back profits</small>
+          <div id="aa-hold-duration"></div>
+        </div>
+        <div class="ea-panel">
+          <h3 class="ea-panel-title">Agent Action Distribution</h3>
+          <small style="color:#8b949e">What the agent does during monitoring (HOLD / EXIT / ADJUST_STOP / REDUCE)</small>
+          <div id="aa-tick-actions"></div>
+        </div>
+      </div>
+
+      <!-- Row 3: Override Analysis -->
+      <div class="ea-panel ea-full">
+        <h3 class="ea-panel-title">Override Analysis — Agent vs Orchestrator</h3>
+        <small style="color:#8b949e">When the agent overrides orchestrator suggestions, does it help or hurt?</small>
+        <div id="aa-overrides"></div>
+      </div>
+
+      <!-- Row 4: Stop Adjustment Effectiveness -->
+      <div class="ea-panel ea-full">
+        <h3 class="ea-panel-title">Stop Adjustment Effectiveness</h3>
+        <small style="color:#8b949e">Per-position stop trail history — did stops lock in profits?</small>
+        <div id="aa-stop-adjustments"></div>
+      </div>
+
+      <!-- Row 5: Per-trade profit protection detail -->
+      <div class="ea-panel ea-full">
+        <h3 class="ea-panel-title">Per-Trade Profit Protection</h3>
+        <small style="color:#8b949e">Peak P&amp;L% vs Final P&amp;L% for each trade — green = captured, red = given back</small>
+        <div id="aa-trade-detail" class="ea-chart" style="height:300px"></div>
+      </div>
+
+      <!-- Row 6: Dispatch urgency -->
+      <div class="ea-panel ea-full">
+        <h3 class="ea-panel-title">Orchestrator Dispatch Impact</h3>
+        <small style="color:#8b949e">How dispatch urgency and decision type correlate with final P&amp;L</small>
+        <div id="aa-dispatches"></div>
       </div>
     </section>
 

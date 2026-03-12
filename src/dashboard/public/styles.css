@@ -797,6 +797,237 @@ tr:hover td { background: #1c2128; }
   color: #8b949e;
 }
 
+/* ── Entry Analysis tab ────────────────────────────────────────────────────── */
+.ea-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.ea-controls {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  color: #8b949e;
+}
+.ea-controls select {
+  background: #0d1117;
+  color: #e6edf3;
+  border: 1px solid #30363d;
+  border-radius: 4px;
+  padding: 4px 8px;
+  font-size: 13px;
+}
+
+.ea-kpis {
+  display: grid;
+  grid-template-columns: repeat(6, 1fr);
+  gap: 12px;
+  margin-bottom: 20px;
+}
+.ea-kpi {
+  background: #161b22;
+  border: 1px solid #30363d;
+  border-radius: 8px;
+  padding: 14px;
+  text-align: center;
+}
+.ea-kpi-label {
+  font-size: 11px;
+  color: #8b949e;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  margin-bottom: 4px;
+}
+.ea-kpi-value {
+  font-size: 1.5rem;
+  font-weight: 700;
+}
+
+.ea-grid-2 {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 16px;
+  margin-bottom: 16px;
+}
+
+.ea-panel {
+  background: #161b22;
+  border: 1px solid #30363d;
+  border-radius: 8px;
+  padding: 16px;
+  margin-bottom: 16px;
+}
+.ea-panel.ea-full { width: 100%; }
+.ea-panel-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: #8b949e;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  margin-bottom: 12px;
+}
+
+.ea-chart {
+  position: relative;
+  height: 220px;
+  overflow: hidden;
+}
+
+/* Bar chart (confidence bands) */
+.ea-bar-chart {
+  display: flex;
+  align-items: flex-end;
+  gap: 6px;
+  height: 100%;
+  padding-bottom: 24px;
+}
+.ea-bar-group {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  height: 100%;
+  justify-content: flex-end;
+}
+.ea-bar {
+  width: 100%;
+  max-width: 48px;
+  border-radius: 4px 4px 0 0;
+  position: relative;
+  transition: height 0.3s;
+  min-height: 2px;
+}
+.ea-bar-label {
+  font-size: 10px;
+  color: #8b949e;
+  margin-top: 4px;
+  text-align: center;
+  white-space: nowrap;
+}
+.ea-bar-value {
+  position: absolute;
+  top: -18px;
+  left: 50%;
+  transform: translateX(-50%);
+  font-size: 11px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+/* Equity curve (SVG-based) */
+.ea-equity-svg {
+  width: 100%;
+  height: 100%;
+}
+
+/* Tick curves (canvas-like SVG) */
+.ea-tick-svg {
+  width: 100%;
+  height: 100%;
+}
+.ea-tick-legend {
+  display: flex;
+  gap: 16px;
+  margin-top: 8px;
+  font-size: 11px;
+  color: #8b949e;
+}
+.ea-tick-legend span::before {
+  content: '';
+  display: inline-block;
+  width: 16px;
+  height: 2px;
+  margin-right: 4px;
+  vertical-align: middle;
+}
+.ea-legend-win::before { background: #3fb950; }
+.ea-legend-loss::before { background: #f85149; }
+.ea-legend-be::before { background: #8b949e; }
+
+/* Tables inside panels */
+.ea-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+.ea-table th {
+  background: #1c2128;
+  color: #8b949e;
+  font-weight: 600;
+  text-align: left;
+  padding: 8px 10px;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  border-bottom: 1px solid #30363d;
+}
+.ea-table td {
+  padding: 8px 10px;
+  border-bottom: 1px solid #21262d;
+  font-variant-numeric: tabular-nums;
+}
+.ea-table tr:last-child td { border-bottom: none; }
+.ea-table tr:hover td { background: #1c2128; }
+
+.ea-highlight-row { background: #1c2128; }
+
+@media (max-width: 1000px) {
+  .ea-kpis { grid-template-columns: repeat(3, 1fr); }
+  .ea-grid-2 { grid-template-columns: 1fr; }
+}
+
+/* ── Agent Analysis — profit protection chart ──────────────────────────────── */
+.aa-trade-bars {
+  display: flex;
+  align-items: flex-end;
+  gap: 3px;
+  height: 100%;
+  padding-bottom: 24px;
+  overflow-x: auto;
+}
+.aa-trade-bar-group {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  min-width: 18px;
+  flex-shrink: 0;
+  height: 100%;
+  justify-content: flex-end;
+}
+.aa-bar-pair {
+  display: flex;
+  gap: 1px;
+  align-items: flex-end;
+  width: 100%;
+}
+.aa-bar-peak, .aa-bar-final {
+  width: 50%;
+  min-height: 1px;
+  border-radius: 2px 2px 0 0;
+}
+.aa-bar-peak { background: #30363d; opacity: 0.6; }
+.aa-bar-final-win { background: #3fb950; }
+.aa-bar-final-loss { background: #f85149; }
+.aa-bar-final-be { background: #8b949e; }
+
+.aa-bar-idx {
+  font-size: 8px;
+  color: #484f58;
+  margin-top: 2px;
+}
+
+.aa-giveback-indicator {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  margin-right: 4px;
+}
+.aa-giveback-low { background: #3fb950; }
+.aa-giveback-mid { background: #e3b341; }
+.aa-giveback-high { background: #f85149; }
+
 /* Skipped label */
 .analysis-skipped {
   font-size: 0.78rem;
