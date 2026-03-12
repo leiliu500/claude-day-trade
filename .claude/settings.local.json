@@ -81,7 +81,18 @@
       "Bash(curl -s 'http://localhost:3001/api/analysis?limit=5')",
       "Bash(curl -s 'http://localhost:3001/api/agent-analysis?days=30')",
       "Bash(curl -s http://localhost:3001/)",
-      "Bash(curl -s http://localhost:3001/app.js)"
+      "Bash(curl -s http://localhost:3001/app.js)",
+      "Bash(echo \"1. 14:36 WIN \\(SPY665P, entry $2.71, +$320\\)\")",
+      "Bash(echo \"   ADX=44.3 > 40 → BLOCKED by ADX exhaustion\")",
+      "Bash(echo \"   Even if passed: adxBarsAbove25=10 > 6 → BLOCKED by ADX maturity\")",
+      "Bash(echo \"2. 14:39 LOSS \\(SPY668P, entry $4.10, -$45\\)\")",
+      "Bash(echo \"   ADX=44.3 > 40 → BLOCKED\")",
+      "Bash(echo \"3-7. 19:15-19:57 LOSSES \\(5 trades, total -$200\\)\")",
+      "Bash(echo \"   All: ADX=44.3-44.7 > 40 → BLOCKED\")",
+      "Bash(echo \"   All: adxBarsAbove25=10 > 6 → BLOCKED\")",
+      "Bash(echo \"RESULT: All 6 losses blocked \\(-$245 saved\\), but the 1 winner also blocked \\(-$320 missed\\)\")",
+      "Bash(echo \"Net: Would have saved $245 but missed $320 → net -$75 worse\")",
+      "Bash(echo \"The ADX>40 threshold is too aggressive for this case.\")"
     ],
     "additionalDirectories": [
       "/home/ec2-user/.claude/projects/-home-ec2-user-claude-day-trade"

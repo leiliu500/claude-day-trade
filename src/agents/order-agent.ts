@@ -923,11 +923,11 @@ export class OrderAgent {
       await this._executeExit(`SMALL_GAIN_LOCK [stream]: peak=+${this.peakPnlPct.toFixed(1)}%, now=+${pnlPct.toFixed(1)}% — locking remaining small profit`);
       return;
     }
-    if (this.peakPnlPct >= 2 && this.peakPnlPct < 3 && pnlPct <= 0.3 && this.tickCount >= 4) {
+    if (this.peakPnlPct >= 2 && this.peakPnlPct < 3 && pnlPct <= 0.5 && this.tickCount >= 4) {
       await this._executeExit(`TINY_GAIN_LOCK [stream]: peak=+${this.peakPnlPct.toFixed(1)}%, now=+${pnlPct.toFixed(1)}% — locking remaining tiny profit`);
       return;
     }
-    if (this.peakPnlPct >= 1.0 && this.peakPnlPct < 2 && pnlPct <= 0.2 && this.tickCount >= 4) {
+    if (this.peakPnlPct >= 1.0 && this.peakPnlPct < 2 && pnlPct <= 0.4 && this.tickCount >= 4) {
       await this._executeExit(`MICRO_GAIN_LOCK [stream]: peak=+${this.peakPnlPct.toFixed(1)}%, now=+${pnlPct.toFixed(1)}% — locking remaining micro profit`);
       return;
     }
@@ -1233,13 +1233,13 @@ export class OrderAgent {
       );
       return;
     }
-    if (this.peakPnlPct >= 2 && this.peakPnlPct < 3 && pnlPctNow <= 0.3 && this.tickCount >= 4) {
+    if (this.peakPnlPct >= 2 && this.peakPnlPct < 3 && pnlPctNow <= 0.5 && this.tickCount >= 4) {
       await this._executeExit(
         `TINY_GAIN_LOCK: peak=+${this.peakPnlPct.toFixed(1)}%, now=+${pnlPctNow.toFixed(1)}% — locking remaining tiny profit`,
       );
       return;
     }
-    if (this.peakPnlPct >= 1.0 && this.peakPnlPct < 2 && pnlPctNow <= 0.2 && this.tickCount >= 4) {
+    if (this.peakPnlPct >= 1.0 && this.peakPnlPct < 2 && pnlPctNow <= 0.4 && this.tickCount >= 4) {
       await this._executeExit(
         `MICRO_GAIN_LOCK: peak=+${this.peakPnlPct.toFixed(1)}%, now=+${pnlPctNow.toFixed(1)}% — locking remaining micro profit`,
       );
