@@ -866,18 +866,15 @@ export class OrderAgent {
 
     // ── Velocity-based exits (rate of P&L change within a rolling window) ──
     // A sharp drop within any 15s window is a strong reversal signal regardless of absolute level.
-    // Profit-aware: positions with large accumulated gains get wider thresholds — a 5% pullback
-    // from +22% peak is normal profit-taking noise, not a crash signal.
     if (this.priceHistory.length >= 3) {
       const windowMs = 15_000;
       const cutoffTs = now - windowMs;
       const oldest = this.priceHistory.find(p => p.ts >= cutoffTs) ?? this.priceHistory[0]!;
       if (oldest.price > 0) {
         const velocityPct = ((midPrice - oldest.price) / oldest.price) * 100;
-        // Profit-aware crash threshold: widen when sitting on large gains
-        const crashThreshold = this.peakPnlPct >= 15 ? -8 : this.peakPnlPct >= 10 ? -6 : -4;
-        if (velocityPct <= crashThreshold) {
-          await this._executeExit(`VELOCITY_CRASH [stream]: ${velocityPct.toFixed(1)}% in ${((now - oldest.ts) / 1000).toFixed(0)}s (threshold=${crashThreshold}%, peak=+${this.peakPnlPct.toFixed(1)}%) — rapid price collapse`);
+        // Fast crash: dropped 4%+ in ≤15s — exit immediately regardless of peak/ticks
+        if (velocityPct <= -4) {
+          await this._executeExit(`VELOCITY_CRASH [stream]: ${velocityPct.toFixed(1)}% in ${((now - oldest.ts) / 1000).toFixed(0)}s — rapid price collapse`);
           return;
         }
         // Fast fade: dropped 2.5%+ in ≤15s while already losing — entry is wrong
@@ -1134,17 +1131,15 @@ export class OrderAgent {
     }
 
     // ── Velocity-based exits (rate of P&L change within a rolling window) ──
-    // Profit-aware: positions with large accumulated gains get wider thresholds.
     if (this.priceHistory.length >= 3) {
       const windowMs = 15_000;
       const cutoffTs = nowMs - windowMs;
       const oldest = this.priceHistory.find(p => p.ts >= cutoffTs) ?? this.priceHistory[0]!;
       if (oldest.price > 0) {
         const velocityPct = ((currentPrice - oldest.price) / oldest.price) * 100;
-        const crashThreshold = this.peakPnlPct >= 15 ? -8 : this.peakPnlPct >= 10 ? -6 : -4;
-        if (velocityPct <= crashThreshold) {
+        if (velocityPct <= -4) {
           await this._executeExit(
-            `VELOCITY_CRASH: ${velocityPct.toFixed(1)}% in ${((nowMs - oldest.ts) / 1000).toFixed(0)}s (threshold=${crashThreshold}%, peak=+${this.peakPnlPct.toFixed(1)}%) — rapid price collapse`,
+            `VELOCITY_CRASH: ${velocityPct.toFixed(1)}% in ${((nowMs - oldest.ts) / 1000).toFixed(0)}s — rapid price collapse`,
           );
           return;
         }

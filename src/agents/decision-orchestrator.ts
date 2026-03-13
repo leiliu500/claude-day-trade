@@ -444,81 +444,12 @@ export class DecisionOrchestrator {
       }
     }
 
-    // (D) Phase-change rescue: AI output WAIT but phase change conditions are met.
-    //     This closes the gap where confidence is 0.60–0.64 (below AI's 0.65 threshold
-    //     so AI outputs WAIT) but the structural phase-change signal is strong enough
-    //     to warrant immediate entry. Without this, phase changes in that confidence
-    //     range are lost entirely — the server override above only checks NEW_ENTRY.
-    //     Same timing quality filters as (C) to prevent poor-timing entries.
-    if (!isPhaseChangeOverride && !isHardTimeGateBlock &&
-        rawOutput.decision_type === 'WAIT' && !rawOutput.reasoning.includes('[GATE OVERRIDE]')) {
-      const rescueHtf = signal.timeframes[2] ?? signal.timeframes[0];
-      const rescueLtf = signal.timeframes[0];
-      const rescueStructuralOk = !!rescueHtf &&
-        analysis.confidence >= 0.60 &&
-        signal.alignment !== 'mixed' &&
-        signal.direction &&
-        (signal.direction === 'bullish' ? rescueHtf.dmi.growthCrossUp : rescueHtf.dmi.growthCrossDown);
-      // Timing quality gate (same filters as section C)
-      let rescueTimingOk = true;
-      let rescueTimingRejectReason = '';
-      if (rescueStructuralOk && rescueHtf) {
-        const rp = rescueHtf.priceStructure.rangePosition;
-        const isBullish = signal.direction === 'bullish';
-        if (isBullish && rp > 0.85) {
-          rescueTimingOk = false;
-          rescueTimingRejectReason = `price at range extreme (rangePos=${rp.toFixed(2)}, bullish needs ≤0.85)`;
-        } else if (!isBullish && rp < 0.15) {
-          rescueTimingOk = false;
-          rescueTimingRejectReason = `price at range extreme (rangePos=${rp.toFixed(2)}, bearish needs ≥0.15)`;
-        }
-        if (rescueTimingOk && rescueHtf.dmi.adx > 50) {
-          rescueTimingOk = false;
-          rescueTimingRejectReason = `ADX exhausted (${rescueHtf.dmi.adx.toFixed(1)} > 50)`;
-        }
-        if (rescueTimingOk) {
-          const recentPhaseEntry = context.recentDecisions.some(d =>
-            d.decisionType === 'NEW_ENTRY' &&
-            d.direction === signal.direction &&
-            d.reasoning?.includes('[PHASE-CHANGE'));
-          if (recentPhaseEntry) {
-            rescueTimingOk = false;
-            rescueTimingRejectReason = `already entered via phase-change for ${signal.direction} recently — cooldown`;
-          }
-        }
-        if (rescueTimingOk && rescueLtf) {
-          const vwapPct = rescueLtf.vwap.priceVsVwap;
-          if (isBullish && vwapPct < -0.30) {
-            rescueTimingOk = false;
-            rescueTimingRejectReason = `price below VWAP (${vwapPct.toFixed(2)}% < -0.30% for bullish)`;
-          } else if (!isBullish && vwapPct > 0.30) {
-            rescueTimingOk = false;
-            rescueTimingRejectReason = `price above VWAP (${vwapPct.toFixed(2)}% > 0.30% for bearish)`;
-          }
-        }
-        if (rescueTimingOk && signal.orb.orbFormed) {
-          const orbDir = signal.orb.breakoutDirection;
-          if (isBullish && orbDir === 'bearish') {
-            rescueTimingOk = false;
-            rescueTimingRejectReason = `ORB breakout is bearish — bullish entry fights day momentum`;
-          } else if (!isBullish && orbDir === 'bullish') {
-            rescueTimingOk = false;
-            rescueTimingRejectReason = `ORB breakout is bullish — bearish entry fights day momentum`;
-          }
-        }
-      }
-      if (rescueStructuralOk && rescueTimingOk) {
-        const side = signal.direction === 'bullish' ? 'CALL' : 'PUT';
-        rawOutput.decision_type = 'NEW_ENTRY';
-        rawOutput.should_execute = true;
-        rawOutput.reasoning = `[PHASE-CHANGE RESCUE] AI output WAIT (confidence ${analysis.confidence.toFixed(2)} below 0.65 threshold) but HTF DI cross ${signal.direction} + rising ADX + good timing detected → overriding to ${side} entry. ${rawOutput.reasoning}`;
-        isPhaseChangeOverride = true;
-        isStage1ObserveWait = false;
-        console.log(`[DecisionOrchestrator] Phase-change rescue: WAIT → NEW_ENTRY (confidence=${analysis.confidence.toFixed(2)}, alignment=${signal.alignment}, htfADXSlope=${rescueHtf!.dmi.adxSlope.toFixed(1)})`);
-      } else if (rescueStructuralOk && !rescueTimingOk) {
-        console.log(`[DecisionOrchestrator] Phase-change rescue blocked by timing filter: ${rescueTimingRejectReason} (confidence=${analysis.confidence.toFixed(2)}, alignment=${signal.alignment})`);
-      }
-    }
+    // (D) Phase-change rescue: REMOVED (2026-03-13).
+    // Data showed RESCUE overriding AI's WAIT on stale/lagging HTF DI cross signals,
+    // causing repeated losing entries after the initial move was done (e.g. 2026-03-12
+    // SPY: 6 RESCUE entries, 5 lost). The AI's WAIT judgment should be respected.
+    // Phase-change OVERRIDE (section C) is retained — it only fires when the AI already
+    // recommends NEW_ENTRY, so the AI's conviction is confirmed by the structural signal.
 
     // Direct AI WAITs: WAIT decisions from the AI never advance the confirmation count.
     // Only gate-blocked NEW_ENTRY decisions (isStage1ObserveWait) advance the count.
