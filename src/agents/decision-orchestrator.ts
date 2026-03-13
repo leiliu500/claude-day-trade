@@ -275,6 +275,19 @@ export class DecisionOrchestrator {
       isHardTimeGateBlock = true;
     }
 
+    // Late-day gate: block ALL new entries in the last 30 minutes before close.
+    // This prevents chasing setups that have no time to develop and avoids forced
+    // EOD liquidations at a loss (e.g. 2026-03-12 SPY entry at 19:57 UTC, 3 min before close).
+    // Runs before phase-change overrides so they cannot bypass it.
+    if (!isHardTimeGateBlock && minutesToClose <= 30 && minutesToClose > 0 &&
+        (rawOutput.decision_type === 'NEW_ENTRY' || rawOutput.decision_type === 'ADD_POSITION')) {
+      rawOutput.decision_type = 'WAIT';
+      rawOutput.should_execute = false;
+      rawOutput.reasoning = `[LATE-DAY GATE] New entries forbidden within 30 min of close (${minutesToClose} min remaining). ${rawOutput.reasoning}`;
+      isHardTimeGateBlock = true;
+      console.log(`[DecisionOrchestrator] Late-day gate blocked entry — ${minutesToClose} min to close`);
+    }
+
     // FOMC gate: block new entries when an FOMC event is within 30 minutes
     if (isFomcWindow && (rawOutput.decision_type === 'NEW_ENTRY' || rawOutput.decision_type === 'ADD_POSITION')) {
       rawOutput.decision_type = 'WAIT';

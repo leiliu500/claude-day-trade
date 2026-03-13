@@ -92,7 +92,13 @@
       "Bash(echo \"   All: adxBarsAbove25=10 > 6 → BLOCKED\")",
       "Bash(echo \"RESULT: All 6 losses blocked \\(-$245 saved\\), but the 1 winner also blocked \\(-$320 missed\\)\")",
       "Bash(echo \"Net: Would have saved $245 but missed $320 → net -$75 worse\")",
-      "Bash(echo \"The ADX>40 threshold is too aggressive for this case.\")"
+      "Bash(echo \"The ADX>40 threshold is too aggressive for this case.\")",
+      "Bash(curl -s -H 'APCA-API-KEY-ID: $ALPACA_KEY_ID' -H 'APCA-API-SECRET-KEY: $ALPACA_SECRET_KEY' \"https://paper-api.alpaca.markets/v2/orders?status=closed&limit=100&symbols=SPY\")",
+      "Bash(curl -s -H \"APCA-API-KEY-ID: $ALPACA_API_KEY\" -H \"APCA-API-SECRET-KEY: $ALPACA_SECRET_KEY\" \"https://paper-api.alpaca.markets/v2/orders?status=closed&limit=100&nested=true\")",
+      "Bash(curl -s -H \"APCA-API-KEY-ID: $ALPACA_API_KEY\" -H \"APCA-API-SECRET-KEY: $ALPACA_SECRET_KEY\" \"https://paper-api.alpaca.markets/v2/account\")",
+      "Bash(PGPASSWORD=traderpass psql -h localhost -p 5434 -U trader -d day_trade -c \"\\\\dt\")",
+      "Bash(docker compose:*)",
+      "Bash(npm install:*)"
     ],
     "additionalDirectories": [
       "/home/ec2-user/.claude/projects/-home-ec2-user-claude-day-trade"

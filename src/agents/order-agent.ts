@@ -837,48 +837,22 @@ export class OrderAgent {
       return;
     }
 
-    // ── Profit-lock exits (deterministic — no consecutiveDeclines dependency) ──
-    // Fire purely on peak-erosion % + minimum hold time (tickCount).
-    // Stream handler uses same thresholds as 10s tick for consistency.
-    const streamRetainedPct = this.peakPnlPct > 0 ? (pnlPct / this.peakPnlPct) * 100 : 100;
-
-    if (this.peakPnlPct >= 35 && streamRetainedPct < 60 && pnlPct > 0 && this.tickCount >= 4) {
-      await this._executeExit(`PROFIT_LOCK_EXTREME [stream]: peak=+${this.peakPnlPct.toFixed(1)}%, now=+${pnlPct.toFixed(1)}% (${streamRetainedPct.toFixed(0)}% of peak)`);
-      return;
-    }
-    if (this.peakPnlPct >= 25 && streamRetainedPct < 50 && pnlPct > 0 && this.tickCount >= 4) {
-      await this._executeExit(`PROFIT_LOCK_LARGE [stream]: peak=+${this.peakPnlPct.toFixed(1)}%, now=+${pnlPct.toFixed(1)}% (${streamRetainedPct.toFixed(0)}% of peak)`);
-      return;
-    }
-    if (this.peakPnlPct >= 20 && streamRetainedPct < 50 && pnlPct > 0 && this.tickCount >= 4) {
-      await this._executeExit(`PROFIT_LOCK_MEDIUM [stream]: peak=+${this.peakPnlPct.toFixed(1)}%, now=+${pnlPct.toFixed(1)}% (${streamRetainedPct.toFixed(0)}% of peak)`);
-      return;
-    }
-    if (this.peakPnlPct >= 15 && streamRetainedPct < 45 && pnlPct > 0 && this.tickCount >= 6) {
-      await this._executeExit(`PROFIT_LOCK_MODERATE [stream]: peak=+${this.peakPnlPct.toFixed(1)}%, now=+${pnlPct.toFixed(1)}% (${streamRetainedPct.toFixed(0)}% of peak)`);
-      return;
-    }
-    if (this.peakPnlPct >= 10 && streamRetainedPct < 40 && pnlPct > 0 && this.tickCount >= 8) {
-      await this._executeExit(`PROFIT_LOCK_SMALL [stream]: peak=+${this.peakPnlPct.toFixed(1)}%, now=+${pnlPct.toFixed(1)}% (${streamRetainedPct.toFixed(0)}% of peak)`);
-      return;
-    }
-
-    // ── Peak-erosion exits: exit while still in profit, never let profit turn to loss ──
-    if (this.peakPnlPct >= 20 && pnlPct <= 8) {
-      await this._executeExit(`PEAK_EROSION [stream]: peak=+${this.peakPnlPct.toFixed(1)}%, now=+${pnlPct.toFixed(1)}% — protecting remaining profit`);
-      return;
-    }
-    if (this.peakPnlPct >= 12 && pnlPct <= 3) {
-      await this._executeExit(`PEAK_GONE [stream]: peak=+${this.peakPnlPct.toFixed(1)}%, now=+${pnlPct.toFixed(1)}% — locking last gains`);
-      return;
-    }
-    if (this.peakPnlPct >= 10 && pnlPct <= 2) {
-      await this._executeExit(`PEAK_REVERSAL [stream]: peak=+${this.peakPnlPct.toFixed(1)}%, now=+${pnlPct.toFixed(1)}% — gains nearly gone`);
-      return;
-    }
-    if (this.peakPnlPct >= 5 && pnlPct <= 0.5) {
-      await this._executeExit(`PEAK_GAINS_GONE [stream]: peak=+${this.peakPnlPct.toFixed(1)}%, now=+${pnlPct.toFixed(1)}% — locking remainder before loss`);
-      return;
+    // ── Dynamic trailing stop: lock in a percentage of peak gains ──
+    // Once peak >= 10%: retain 50% of peak (e.g. peak=20% → floor=10%, peak=15% → floor=7.5%).
+    // Once peak >= 5%:  retain 30% of peak (e.g. peak=8% → floor=2.4%).
+    // Replaces old static PROFIT_LOCK and PEAK_EROSION thresholds which only retained 20-40%.
+    if (this.peakPnlPct >= 10) {
+      const trailingFloor = this.peakPnlPct * 0.50;
+      if (pnlPct <= trailingFloor) {
+        await this._executeExit(`TRAILING_STOP [stream]: peak=+${this.peakPnlPct.toFixed(1)}%, floor=+${trailingFloor.toFixed(1)}%, now=+${pnlPct.toFixed(1)}% — locking 50% of peak gains`);
+        return;
+      }
+    } else if (this.peakPnlPct >= 5) {
+      const trailingFloor = this.peakPnlPct * 0.30;
+      if (pnlPct <= trailingFloor) {
+        await this._executeExit(`TRAILING_STOP [stream]: peak=+${this.peakPnlPct.toFixed(1)}%, floor=+${trailingFloor.toFixed(1)}%, now=+${pnlPct.toFixed(1)}% — protecting moderate gains`);
+        return;
+      }
     }
     // Last resort for any profitable position turning negative — exit immediately at breakeven
     if (this.peakPnlPct >= 1.0 && pnlPct <= 0 && (this.tickCount >= 4 || this.peakPnlPct >= 5)) {
@@ -892,15 +866,18 @@ export class OrderAgent {
 
     // ── Velocity-based exits (rate of P&L change within a rolling window) ──
     // A sharp drop within any 15s window is a strong reversal signal regardless of absolute level.
+    // Profit-aware: positions with large accumulated gains get wider thresholds — a 5% pullback
+    // from +22% peak is normal profit-taking noise, not a crash signal.
     if (this.priceHistory.length >= 3) {
       const windowMs = 15_000;
       const cutoffTs = now - windowMs;
       const oldest = this.priceHistory.find(p => p.ts >= cutoffTs) ?? this.priceHistory[0]!;
       if (oldest.price > 0) {
         const velocityPct = ((midPrice - oldest.price) / oldest.price) * 100;
-        // Fast crash: dropped 4%+ in ≤15s — exit immediately regardless of peak/ticks
-        if (velocityPct <= -4) {
-          await this._executeExit(`VELOCITY_CRASH [stream]: ${velocityPct.toFixed(1)}% in ${((now - oldest.ts) / 1000).toFixed(0)}s — rapid price collapse`);
+        // Profit-aware crash threshold: widen when sitting on large gains
+        const crashThreshold = this.peakPnlPct >= 15 ? -8 : this.peakPnlPct >= 10 ? -6 : -4;
+        if (velocityPct <= crashThreshold) {
+          await this._executeExit(`VELOCITY_CRASH [stream]: ${velocityPct.toFixed(1)}% in ${((now - oldest.ts) / 1000).toFixed(0)}s (threshold=${crashThreshold}%, peak=+${this.peakPnlPct.toFixed(1)}%) — rapid price collapse`);
           return;
         }
         // Fast fade: dropped 2.5%+ in ≤15s while already losing — entry is wrong
@@ -1096,42 +1073,26 @@ export class OrderAgent {
     // Catches slow bleed-outs where small bounces reset consecutiveDeclines.
     // Ordered largest peak first so the tightest threshold wins.
 
-    const pnlRetainedPct = this.peakPnlPct > 0 ? (pnlPctNow / this.peakPnlPct) * 100 : 100;
-
-    // Extreme peak (≥35%): gave back 40%+ of gains → lock in
-    if (this.peakPnlPct >= 35 && pnlRetainedPct < 60 && pnlPctNow > 0 && this.tickCount >= 4) {
-      await this._executeExit(
-        `PROFIT_LOCK_EXTREME: peak=+${this.peakPnlPct.toFixed(1)}%, now=+${pnlPctNow.toFixed(1)}% (${pnlRetainedPct.toFixed(0)}% of peak) — locking exceptional profit`,
-      );
-      return;
-    }
-    // Large peak (≥25%): gave back 50%+ of gains
-    if (this.peakPnlPct >= 25 && pnlRetainedPct < 50 && pnlPctNow > 0 && this.tickCount >= 4) {
-      await this._executeExit(
-        `PROFIT_LOCK_LARGE: peak=+${this.peakPnlPct.toFixed(1)}%, now=+${pnlPctNow.toFixed(1)}% (${pnlRetainedPct.toFixed(0)}% of peak) — locking profit`,
-      );
-      return;
-    }
-    // Medium peak (≥20%): gave back 50%+ of gains
-    if (this.peakPnlPct >= 20 && pnlRetainedPct < 50 && pnlPctNow > 0 && this.tickCount >= 4) {
-      await this._executeExit(
-        `PROFIT_LOCK_MEDIUM: peak=+${this.peakPnlPct.toFixed(1)}%, now=+${pnlPctNow.toFixed(1)}% (${pnlRetainedPct.toFixed(0)}% of peak) — locking profit`,
-      );
-      return;
-    }
-    // Moderate peak (≥15%): gave back 55%+ of gains
-    if (this.peakPnlPct >= 15 && pnlRetainedPct < 45 && pnlPctNow > 0 && this.tickCount >= 6) {
-      await this._executeExit(
-        `PROFIT_LOCK_MODERATE: peak=+${this.peakPnlPct.toFixed(1)}%, now=+${pnlPctNow.toFixed(1)}% (${pnlRetainedPct.toFixed(0)}% of peak) — locking profit`,
-      );
-      return;
-    }
-    // Small peak (≥10%): gave back 60%+ of gains
-    if (this.peakPnlPct >= 10 && pnlRetainedPct < 40 && pnlPctNow > 0 && this.tickCount >= 8) {
-      await this._executeExit(
-        `PROFIT_LOCK_SMALL: peak=+${this.peakPnlPct.toFixed(1)}%, now=+${pnlPctNow.toFixed(1)}% (${pnlRetainedPct.toFixed(0)}% of peak) — locking remaining profit`,
-      );
-      return;
+    // ── Dynamic trailing stop: lock in a percentage of peak gains ──
+    // Once peak >= 10%: retain 50% of peak (e.g. peak=20% → floor=10%, peak=15% → floor=7.5%).
+    // Once peak >= 5%:  retain 30% of peak (e.g. peak=8% → floor=2.4%).
+    // Replaces old static PROFIT_LOCK thresholds which had inconsistent retention rates.
+    if (this.peakPnlPct >= 10) {
+      const trailingFloor = this.peakPnlPct * 0.50;
+      if (pnlPctNow <= trailingFloor) {
+        await this._executeExit(
+          `TRAILING_STOP: peak=+${this.peakPnlPct.toFixed(1)}%, floor=+${trailingFloor.toFixed(1)}%, now=+${pnlPctNow.toFixed(1)}% — locking 50% of peak gains`,
+        );
+        return;
+      }
+    } else if (this.peakPnlPct >= 5) {
+      const trailingFloor = this.peakPnlPct * 0.30;
+      if (pnlPctNow <= trailingFloor) {
+        await this._executeExit(
+          `TRAILING_STOP: peak=+${this.peakPnlPct.toFixed(1)}%, floor=+${trailingFloor.toFixed(1)}%, now=+${pnlPctNow.toFixed(1)}% — protecting moderate gains`,
+        );
+        return;
+      }
     }
 
     // ── Mature position profit protection ──────────────────────────────────────
@@ -1147,32 +1108,6 @@ export class OrderAgent {
     if (minutesHeld >= 30 && pnlPctNow >= 20 && pnlPctNow < this.peakPnlPct * 0.85) {
       await this._executeExit(
         `MATURE_PROFIT_EXIT: held=${minutesHeld}min, pnl=+${pnlPctNow.toFixed(1)}%, peak=+${this.peakPnlPct.toFixed(1)}% — locking +20% profit after 30 min`,
-      );
-      return;
-    }
-
-    // ── Peak-erosion exits: exit while still in profit, never let profit turn to loss ──
-    if (this.peakPnlPct >= 20 && pnlPctNow <= 8) {
-      await this._executeExit(
-        `PEAK_EROSION: peak=+${this.peakPnlPct.toFixed(1)}%, now=+${pnlPctNow.toFixed(1)}% — protecting remaining profit`,
-      );
-      return;
-    }
-    if (this.peakPnlPct >= 12 && pnlPctNow <= 3) {
-      await this._executeExit(
-        `PEAK_GONE: peak=+${this.peakPnlPct.toFixed(1)}%, now=+${pnlPctNow.toFixed(1)}% — locking last gains`,
-      );
-      return;
-    }
-    if (this.peakPnlPct >= 10 && pnlPctNow <= 2) {
-      await this._executeExit(
-        `PEAK_REVERSAL: peak=+${this.peakPnlPct.toFixed(1)}%, now=+${pnlPctNow.toFixed(1)}% — gains nearly gone`,
-      );
-      return;
-    }
-    if (this.peakPnlPct >= 5 && pnlPctNow <= 0.5) {
-      await this._executeExit(
-        `PEAK_GAINS_GONE: peak=+${this.peakPnlPct.toFixed(1)}%, now=+${pnlPctNow.toFixed(1)}% — locking remainder before loss`,
       );
       return;
     }
@@ -1199,15 +1134,17 @@ export class OrderAgent {
     }
 
     // ── Velocity-based exits (rate of P&L change within a rolling window) ──
+    // Profit-aware: positions with large accumulated gains get wider thresholds.
     if (this.priceHistory.length >= 3) {
       const windowMs = 15_000;
       const cutoffTs = nowMs - windowMs;
       const oldest = this.priceHistory.find(p => p.ts >= cutoffTs) ?? this.priceHistory[0]!;
       if (oldest.price > 0) {
         const velocityPct = ((currentPrice - oldest.price) / oldest.price) * 100;
-        if (velocityPct <= -4) {
+        const crashThreshold = this.peakPnlPct >= 15 ? -8 : this.peakPnlPct >= 10 ? -6 : -4;
+        if (velocityPct <= crashThreshold) {
           await this._executeExit(
-            `VELOCITY_CRASH: ${velocityPct.toFixed(1)}% in ${((nowMs - oldest.ts) / 1000).toFixed(0)}s — rapid price collapse`,
+            `VELOCITY_CRASH: ${velocityPct.toFixed(1)}% in ${((nowMs - oldest.ts) / 1000).toFixed(0)}s (threshold=${crashThreshold}%, peak=+${this.peakPnlPct.toFixed(1)}%) — rapid price collapse`,
           );
           return;
         }
@@ -1848,6 +1785,7 @@ export class OrderAgent {
                  : reason.startsWith('AI_EXIT')         ? '🤖'
                  : reason.startsWith('UNFILLED_')       ? '🚫'
                  : reason.startsWith('PROFIT_LOCK')     ? '🔒'
+                 : reason.startsWith('TRAILING_STOP')   ? '📊'
                  : reason.startsWith('PEAK')            ? '📉'
                  : reason.startsWith('RAPID_DECLINE')   ? '📉'
                  : reason.startsWith('HOLD_TRAP')       ? '📉'
@@ -1874,13 +1812,15 @@ export class OrderAgent {
             ? 'Orchestrator (immediate)'
             : reason.startsWith('UNFILLED_')
               ? 'Fill timeout'
-              : reason.startsWith('VELOCITY')
-                ? 'Velocity exit'
-                : reason.startsWith('SMALL_GAIN') || reason.startsWith('TINY_GAIN')
-                  ? 'Small-gain protection'
-                  : reason.startsWith('NEVER_CONFIRMED') || reason.startsWith('IMMEDIATE_ADVERSE') || reason.startsWith('BAD_ENTRY')
-                    ? 'Bad entry fast-cut'
-                    : 'Deterministic rule';
+              : reason.startsWith('TRAILING_STOP')
+                ? 'Trailing stop'
+                : reason.startsWith('VELOCITY')
+                  ? 'Velocity exit'
+                  : reason.startsWith('SMALL_GAIN') || reason.startsWith('TINY_GAIN')
+                    ? 'Small-gain protection'
+                    : reason.startsWith('NEVER_CONFIRMED') || reason.startsWith('IMMEDIATE_ADVERSE') || reason.startsWith('BAD_ENTRY')
+                      ? 'Bad entry fast-cut'
+                      : 'Deterministic rule';
 
     await notifyAlert(
       `${emoji} <b>Exit: ${ticker}</b> — ${sourceLabel}\n` +
