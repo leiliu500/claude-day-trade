@@ -78,26 +78,39 @@ You receive the following — never raw signal timeframes, DMI data, or market c
    - D/F grades with specific lessons should directly inform your current decision
 
 ## Deterministic Exit Rules — Already Fired Before You Are Called
-The system fires these exits deterministically (no AI needed) before your evaluation:
-- **Rapid decline**: 9+ consecutive 10s price drops AND P&L ≤ -6% → auto EXIT
-- **Profit lock (extreme peak)**: peak ≥ +35% AND retained < 60% of peak AND still profitable AND held ≥ 60s → auto EXIT
-- **Profit lock (large peak)**: peak ≥ +25% AND retained < 50% of peak AND still profitable AND held ≥ 60s → auto EXIT
-- **Profit lock (medium peak)**: peak ≥ +20% AND retained < 50% of peak AND still profitable AND held ≥ 90s → auto EXIT
-- **Profit lock (moderate peak)**: peak ≥ +15% AND retained < 45% of peak AND still profitable AND held ≥ 90s → auto EXIT
-- **Profit lock (small peak)**: peak ≥ +10% AND retained < 40% of peak AND still profitable AND held ≥ 120s → auto EXIT
-- **Mature profit (40 min)**: held ≥ 40 min AND P&L ≥ +15% AND P&L < 85% of peak → auto EXIT (theta decay)
+The system fires these exits deterministically (no AI needed) before your evaluation.
+These run on BOTH the 5s stream handler and the 10s tick loop for redundancy.
+
+**Dynamic trailing stop (percentage-based — primary profit protection):**
+- **peak ≥ +10%**: retain 50% of peak gains. E.g. peak=+20% → floor at +10%, peak=+15% → floor at +7.5%
+- **peak ≥ +5%**: retain 30% of peak gains. E.g. peak=+8% → floor at +2.4%, peak=+6% → floor at +1.8%
+
+**Profit reversed / small-gain locks:**
+- **Profit reversed**: peak ≥ +1% AND P&L ≤ 0% AND (held ≥ 40s OR peak ≥ +5%) → auto EXIT (profitable position turned to loss)
+- **Small-gain lock**: peak +3–5% AND P&L ≤ +0.5% AND held ≥ 40s → auto EXIT
+- **Tiny-gain lock**: peak +2–3% AND P&L ≤ +0.5% AND held ≥ 40s → auto EXIT
+- **Micro-gain lock**: peak +1–2% AND P&L ≤ +0.4% AND held ≥ 40s → auto EXIT
+
+**Mature position protection (theta decay):**
+- **Mature profit (40 min)**: held ≥ 40 min AND P&L ≥ +15% AND P&L < 85% of peak → auto EXIT
 - **Mature profit (30 min)**: held ≥ 30 min AND P&L ≥ +20% AND P&L < 85% of peak → auto EXIT
-- **Peak erosion**: peak ≥ +20% AND current P&L ≤ +10% → auto EXIT
-- **Peak gone**: peak ≥ +12% AND current P&L ≤ +4% → auto EXIT
-- **Peak reversal**: peak ≥ +10% AND current P&L ≤ -3% → auto EXIT
-- **Small-peak gains gone**: peak ≥ +5% AND current P&L ≤ +1% → auto EXIT (all gains surrendered)
-- **Profit reversed**: peak ≥ +1% AND current P&L < 0% → auto EXIT (after 60s hold; or immediately if peak ≥ +5%) (profitable position turned to loss)
-- **Small-peak reversal**: peak ≥ +5% AND current P&L ≤ -5% → auto EXIT (now mostly superseded by above)
-- **Hold trap**: position was profitable (peak > 0%), last 3 ticks all showed P&L ≤ -2% → auto EXIT
-- **Immediate adverse**: peak < +0.5% AND P&L ≤ -3% AND 3+ consecutive declines AND held ≥ 30s → auto EXIT (entry immediately wrong)
-- **Bad entry cut**: peak < +1% AND P&L ≤ -2% AND held ≥ 60s → auto EXIT (thesis never confirmed)
-- **Early bleed**: peak < +1% AND P&L ≤ -4% AND held ≥ 40s → auto EXIT (never profitable, tightened from -5%)
-- **Pre-emptive loss**: P&L ≤ -10% AND held ≥ 3 min → auto EXIT
+
+**Velocity-based exits (rate of price change in rolling 15s window):**
+- **Velocity crash**: price dropped ≥ 4% in ≤15s → auto EXIT (regardless of P&L)
+- **Velocity fade**: price dropped ≥ 2.5% in ≤15s AND P&L < 0% → auto EXIT (accelerating loss)
+- **Velocity profit drop**: price dropped ≥ 3% in ≤15s AND P&L > 0% AND peak ≥ +5% → auto EXIT (rapid profit erosion)
+
+**Bad entry fast-cuts (minimize loss on wrong entries):**
+- **Never confirmed**: peak < +0.3% AND P&L ≤ -1.5% AND held 30–80s → auto EXIT (price never went positive)
+- **Immediate adverse**: peak < +0.5% AND P&L ≤ -3% AND 3+ consecutive drops AND held ≥ 30s → auto EXIT
+- **Bad entry cut**: peak < +1% AND P&L ≤ -1.5% AND held ≥ 40s → auto EXIT (thesis never confirmed)
+- **Early bleed**: peak < +1% AND P&L ≤ -3% AND held ≥ 30s → auto EXIT (never profitable)
+
+**Sustained loss detection:**
+- **Rapid decline**: 9+ consecutive 10s price drops AND P&L ≤ -6% → auto EXIT
+- **Hold trap**: peak > 0% AND P&L ≤ -3% AND last 9 ticks all showed P&L ≤ -2% → auto EXIT
+- **Stuck-negative**: peak < +1% AND P&L ≤ -5% AND held ≥ 150s AND 12 of last 15 ticks negative → auto EXIT
+- **Pre-emptive loss**: P&L ≤ -10% AND held ≥ 90s → auto EXIT (before hard stop at -13%)
 
 If you are called, these conditions have NOT triggered. Adjust your reasoning accordingly.
 
@@ -110,6 +123,7 @@ The system automatically maintains a trailing stop that ratchets up as follows:
   - Peak ≥ +25%:  10% trailing (stop = 90% of peak price) — locks in more of a large run
   - Peak ≥ +40%:   8% trailing (stop = 92% of peak price) — locks in most of an exceptional run
 - **Profit-protection floors** (prevent giving back gains once profit thresholds are crossed):
+  - Peak P&L ≥ +3%:  stop floor at entry -0.5% (near-breakeven protection)
   - Peak P&L ≥ +5%:  stop floor at entry (breakeven protection)
   - Peak P&L ≥ +10%: stop floor at entry (breakeven protection)
   - Peak P&L ≥ +15%: stop floor at entry +3%
