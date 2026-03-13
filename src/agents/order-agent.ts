@@ -838,17 +838,24 @@ export class OrderAgent {
     }
 
     // ── Dynamic trailing stop: lock in a percentage of peak gains ──
-    // Once peak >= 10%: retain 50% of peak (e.g. peak=20% → floor=10%, peak=15% → floor=7.5%).
-    // Once peak >= 5%:  retain 30% of peak (e.g. peak=8% → floor=2.4%).
-    // Replaces old static PROFIT_LOCK and PEAK_EROSION thresholds which only retained 20-40%.
-    if (this.peakPnlPct >= 10) {
-      const trailingFloor = this.peakPnlPct * 0.50;
+    // Tighter retention rates to prevent excessive peak erosion:
+    //   Peak >= 15%: retain 65% (e.g. peak=20% → floor=13%)
+    //   Peak >= 10%: retain 60% (e.g. peak=11.5% → floor=6.9%)
+    //   Peak >=  5%: retain 45% (e.g. peak=8% → floor=3.6%)
+    if (this.peakPnlPct >= 15) {
+      const trailingFloor = this.peakPnlPct * 0.65;
       if (pnlPct <= trailingFloor) {
-        await this._executeExit(`TRAILING_STOP [stream]: peak=+${this.peakPnlPct.toFixed(1)}%, floor=+${trailingFloor.toFixed(1)}%, now=+${pnlPct.toFixed(1)}% — locking 50% of peak gains`);
+        await this._executeExit(`TRAILING_STOP [stream]: peak=+${this.peakPnlPct.toFixed(1)}%, floor=+${trailingFloor.toFixed(1)}%, now=+${pnlPct.toFixed(1)}% — locking 65% of peak gains`);
+        return;
+      }
+    } else if (this.peakPnlPct >= 10) {
+      const trailingFloor = this.peakPnlPct * 0.60;
+      if (pnlPct <= trailingFloor) {
+        await this._executeExit(`TRAILING_STOP [stream]: peak=+${this.peakPnlPct.toFixed(1)}%, floor=+${trailingFloor.toFixed(1)}%, now=+${pnlPct.toFixed(1)}% — locking 60% of peak gains`);
         return;
       }
     } else if (this.peakPnlPct >= 5) {
-      const trailingFloor = this.peakPnlPct * 0.30;
+      const trailingFloor = this.peakPnlPct * 0.45;
       if (pnlPct <= trailingFloor) {
         await this._executeExit(`TRAILING_STOP [stream]: peak=+${this.peakPnlPct.toFixed(1)}%, floor=+${trailingFloor.toFixed(1)}%, now=+${pnlPct.toFixed(1)}% — protecting moderate gains`);
         return;
@@ -882,8 +889,11 @@ export class OrderAgent {
           await this._executeExit(`VELOCITY_FADE [stream]: ${velocityPct.toFixed(1)}% in ${((now - oldest.ts) / 1000).toFixed(0)}s, pnl=${pnlPct.toFixed(1)}% — accelerating loss`);
           return;
         }
-        // Profit velocity reversal: dropped 3%+ in ≤15s from profitable position
-        if (velocityPct <= -3 && pnlPct > 0 && this.peakPnlPct >= 5) {
+        // Profit velocity reversal: scale sensitivity with peak — higher peaks get tighter thresholds
+        //   Peak >= 8%: trigger at -2% velocity (protect larger gains aggressively)
+        //   Peak >= 5%: trigger at -2.5% velocity
+        const velThreshold = this.peakPnlPct >= 8 ? -2 : -2.5;
+        if (velocityPct <= velThreshold && pnlPct > 0 && this.peakPnlPct >= 5) {
           await this._executeExit(`VELOCITY_PROFIT_DROP [stream]: ${velocityPct.toFixed(1)}% in ${((now - oldest.ts) / 1000).toFixed(0)}s, pnl=+${pnlPct.toFixed(1)}%, peak=+${this.peakPnlPct.toFixed(1)}% — rapid profit erosion`);
           return;
         }
@@ -1071,19 +1081,26 @@ export class OrderAgent {
     // Ordered largest peak first so the tightest threshold wins.
 
     // ── Dynamic trailing stop: lock in a percentage of peak gains ──
-    // Once peak >= 10%: retain 50% of peak (e.g. peak=20% → floor=10%, peak=15% → floor=7.5%).
-    // Once peak >= 5%:  retain 30% of peak (e.g. peak=8% → floor=2.4%).
-    // Replaces old static PROFIT_LOCK thresholds which had inconsistent retention rates.
-    if (this.peakPnlPct >= 10) {
-      const trailingFloor = this.peakPnlPct * 0.50;
+    // Tighter retention rates to prevent excessive peak erosion:
+    //   Peak >= 15%: retain 65%   Peak >= 10%: retain 60%   Peak >= 5%: retain 45%
+    if (this.peakPnlPct >= 15) {
+      const trailingFloor = this.peakPnlPct * 0.65;
       if (pnlPctNow <= trailingFloor) {
         await this._executeExit(
-          `TRAILING_STOP: peak=+${this.peakPnlPct.toFixed(1)}%, floor=+${trailingFloor.toFixed(1)}%, now=+${pnlPctNow.toFixed(1)}% — locking 50% of peak gains`,
+          `TRAILING_STOP: peak=+${this.peakPnlPct.toFixed(1)}%, floor=+${trailingFloor.toFixed(1)}%, now=+${pnlPctNow.toFixed(1)}% — locking 65% of peak gains`,
+        );
+        return;
+      }
+    } else if (this.peakPnlPct >= 10) {
+      const trailingFloor = this.peakPnlPct * 0.60;
+      if (pnlPctNow <= trailingFloor) {
+        await this._executeExit(
+          `TRAILING_STOP: peak=+${this.peakPnlPct.toFixed(1)}%, floor=+${trailingFloor.toFixed(1)}%, now=+${pnlPctNow.toFixed(1)}% — locking 60% of peak gains`,
         );
         return;
       }
     } else if (this.peakPnlPct >= 5) {
-      const trailingFloor = this.peakPnlPct * 0.30;
+      const trailingFloor = this.peakPnlPct * 0.45;
       if (pnlPctNow <= trailingFloor) {
         await this._executeExit(
           `TRAILING_STOP: peak=+${this.peakPnlPct.toFixed(1)}%, floor=+${trailingFloor.toFixed(1)}%, now=+${pnlPctNow.toFixed(1)}% — protecting moderate gains`,
@@ -1149,7 +1166,8 @@ export class OrderAgent {
           );
           return;
         }
-        if (velocityPct <= -3 && pnlPctNow > 0 && this.peakPnlPct >= 5) {
+        const velThreshold = this.peakPnlPct >= 8 ? -2 : -2.5;
+        if (velocityPct <= velThreshold && pnlPctNow > 0 && this.peakPnlPct >= 5) {
           await this._executeExit(
             `VELOCITY_PROFIT_DROP: ${velocityPct.toFixed(1)}% in ${((nowMs - oldest.ts) / 1000).toFixed(0)}s, pnl=+${pnlPctNow.toFixed(1)}%, peak=+${this.peakPnlPct.toFixed(1)}% — rapid profit erosion`,
           );
