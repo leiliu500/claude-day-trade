@@ -40,7 +40,6 @@ export interface PositionContext {
   }>;
   recentEvaluations: Array<{
     ticker: string;
-    optionSymbol: string | null;
     optionRight: string | null;
     grade: string;
     score: number;

@@ -240,26 +240,6 @@ export async function runPipeline(
       case 'ADD_POSITION': {
         if (!decision.shouldExecute) break;
 
-        // Fix D: Block ADD_POSITION when entry premium is >= 5% above the average
-        // entry price of existing positions for this symbol. Prevents buying the top
-        // (e.g. adding at $3.77 when original entry was $3.50 = +7.7% above).
-        if (optionEval.winnerCandidate) {
-          const addPrice = optionEval.winnerCandidate.entryPremium;
-          const existingPositions = context.openPositions.filter(
-            p => p.optionSymbol === optionEval.winnerCandidate!.contract.symbol,
-          );
-          if (existingPositions.length > 0) {
-            const avgEntry = existingPositions.reduce((sum, p) => sum + p.entryPrice, 0) / existingPositions.length;
-            const premiumPct = avgEntry > 0 ? ((addPrice - avgEntry) / avgEntry) * 100 : 0;
-            if (premiumPct >= 5) {
-              console.log(
-                `[Pipeline] ADD_POSITION blocked — entry premium $${addPrice.toFixed(2)} is ${premiumPct.toFixed(1)}% above avg entry $${avgEntry.toFixed(2)} for ${ticker} (max 5%)`,
-              );
-              break;
-            }
-          }
-        }
-
         const { sizing: addSizing, passed: addPassed, failedGates: addFailed } = executionAgent.prepareEntry({
           decision, signal, option: optionEval, analysis,
           accountEquity: context.accountEquity, accountBuyingPower: context.accountBuyingPower,
