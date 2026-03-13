@@ -342,20 +342,6 @@ export class DecisionOrchestrator {
     let isPhaseChangeOverride = false;
     if (rawOutput.decision_type === 'NEW_ENTRY' && rawOutput.should_execute) {
       const overrideOk = analysis.confidence >= 0.92 && signal.alignment === 'all_aligned';
-      const lastEval = context.recentEvaluations[0];
-      const lastEvalWasWin = !!lastEval &&
-        lastEval.outcome === 'WIN' &&
-        (lastEval.pnlTotal ?? 0) > 0;
-      // Post-WIN relaxation: skip 2-stage gate for quick re-entry after a winning trade.
-      // GUARD: do NOT apply when re-entering the same side (put/call) as the last WIN —
-      // that's chasing the same fading setup (e.g. SPY put won, then re-entered puts 3x
-      // losing each time). Post-WIN relaxation should only fast-track a different setup
-      // (e.g. won on puts, now entering calls on a reversal).
-      const sameSideReentry = !!lastEval && lastEval.optionRight &&
-        signal.direction === (lastEval.optionRight === 'put' ? 'bearish' : 'bullish');
-      const postWinRelaxOk = lastEvalWasWin && !sameSideReentry &&
-        analysis.confidence >= 0.72 &&
-        signal.alignment !== 'mixed';
 
       // (C) Phase-change override: HTF DI crossed in signal direction within last 2 bars
       //     (still holding) with rising ADX (growth phase). This is a definitive trend-change
@@ -476,25 +462,23 @@ export class DecisionOrchestrator {
         }
       }
 
-      if (!overrideOk && !postWinRelaxOk && !phaseChangeOk && priorCount < 1) {
+      if (!overrideOk && !phaseChangeOk && priorCount < 1) {
         rawOutput.decision_type = 'WAIT';
         rawOutput.should_execute = false;
         const timingNote = (phaseChangeStructuralOk && !phaseChangeTimingOk)
           ? ` [Phase-change structural signal present but timing rejected: ${phaseChangeTimingRejectReason}]`
           : '';
-        rawOutput.reasoning = `[STAGE-1 OBSERVE] [TRIGGER: AI recommended NEW_ENTRY but server gate blocked — priorCount=${priorCount}, needs ≥1 confirm]${timingNote} Building conviction (count will advance to 1). Override requires confidence>=0.92 + all_aligned, or post-WIN relaxation (confidence>=0.72 + non-mixed alignment), or phase-change (confidence>=0.60 + HTF DI cross + rising ADX + good timing). ${rawOutput.reasoning}`;
+        rawOutput.reasoning = `[STAGE-1 OBSERVE] [TRIGGER: AI recommended NEW_ENTRY but server gate blocked — priorCount=${priorCount}, needs ≥1 confirm]${timingNote} Building conviction (count will advance to 1). Override requires confidence>=0.92 + all_aligned, or phase-change (confidence>=0.60 + HTF DI cross + rising ADX + good timing). ${rawOutput.reasoning}`;
         isStage1ObserveWait = true; // count advances to 1 so next cycle can enter at Stage-2
         if (phaseChangeStructuralOk && !phaseChangeTimingOk) {
           console.log(`[DecisionOrchestrator] Phase-change override blocked by timing filter: ${phaseChangeTimingRejectReason} (priorCount=${priorCount}, confidence=${analysis.confidence.toFixed(2)})`);
         }
-        console.log(`[DecisionOrchestrator] NEW_ENTRY blocked by confirmation gate (Stage-1 OBSERVE, priorCount=${priorCount}, confidence=${analysis.confidence.toFixed(2)}, alignment=${signal.alignment}, lastEvalWasWin=${lastEvalWasWin})`);
-      } else if (phaseChangeOk && priorCount < 1 && !overrideOk && !postWinRelaxOk) {
+        console.log(`[DecisionOrchestrator] NEW_ENTRY blocked by confirmation gate (Stage-1 OBSERVE, priorCount=${priorCount}, confidence=${analysis.confidence.toFixed(2)}, alignment=${signal.alignment})`);
+      } else if (phaseChangeOk && priorCount < 1 && !overrideOk) {
         isPhaseChangeOverride = true;
         const side = signal.direction === 'bullish' ? 'CALL' : 'PUT';
         rawOutput.reasoning = `[PHASE-CHANGE OVERRIDE] HTF DI cross ${signal.direction} + rising ADX → immediate ${side} entry (no 2-stage wait). ${rawOutput.reasoning}`;
         console.log(`[DecisionOrchestrator] NEW_ENTRY phase-change override applied — ${side} (priorCount=${priorCount}, confidence=${analysis.confidence.toFixed(2)}, alignment=${signal.alignment}, htfADXSlope=${htfTf!.dmi.adxSlope.toFixed(1)})`);
-      } else if (postWinRelaxOk && priorCount < 1 && !overrideOk) {
-        console.log(`[DecisionOrchestrator] NEW_ENTRY post-WIN relaxation applied (priorCount=${priorCount}, confidence=${analysis.confidence.toFixed(2)}, alignment=${signal.alignment})`);
       }
     }
 
