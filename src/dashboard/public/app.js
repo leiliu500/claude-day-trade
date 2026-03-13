@@ -1047,6 +1047,7 @@ function renderAnalysisCard(sig) {
   // Per-timeframe indicator table
   const tfHtml = tfs.length > 0 ? `
     <div class="stats-section-label">Timeframe Indicators</div>
+    <div class="analysis-tf-table-wrap">
     <table class="analysis-tf-table">
       <thead>
         <tr><th>TF</th><th>DI+</th><th>DI-</th><th>ADX</th><th>ADX Slope</th><th>Trend</th><th>DI Cross</th><th>OBV</th><th>VWAP Band</th><th>TD Setup</th><th>Patterns</th></tr>
@@ -1114,6 +1115,7 @@ function renderAnalysisCard(sig) {
         }).join('')}
       </tbody>
     </table>
+    </div>
   ` : '';
 
   // AI Explanation
