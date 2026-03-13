@@ -430,6 +430,37 @@ export class DecisionOrchestrator {
       }
       const phaseChangeOk = phaseChangeStructuralOk && phaseChangeTimingOk;
 
+      // (E) Stale-signal gate: at Stage-2+ (priorCount >= 1), check if confidence has
+      // materially changed since the ORIGINAL Stage-1 OBSERVE. Lagging indicators (ADX/DI)
+      // can produce the same frozen confidence for many cycles — the 2-stage gate becomes a
+      // trivial 3-min delay rather than real confirmation. If confidence delta < 0.03, the
+      // signal is stale (same indicators, no new information) — block entry.
+      // Compare against the FIRST WAIT in the current streak (the original Stage-1 baseline),
+      // not the most recent, to avoid creeping-baseline where confidence drifts 0.01/cycle
+      // and never triggers the threshold despite moving far from the original.
+      // This does NOT block genuinely new signals that happen to come quickly.
+      if (!overrideOk && priorCount >= 1 && rawOutput.decision_type === 'NEW_ENTRY' && rawOutput.should_execute) {
+        // Walk recentDecisions to find the earliest WAIT in the current same-direction streak
+        // (the original Stage-1 OBSERVE that started this confirmation sequence).
+        let stage1Conf: number | null = null;
+        for (const d of context.recentDecisions) {
+          if (d.direction !== signal.direction) break; // direction changed — end of streak
+          if (d.decisionType === 'NEW_ENTRY' || d.decisionType === 'EXIT' || d.decisionType === 'REDUCE_EXPOSURE') break;
+          if (d.decisionType === 'WAIT' && d.confirmationCount > 0) {
+            stage1Conf = d.orchestrationConfidence; // keep overwriting — last one is the earliest
+          }
+        }
+        if (stage1Conf !== null) {
+          const confDelta = Math.abs(analysis.confidence - stage1Conf);
+          if (confDelta < 0.03) {
+            rawOutput.decision_type = 'WAIT';
+            rawOutput.should_execute = false;
+            rawOutput.reasoning = `[STALE-SIGNAL BLOCK] Confidence barely changed since original Stage-1 (${stage1Conf.toFixed(2)} → ${analysis.confidence.toFixed(2)}, delta=${confDelta.toFixed(3)} < 0.03) — lagging indicators producing frozen signal, not fresh confirmation. ${rawOutput.reasoning}`;
+            console.log(`[DecisionOrchestrator] NEW_ENTRY blocked by stale-signal gate (confDelta=${confDelta.toFixed(3)}, stage1Conf=${stage1Conf.toFixed(2)}, currentConf=${analysis.confidence.toFixed(2)})`);
+          }
+        }
+      }
+
       if (!overrideOk && !postWinRelaxOk && !phaseChangeOk && priorCount < 1) {
         rawOutput.decision_type = 'WAIT';
         rawOutput.should_execute = false;
