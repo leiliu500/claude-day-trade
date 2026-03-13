@@ -191,6 +191,7 @@ export class DecisionOrchestrator {
       confirmation_streaks: context.confirmationStreaks,
       recent_decisions: context.recentDecisions.slice(0, 5),
       recent_evaluations: context.recentEvaluations.slice(0, 5).map(e => ({
+        option_symbol:           e.optionSymbol,
         option_right:            e.optionRight,
         outcome:                 e.outcome,
         grade:                   e.grade,
@@ -323,14 +324,34 @@ export class DecisionOrchestrator {
     // Always use server count as the source of truth — never let AI count drift unchecked.
     const priorCount = computeServerConfirmationCount(context.recentDecisions, signal.direction ?? '');
 
+    // ── Consecutive-loss guard (Fix C) ────────────────────────────────────
+    // Count consecutive LOSS outcomes at the head of recentEvaluations for this ticker.
+    // After 2+ consecutive losses, require confidence >= 0.85 for any NEW_ENTRY.
+    let consecutiveLosses = 0;
+    for (const ev of context.recentEvaluations) {
+      if (ev.outcome === 'LOSS' || ev.outcome === 'BREAKEVEN') consecutiveLosses++;
+      else break;
+    }
+    const consecutiveLossBlock = consecutiveLosses >= 2 && analysis.confidence < 0.85;
+
+    // ── Same-symbol loss cooldown (Fix A) ───────────────────────────────
+    // If the most recent evaluation for the winner symbol was a LOSS, block re-entry
+    // on that exact option symbol. Forces the system to pick a different strike/expiry.
+    const winnerSymbol = option.winnerCandidate?.contract.symbol ?? null;
+    const sameSymbolLoss = winnerSymbol && context.recentEvaluations.some(
+      ev => ev.optionSymbol === winnerSymbol && (ev.outcome === 'LOSS' || ev.outcome === 'BREAKEVEN'),
+    );
+
     // Confirmation count gate for NEW_ENTRY: require at least 1 prior same-direction confirmation
     // (meaning serverCount will be >= 2) before allowing execution.
     // Two override paths exist:
-    //   (A) High-conviction override: confidence >= 0.85 AND alignment = "all_aligned"
-    //   (B) Post-WIN relaxation: most recent evaluation was a WIN — allow count-1 re-entry at
-    //       confidence >= 0.72 AND alignment != "mixed". This prevents a forced 2-cycle (~6 min)
-    //       delay when the market gives a fresh setup immediately after banking profit.
+    //   (A) High-conviction override: confidence >= 0.92 AND alignment = "all_aligned"
+    //   (B) Post-WIN relaxation: most recent evaluation was a WIN with pnl >= $30 — allow
+    //       count-1 re-entry at confidence >= 0.72 AND alignment != "mixed". This prevents a
+    //       forced 2-cycle (~6 min) delay when the market gives a fresh setup immediately after
+    //       banking meaningful profit.
     //       Not granted after a LOSS exit (stop-out) — patience required to rebuild conviction.
+    //       Not granted if consecutive-loss guard or same-symbol-loss cooldown is active.
     // ADD_POSITION already requires an open position + confidence >= 0.80 + all_aligned, so it
     // is excluded from this gate — the existing conditions are sufficient.
     //
@@ -341,11 +362,29 @@ export class DecisionOrchestrator {
     let isStage1ObserveWait = false;
     let isPhaseChangeOverride = false;
     if (rawOutput.decision_type === 'NEW_ENTRY' && rawOutput.should_execute) {
+      // Fix A: block re-entry on same losing option symbol
+      if (sameSymbolLoss) {
+        rawOutput.decision_type = 'WAIT';
+        rawOutput.should_execute = false;
+        rawOutput.reasoning = `[SAME-SYMBOL LOSS COOLDOWN] Recent loss on ${winnerSymbol} — blocking re-entry on same symbol. Pick a different strike/expiry. ${rawOutput.reasoning}`;
+        console.log(`[DecisionOrchestrator] NEW_ENTRY blocked — same-symbol loss cooldown for ${winnerSymbol}`);
+      }
+      // Fix C: block after 2+ consecutive losses unless high confidence
+      if (rawOutput.decision_type === 'NEW_ENTRY' && consecutiveLossBlock) {
+        rawOutput.decision_type = 'WAIT';
+        rawOutput.should_execute = false;
+        rawOutput.reasoning = `[CONSECUTIVE LOSS GUARD] ${consecutiveLosses} consecutive losses on ${signal.ticker} — requiring confidence >= 0.85 (current: ${analysis.confidence.toFixed(2)}). ${rawOutput.reasoning}`;
+        console.log(`[DecisionOrchestrator] NEW_ENTRY blocked — ${consecutiveLosses} consecutive losses, confidence ${analysis.confidence.toFixed(2)} < 0.85`);
+      }
+    }
+    if (rawOutput.decision_type === 'NEW_ENTRY' && rawOutput.should_execute) {
       const overrideOk = analysis.confidence >= 0.92 && signal.alignment === 'all_aligned';
       const lastEvalWasWin = context.recentEvaluations.length > 0 &&
         context.recentEvaluations[0].outcome === 'WIN' &&
         (context.recentEvaluations[0].pnlTotal ?? 0) > 0;
+      // Fix B: post-WIN relaxation requires pnlTotal >= $30 (meaningful profit, not marginal)
       const postWinRelaxOk = lastEvalWasWin &&
+        (context.recentEvaluations[0].pnlTotal ?? 0) >= 30 &&
         analysis.confidence >= 0.72 &&
         signal.alignment !== 'mixed';
 
