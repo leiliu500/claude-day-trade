@@ -98,7 +98,8 @@
       "Bash(curl -s -H \"APCA-API-KEY-ID: $ALPACA_API_KEY\" -H \"APCA-API-SECRET-KEY: $ALPACA_SECRET_KEY\" \"https://paper-api.alpaca.markets/v2/account\")",
       "Bash(PGPASSWORD=traderpass psql -h localhost -p 5434 -U trader -d day_trade -c \"\\\\dt\")",
       "Bash(docker compose:*)",
-      "Bash(npm install:*)"
+      "Bash(npm install:*)",
+      "Bash(git revert:*)"
     ],
     "additionalDirectories": [
       "/home/ec2-user/.claude/projects/-home-ec2-user-claude-day-trade"

@@ -342,10 +342,18 @@ export class DecisionOrchestrator {
     let isPhaseChangeOverride = false;
     if (rawOutput.decision_type === 'NEW_ENTRY' && rawOutput.should_execute) {
       const overrideOk = analysis.confidence >= 0.92 && signal.alignment === 'all_aligned';
-      const lastEvalWasWin = context.recentEvaluations.length > 0 &&
-        context.recentEvaluations[0].outcome === 'WIN' &&
-        (context.recentEvaluations[0].pnlTotal ?? 0) > 0;
-      const postWinRelaxOk = lastEvalWasWin &&
+      const lastEval = context.recentEvaluations[0];
+      const lastEvalWasWin = !!lastEval &&
+        lastEval.outcome === 'WIN' &&
+        (lastEval.pnlTotal ?? 0) > 0;
+      // Post-WIN relaxation: skip 2-stage gate for quick re-entry after a winning trade.
+      // GUARD: do NOT apply when re-entering the same side (put/call) as the last WIN —
+      // that's chasing the same fading setup (e.g. SPY put won, then re-entered puts 3x
+      // losing each time). Post-WIN relaxation should only fast-track a different setup
+      // (e.g. won on puts, now entering calls on a reversal).
+      const sameSideReentry = !!lastEval && lastEval.optionRight &&
+        signal.direction === (lastEval.optionRight === 'put' ? 'bearish' : 'bullish');
+      const postWinRelaxOk = lastEvalWasWin && !sameSideReentry &&
         analysis.confidence >= 0.72 &&
         signal.alignment !== 'mixed';
 
