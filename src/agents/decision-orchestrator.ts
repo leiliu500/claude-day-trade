@@ -433,8 +433,10 @@ export class DecisionOrchestrator {
       // (E) Stale-signal gate: at Stage-2+ (priorCount >= 1), check if confidence has
       // materially changed since the ORIGINAL Stage-1 OBSERVE. Lagging indicators (ADX/DI)
       // can produce the same frozen confidence for many cycles — the 2-stage gate becomes a
-      // trivial 3-min delay rather than real confirmation. If confidence delta < 0.03, the
+      // trivial 3-min delay rather than real confirmation. If confidence delta < threshold, the
       // signal is stale (same indicators, no new information) — block entry.
+      // Threshold scales with headroom: min(0.03, max(0.01, (1-stage1Conf)*0.15)) so
+      // high-confidence signals (less room to move) aren't unfairly blocked.
       // Compare against the FIRST WAIT in the current streak (the original Stage-1 baseline),
       // not the most recent, to avoid creeping-baseline where confidence drifts 0.01/cycle
       // and never triggers the threshold despite moving far from the original.
@@ -452,11 +454,24 @@ export class DecisionOrchestrator {
         }
         if (stage1Conf !== null) {
           const confDelta = Math.abs(analysis.confidence - stage1Conf);
-          if (confDelta < 0.03) {
+          // Scale threshold by available headroom — high-confidence signals have less room to move,
+          // so demanding a fixed 0.03 delta unfairly blocks them as "stale".
+          const staleThreshold = Math.min(0.03, Math.max(0.01, (1 - stage1Conf) * 0.15));
+
+          // Weakening-signal block: if confidence DROPPED from Stage-1, conditions deteriorated —
+          // that's the opposite of confirmation. A large drop passing the stale gate as "fresh"
+          // is a bug, not a feature (e.g. 0.82 → 0.66 was allowed because delta=0.16 >> threshold).
+          // Block any entry where current confidence is lower than the original Stage-1 baseline.
+          if (analysis.confidence < stage1Conf) {
             rawOutput.decision_type = 'WAIT';
             rawOutput.should_execute = false;
-            rawOutput.reasoning = `[STALE-SIGNAL BLOCK] Confidence barely changed since original Stage-1 (${stage1Conf.toFixed(2)} → ${analysis.confidence.toFixed(2)}, delta=${confDelta.toFixed(3)} < 0.03) — lagging indicators producing frozen signal, not fresh confirmation. ${rawOutput.reasoning}`;
-            console.log(`[DecisionOrchestrator] NEW_ENTRY blocked by stale-signal gate (confDelta=${confDelta.toFixed(3)}, stage1Conf=${stage1Conf.toFixed(2)}, currentConf=${analysis.confidence.toFixed(2)})`);
+            rawOutput.reasoning = `[WEAKENING-SIGNAL BLOCK] Confidence dropped since original Stage-1 (${stage1Conf.toFixed(2)} → ${analysis.confidence.toFixed(2)}) — conditions deteriorated, not confirmed. ${rawOutput.reasoning}`;
+            console.log(`[DecisionOrchestrator] NEW_ENTRY blocked by weakening-signal gate (stage1Conf=${stage1Conf.toFixed(2)}, currentConf=${analysis.confidence.toFixed(2)})`);
+          } else if (confDelta < staleThreshold) {
+            rawOutput.decision_type = 'WAIT';
+            rawOutput.should_execute = false;
+            rawOutput.reasoning = `[STALE-SIGNAL BLOCK] Confidence barely changed since original Stage-1 (${stage1Conf.toFixed(2)} → ${analysis.confidence.toFixed(2)}, delta=${confDelta.toFixed(3)} < ${staleThreshold.toFixed(3)}) — lagging indicators producing frozen signal, not fresh confirmation. ${rawOutput.reasoning}`;
+            console.log(`[DecisionOrchestrator] NEW_ENTRY blocked by stale-signal gate (confDelta=${confDelta.toFixed(3)}, threshold=${staleThreshold.toFixed(3)}, stage1Conf=${stage1Conf.toFixed(2)}, currentConf=${analysis.confidence.toFixed(2)})`);
           }
         }
       }
