@@ -99,7 +99,24 @@
       "Bash(PGPASSWORD=traderpass psql -h localhost -p 5434 -U trader -d day_trade -c \"\\\\dt\")",
       "Bash(docker compose:*)",
       "Bash(npm install:*)",
-      "Bash(git revert:*)"
+      "Bash(git revert:*)",
+      "Bash(wc -l /home/ec2-user/claude-day-trade/src/indicators/*.ts)",
+      "Bash(grep -r \"MSFT\\\\|QQQ\\\\|IWM\\\\|AAPL\" /home/ec2-user/claude-day-trade/src --include=*.ts)",
+      "Bash(find /home/ec2-user/claude-day-trade/src -type f -name \"*.ts\" -exec grep -l \"profile\\\\|symbol\\\\|ticker\" {})",
+      "Bash(find /home/ec2-user/claude-day-trade -type f -name *.md)",
+      "Bash(find /home/ec2-user/claude-day-trade -type d -name *migrat* -o -type d -name *schema* -o -type d -name *db*)",
+      "Bash(curl -s -H 'APCA-API-KEY-ID: $ALPACA_KEY_ID' -H 'APCA-API-SECRET-KEY: $ALPACA_SECRET_KEY' https://paper-api.alpaca.markets/v2/account)",
+      "Bash(curl -s -H 'APCA-API-KEY-ID: $ALPACA_API_KEY' -H 'APCA-API-SECRET-KEY: $ALPACA_SECRET_KEY' https://paper-api.alpaca.markets/v2/account)",
+      "Bash(curl -s -H \"APCA-API-KEY-ID: PK52GZ34XOEQZZMS75G54IQT3I\" -H \"APCA-API-SECRET-KEY: 3xPVDT77uRiepNDnmRrCTotwdXD2yjgKYcHB94LuTHZV\" \"https://paper-api.alpaca.markets/v2/account\")",
+      "Bash(curl -s -H \"APCA-API-KEY-ID: PK52GZ34XOEQZZMS75G54IQT3I\" -H \"APCA-API-SECRET-KEY: 3xPVDT77uRiepNDnmRrCTotwdXD2yjgKYcHB94LuTHZV\" \"https://paper-api.alpaca.markets/v2/orders?status=closed&limit=100&direction=desc\")",
+      "Bash(curl -s -H \"APCA-API-KEY-ID: PK52GZ34XOEQZZMS75G54IQT3I\" -H \"APCA-API-SECRET-KEY: 3xPVDT77uRiepNDnmRrCTotwdXD2yjgKYcHB94LuTHZV\" \"https://paper-api.alpaca.markets/v2/positions\")",
+      "Bash(curl -s -H \"APCA-API-KEY-ID: PK52GZ34XOEQZZMS75G54IQT3I\" -H \"APCA-API-SECRET-KEY: 3xPVDT77uRiepNDnmRrCTotwdXD2yjgKYcHB94LuTHZV\" \"https://paper-api.alpaca.markets/v2/account/portfolio/history?period=1W&timeframe=1D\")",
+      "Bash(curl -s -H \"APCA-API-KEY-ID: PK52GZ34XOEQZZMS75G54IQT3I\" -H \"APCA-API-SECRET-KEY: 3xPVDT77uRiepNDnmRrCTotwdXD2yjgKYcHB94LuTHZV\" \"https://paper-api.alpaca.markets/v2/account/portfolio/history?period=1M&timeframe=1D\")",
+      "Bash(curl -s -H \"APCA-API-KEY-ID: PK52GZ34XOEQZZMS75G54IQT3I\" -H \"APCA-API-SECRET-KEY: 3xPVDT77uRiepNDnmRrCTotwdXD2yjgKYcHB94LuTHZV\" \"https://paper-api.alpaca.markets/v2/orders?status=closed&limit=500&direction=desc\")",
+      "Bash(curl -s -H \"APCA-API-KEY-ID: PK52GZ34XOEQZZMS75G54IQT3I\" -H \"APCA-API-SECRET-KEY: 3xPVDT77uRiepNDnmRrCTotwdXD2yjgKYcHB94LuTHZV\" \"https://paper-api.alpaca.markets/v2/account/portfolio/history?period=all&timeframe=1D\")",
+      "Read(//home/ec2-user/**)",
+      "Bash(find /home/ec2-user/.claude -name *feedback* -o -name *.md)",
+      "Bash(grep -E \"\\\\.sql$\")"
     ],
     "additionalDirectories": [
       "/home/ec2-user/.claude/projects/-home-ec2-user-claude-day-trade"

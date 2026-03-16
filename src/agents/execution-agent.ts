@@ -45,6 +45,7 @@ function computeSizing(
   stopPremium: number,
   accountEquity: number,
   accountBuyingPower: number,
+  spread: number,
 ): SizeResult {
   const tier: ConvictionTier =
     convictionScore >= 7 ? 'MAX_CONVICTION' :
@@ -71,7 +72,7 @@ function computeSizing(
     baseRiskUsd:      baseRisk,
     effectiveRiskUsd: effectiveRisk,
     riskPerContract,
-    limitPrice:       Math.round(entryPremium * 100) / 100,
+    limitPrice:       Math.round((entryPremium + 0.30 * spread) * 100) / 100,
   };
 }
 
@@ -107,6 +108,7 @@ export class ExecutionAgent {
       candidate.stopPremium,
       accountEquity,
       accountBuyingPower,
+      candidate.contract.spread,
     );
 
     const gates = checkSafetyGates({
