@@ -120,6 +120,20 @@ Each timeframe's `di_cross` can be `bullish_growth` or `bearish_growth` — this
 - A phase-change signal that falls to the normal 2-cycle path (confidence was below override threshold) still carries extra conviction — it should reinforce the Stage-2 NEW_ENTRY decision, not be ignored
 - Phase-change signals are already reflected in the confidence score via an extra DI cross bonus, but you should still note them explicitly in reasoning for transparency
 
+## Recent Price Action Awareness
+The `confidence_breakdown` includes `recent_price_action_bonus` (−0.12 to +0.04) which checks the last 3 LTF bars for actual price movement vs signal direction.
+- `recent_price_action_bonus <= -0.08`: price is actively moving AGAINST the signal direction right now — lagging indicators (DMI) disagree with real-time price. Note in risk_notes: "Recent price action contradicts signal direction"
+- `recent_price_action_bonus = -0.04`: mild headwind — net price move opposes but bars are mixed
+- `recent_price_action_bonus >= 0.04`: price action confirms signal direction — note as supporting evidence
+- This component directly addresses indicator lag — it catches cases where DMI says "bullish" while price is actively declining
+
+## Low Volatility Awareness
+The `confidence_breakdown` includes `low_vol_penalty` (−0.10 to 0) which penalizes entries in range-bound, trendless markets.
+- `low_vol_penalty = -0.10`: HTF ADX < 15 — no real trend, directionless chop. Options theta will eat premium while price goes nowhere. Note in risk_notes: "No trending conditions — low ADX theta trap risk"
+- `low_vol_penalty = -0.05`: HTF ADX 15-20 — weak/emerging trend, marginal conditions
+- `low_vol_penalty = 0`: ADX >= 20 or fresh DI cross present — normal/strong trend
+- Low volatility combined with marginal confidence (0.65-0.70) is a strong reason for caution
+
 ## ATR Awareness
 Each timeframe includes `atr_pct` (ATR as % of last close).
 - HTF atr_pct > 1.5% = elevated volatility — note in risk_notes

@@ -15,7 +15,7 @@ function computeConfidence(signal: SignalPayload, option: OptionEvaluation): Con
   const tfs = signal.timeframes;
   const [ltf, mtf, htf] = tfs;
   if (!ltf || !mtf || !htf) {
-    return { base: 0.38, diSpreadBonus: 0, adxBonus: 0, diCrossBonus: 0, alignmentBonus: 0, tdAdjustment: 0, obvBonus: 0, vwapBonus: 0, oiVolumeBonus: 0, pricePositionAdjustment: 0, adxMaturityPenalty: 0, trendPhaseBonus: 0, momentumAccelBonus: 0, structureBonus: 0, orbBonus: 0, recentPriceActionBonus: 0, total: 0.38 };
+    return { base: 0.38, diSpreadBonus: 0, adxBonus: 0, diCrossBonus: 0, alignmentBonus: 0, tdAdjustment: 0, obvBonus: 0, vwapBonus: 0, oiVolumeBonus: 0, pricePositionAdjustment: 0, adxMaturityPenalty: 0, trendPhaseBonus: 0, momentumAccelBonus: 0, structureBonus: 0, orbBonus: 0, recentPriceActionBonus: 0, lowVolPenalty: 0, total: 0.38 };
   }
 
   // Base: direction-neutral starting point
@@ -287,14 +287,21 @@ function computeConfidence(signal: SignalPayload, option: OptionEvaluation): Con
   //   Clamped -0.08..+0.06
   let structureBonus = 0;
   if (signal.direction !== 'neutral' && signal.priorDayLevels.pdh > 0) {
-    const { abovePDH, belowPDL, pdc } = signal.priorDayLevels;
+    const { abovePDH, belowPDL, pdc, priceVsPDH, priceVsPDL } = signal.priorDayLevels;
     const price = signal.currentPrice;
     if (signal.direction === 'bullish') {
-      if (abovePDH)              structureBonus = 0.06;
+      if (abovePDH) {
+        // False breakout filter: if price barely crossed PDH (< 0.10%), it's likely
+        // a wick/false breakout — reduce bonus from +0.06 to +0.02.
+        structureBonus = priceVsPDH < 0.10 ? 0.02 : 0.06;
+      }
       else if (price > pdc)      structureBonus = 0.02;
       else if (belowPDL)         structureBonus = -0.08;
     } else {
-      if (belowPDL)              structureBonus = 0.06;
+      if (belowPDL) {
+        // False breakout filter: barely below PDL (< 0.10% distance) → reduce bonus.
+        structureBonus = Math.abs(priceVsPDL) < 0.10 ? 0.02 : 0.06;
+      }
       else if (price < pdc)      structureBonus = 0.02;
       else if (abovePDH)         structureBonus = -0.08;
     }
@@ -309,9 +316,12 @@ function computeConfidence(signal: SignalPayload, option: OptionEvaluation): Con
   //   Clamped -0.08..+0.06
   let orbBonus = 0;
   if (signal.direction !== 'neutral' && signal.orb.orbFormed) {
-    const { breakoutDirection } = signal.orb;
+    const { breakoutDirection, breakoutStrength } = signal.orb;
     if (breakoutDirection === signal.direction) {
-      orbBonus = 0.06;
+      // False breakout filter: breakoutStrength < 0.25 means price barely crossed
+      // the ORB boundary (< 25% of range beyond it) — likely a false breakout.
+      // Reduce bonus from +0.06 to +0.02 for weak breakouts.
+      orbBonus = breakoutStrength < 0.25 ? 0.02 : 0.06;
     } else if (breakoutDirection !== 'none' && breakoutDirection !== signal.direction) {
       orbBonus = -0.08;
     }
@@ -353,9 +363,29 @@ function computeConfidence(signal: SignalPayload, option: OptionEvaluation): Con
     }
   }
 
-  const total = Math.max(0, Math.min(1, base + diSpreadBonus + adxBonus + diCrossBonus + alignmentBonus + tdAdjustment + obvBonus + vwapBonus + oiVolumeBonus + pricePositionAdjustment + adxMaturityPenalty + trendPhaseBonus + momentumAccelBonus + structureBonus + orbBonus + recentPriceActionBonus));
+  // Low volatility penalty — penalizes entries when HTF ADX is very low, indicating
+  // a range-bound market with no real trend. Options theta eats premium while price
+  // goes nowhere. DI spread can still show a directional lean in low-vol, but it's
+  // unreliable without trending ADX to back it up.
+  //   HTF ADX < 15: -0.10 (no trend at all — directionless chop)
+  //   HTF ADX 15-20: -0.05 (weak/emerging trend — marginal)
+  //   Skipped when a fresh DI cross is present (cross can precede the ADX rise).
+  // Clamped -0.10..0
+  let lowVolPenalty = 0;
+  if (signal.direction !== 'neutral') {
+    const htfFreshCross2 = signal.direction === 'bullish' ? htf.dmi.crossedUp : htf.dmi.crossedDown;
+    if (!htfFreshCross2) {
+      if (htf.dmi.adx < 15) {
+        lowVolPenalty = -0.10;
+      } else if (htf.dmi.adx < 20) {
+        lowVolPenalty = -0.05;
+      }
+    }
+  }
 
-  return { base, diSpreadBonus, adxBonus, diCrossBonus, alignmentBonus, tdAdjustment, obvBonus, vwapBonus, oiVolumeBonus, pricePositionAdjustment, adxMaturityPenalty, trendPhaseBonus, momentumAccelBonus, structureBonus, orbBonus, recentPriceActionBonus, total };
+  const total = Math.max(0, Math.min(1, base + diSpreadBonus + adxBonus + diCrossBonus + alignmentBonus + tdAdjustment + obvBonus + vwapBonus + oiVolumeBonus + pricePositionAdjustment + adxMaturityPenalty + trendPhaseBonus + momentumAccelBonus + structureBonus + orbBonus + recentPriceActionBonus + lowVolPenalty));
+
+  return { base, diSpreadBonus, adxBonus, diCrossBonus, alignmentBonus, tdAdjustment, obvBonus, vwapBonus, oiVolumeBonus, pricePositionAdjustment, adxMaturityPenalty, trendPhaseBonus, momentumAccelBonus, structureBonus, orbBonus, recentPriceActionBonus, lowVolPenalty, total };
 }
 
 /**
@@ -393,6 +423,7 @@ async function generateExplanation(
       swing_low: htfPs?.swingLow ?? 0,
       price_position_adjustment: cb.pricePositionAdjustment.toFixed(3),
       recent_price_action_bonus: cb.recentPriceActionBonus.toFixed(3),
+      low_vol_penalty: cb.lowVolPenalty.toFixed(3),
       note: htfPs?.priceHalf === 'lower'
         ? 'Price in lower half of range — puts preferred, calls are higher risk'
         : 'Price in upper half of range — calls preferred, puts are higher risk',

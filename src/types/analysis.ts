@@ -15,6 +15,7 @@ export interface ConfidenceBreakdown {
   structureBonus: number;          // -0.08..+0.06 — prior day levels (PDH/PDL) alignment bonus/penalty
   orbBonus: number;                // -0.08..+0.06 — opening range breakout direction alignment
   recentPriceActionBonus: number;  // -0.12..+0.04 — last 3 LTF bars confirm or contradict signal direction
+  lowVolPenalty: number;           // -0.10..0 — penalty when HTF ADX is very low (no real trend, theta trap)
   total: number;                   // clamped 0..1
 }
 

@@ -123,6 +123,7 @@ export class DecisionOrchestrator {
         momentum_accel_bonus: analysis.confidenceBreakdown.momentumAccelBonus,
         price_position_adjustment: analysis.confidenceBreakdown.pricePositionAdjustment,
         recent_price_action_bonus: analysis.confidenceBreakdown.recentPriceActionBonus,
+        low_vol_penalty: analysis.confidenceBreakdown.lowVolPenalty,
         price_half: signal.timeframes[2]?.priceStructure.priceHalf ?? signal.timeframes[0]?.priceStructure.priceHalf ?? 'lower',
         range_position: parseFloat((signal.timeframes[2]?.priceStructure.rangePosition ?? signal.timeframes[0]?.priceStructure.rangePosition ?? 0.5).toFixed(2)),
         note: (signal.timeframes[2]?.priceStructure.priceHalf ?? signal.timeframes[0]?.priceStructure.priceHalf) === 'lower'
