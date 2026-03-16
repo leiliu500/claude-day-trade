@@ -15,7 +15,7 @@ function computeConfidence(signal: SignalPayload, option: OptionEvaluation): Con
   const tfs = signal.timeframes;
   const [ltf, mtf, htf] = tfs;
   if (!ltf || !mtf || !htf) {
-    return { base: 0.38, diSpreadBonus: 0, adxBonus: 0, diCrossBonus: 0, alignmentBonus: 0, tdAdjustment: 0, obvBonus: 0, vwapBonus: 0, oiVolumeBonus: 0, pricePositionAdjustment: 0, adxMaturityPenalty: 0, trendPhaseBonus: 0, momentumAccelBonus: 0, structureBonus: 0, orbBonus: 0, total: 0.38 };
+    return { base: 0.38, diSpreadBonus: 0, adxBonus: 0, diCrossBonus: 0, alignmentBonus: 0, tdAdjustment: 0, obvBonus: 0, vwapBonus: 0, oiVolumeBonus: 0, pricePositionAdjustment: 0, adxMaturityPenalty: 0, trendPhaseBonus: 0, momentumAccelBonus: 0, structureBonus: 0, orbBonus: 0, recentPriceActionBonus: 0, total: 0.38 };
   }
 
   // Base: direction-neutral starting point
@@ -318,9 +318,44 @@ function computeConfidence(signal: SignalPayload, option: OptionEvaluation): Con
     orbBonus = Math.max(-0.08, Math.min(0.06, orbBonus));
   }
 
-  const total = Math.max(0, Math.min(1, base + diSpreadBonus + adxBonus + diCrossBonus + alignmentBonus + tdAdjustment + obvBonus + vwapBonus + oiVolumeBonus + pricePositionAdjustment + adxMaturityPenalty + trendPhaseBonus + momentumAccelBonus + structureBonus + orbBonus));
+  // Recent price action — checks last 3 LTF bars to verify price is actually moving
+  // in the signal direction RIGHT NOW.  Lagging indicators (DMI, ADX) can say "bullish"
+  // while price is actively declining.  This penalty catches that disconnect.
+  //   All 3 recent bars oppose direction AND net move opposes: -0.12 (strong contradiction)
+  //   2 of 3 bars oppose AND net move opposes: -0.08 (moderate contradiction)
+  //   Net move opposes but bars are mixed: -0.04 (mild headwind)
+  //   Price action confirms direction: +0.04 (small bonus for real-time confirmation)
+  // Uses LTF bars (most granular) for the freshest price action read.
+  // Clamped -0.12..+0.04
+  let recentPriceActionBonus = 0;
+  if (signal.direction !== 'neutral' && ltf) {
+    const bars = ltf.bars;
+    if (bars.length >= 4) {
+      const recentBars = bars.slice(-3); // last 3 bars
+      const netMove = recentBars[recentBars.length - 1].close - recentBars[0].open;
+      const bearishBars = recentBars.filter(b => b.close < b.open).length;
+      const bullishBars = recentBars.filter(b => b.close > b.open).length;
 
-  return { base, diSpreadBonus, adxBonus, diCrossBonus, alignmentBonus, tdAdjustment, obvBonus, vwapBonus, oiVolumeBonus, pricePositionAdjustment, adxMaturityPenalty, trendPhaseBonus, momentumAccelBonus, structureBonus, orbBonus, total };
+      const isBullish = signal.direction === 'bullish';
+      const netOpposes = isBullish ? netMove < 0 : netMove > 0;
+      const opposingBarCount = isBullish ? bearishBars : bullishBars;
+      const confirmingBarCount = isBullish ? bullishBars : bearishBars;
+
+      if (netOpposes && opposingBarCount >= 3) {
+        recentPriceActionBonus = -0.12; // strong: all bars + net move oppose
+      } else if (netOpposes && opposingBarCount >= 2) {
+        recentPriceActionBonus = -0.08; // moderate: most bars + net move oppose
+      } else if (netOpposes) {
+        recentPriceActionBonus = -0.04; // mild: net move opposes but bars are mixed
+      } else if (!netOpposes && confirmingBarCount >= 2) {
+        recentPriceActionBonus = 0.04;  // bonus: price action confirms direction
+      }
+    }
+  }
+
+  const total = Math.max(0, Math.min(1, base + diSpreadBonus + adxBonus + diCrossBonus + alignmentBonus + tdAdjustment + obvBonus + vwapBonus + oiVolumeBonus + pricePositionAdjustment + adxMaturityPenalty + trendPhaseBonus + momentumAccelBonus + structureBonus + orbBonus + recentPriceActionBonus));
+
+  return { base, diSpreadBonus, adxBonus, diCrossBonus, alignmentBonus, tdAdjustment, obvBonus, vwapBonus, oiVolumeBonus, pricePositionAdjustment, adxMaturityPenalty, trendPhaseBonus, momentumAccelBonus, structureBonus, orbBonus, recentPriceActionBonus, total };
 }
 
 /**
@@ -357,6 +392,7 @@ async function generateExplanation(
       swing_high: htfPs?.swingHigh ?? 0,
       swing_low: htfPs?.swingLow ?? 0,
       price_position_adjustment: cb.pricePositionAdjustment.toFixed(3),
+      recent_price_action_bonus: cb.recentPriceActionBonus.toFixed(3),
       note: htfPs?.priceHalf === 'lower'
         ? 'Price in lower half of range — puts preferred, calls are higher risk'
         : 'Price in upper half of range — calls preferred, puts are higher risk',

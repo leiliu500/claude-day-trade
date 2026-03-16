@@ -14,6 +14,7 @@ export interface ConfidenceBreakdown {
   momentumAccelBonus: number;      // -0.06..+0.05 — DI spread velocity: widening=accelerating, narrowing=decelerating
   structureBonus: number;          // -0.08..+0.06 — prior day levels (PDH/PDL) alignment bonus/penalty
   orbBonus: number;                // -0.08..+0.06 — opening range breakout direction alignment
+  recentPriceActionBonus: number;  // -0.12..+0.04 — last 3 LTF bars confirm or contradict signal direction
   total: number;                   // clamped 0..1
 }
 
