@@ -383,7 +383,15 @@ function computeConfidence(signal: SignalPayload, option: OptionEvaluation): Con
     }
   }
 
-  const total = Math.max(0, Math.min(1, base + diSpreadBonus + adxBonus + diCrossBonus + alignmentBonus + tdAdjustment + obvBonus + vwapBonus + oiVolumeBonus + pricePositionAdjustment + adxMaturityPenalty + trendPhaseBonus + momentumAccelBonus + structureBonus + orbBonus + recentPriceActionBonus + lowVolPenalty));
+  let total = Math.max(0, Math.min(1, base + diSpreadBonus + adxBonus + diCrossBonus + alignmentBonus + tdAdjustment + obvBonus + vwapBonus + oiVolumeBonus + pricePositionAdjustment + adxMaturityPenalty + trendPhaseBonus + momentumAccelBonus + structureBonus + orbBonus + recentPriceActionBonus + lowVolPenalty));
+
+  // Hard gate: exhausting trend (mature + declining ADX) without price confirmation
+  // is a late-phase chase — cap confidence below entry threshold (0.65).
+  // Skipped when recent price action confirms direction (recentPriceActionBonus > 0),
+  // which indicates genuine re-acceleration despite aging ADX.
+  if (isExhaustingTrend && recentPriceActionBonus <= 0) {
+    total = Math.min(total, 0.60);
+  }
 
   return { base, diSpreadBonus, adxBonus, diCrossBonus, alignmentBonus, tdAdjustment, obvBonus, vwapBonus, oiVolumeBonus, pricePositionAdjustment, adxMaturityPenalty, trendPhaseBonus, momentumAccelBonus, structureBonus, orbBonus, recentPriceActionBonus, lowVolPenalty, total };
 }
