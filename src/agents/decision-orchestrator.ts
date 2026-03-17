@@ -327,12 +327,8 @@ export class DecisionOrchestrator {
 
     // Confirmation count gate for NEW_ENTRY: require at least 1 prior same-direction confirmation
     // (meaning serverCount will be >= 2) before allowing execution.
-    // Two override paths exist:
-    //   (A) High-conviction override: confidence >= 0.85 AND alignment = "all_aligned"
-    //   (B) Post-WIN relaxation: most recent evaluation was a WIN — allow count-1 re-entry at
-    //       confidence >= 0.72 AND alignment != "mixed". This prevents a forced 2-cycle (~6 min)
-    //       delay when the market gives a fresh setup immediately after banking profit.
-    //       Not granted after a LOSS exit (stop-out) — patience required to rebuild conviction.
+    // Override path:
+    //   (A) High-conviction override: confidence >= 0.92 AND alignment = "all_aligned"
     // ADD_POSITION already requires an open position + confidence >= 0.80 + all_aligned, so it
     // is excluded from this gate — the existing conditions are sufficient.
     //
