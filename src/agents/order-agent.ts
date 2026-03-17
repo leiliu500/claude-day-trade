@@ -29,7 +29,7 @@ import { insertEvaluation, getTickerEvaluations } from '../db/repositories/evalu
 import { insertAgentTick, getRecentAgentTicks } from '../db/repositories/order-agent-ticks.js';
 import { insertDispatch } from '../db/repositories/order-agent-dispatches.js';
 import { EvaluationAgent } from './evaluation-agent.js';
-import { notifyAlert, notifyOrderAgentDecision, notifyOrderAgentDispatch, notifyFillStale } from '../telegram/notifier.js';
+import { notifyAlert, notifyOrderAgentDecision, notifyOrderAgentDispatch, notifyFillStale, sendTradeChart } from '../telegram/notifier.js';
 import { loadSkill } from '../utils/skill-loader.js';
 import {
   submitLimitBuyOrder,
@@ -1843,6 +1843,9 @@ export class OrderAgent {
       `P&L: <b>${pnlStr}</b> | Qty: ${currentQty}`,
     ).catch(err => console.warn(`[OrderAgent ${ticker}] Notify error:`, (err as Error).message));
 
+    // Send chart for exit event (fire-and-forget)
+    void sendTradeChart(ticker, 'EXIT').catch(() => {});
+
     // Skip evaluation when fill price wasn't confirmed — a 0% P&L record would corrupt AI history
     if (exitPrice != null) {
       await this._triggerEvaluation(exitPrice, reason);
@@ -1976,6 +1979,9 @@ export class OrderAgent {
       (reduceFill ? ` @ $${reduceFill.toFixed(2)}` : '') +
       ` | P&L: <b>${pnlSign}${pnlPct.toFixed(1)}%</b>`,
     ).catch(err => console.warn(`[OrderAgent ${decision.ticker}] Notify error:`, (err as Error).message));
+
+    // Send chart for reduce event (fire-and-forget)
+    void sendTradeChart(decision.ticker, 'REDUCE').catch(() => {});
   }
 
   private async _triggerEvaluation(exitPrice: number, closeReason: string): Promise<void> {

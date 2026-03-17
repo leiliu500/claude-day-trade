@@ -1,4 +1,5 @@
 import { config } from '../config.js';
+import { fetchChartImage } from '../lib/chart-img.js';
 import type { PipelineResult } from '../pipeline/trading-pipeline.js';
 import type { EvaluationRecord } from '../types/trade.js';
 import type { SignalPayload } from '../types/signal.js';
@@ -32,6 +33,48 @@ async function sendMessage(text: string, parseMode: 'HTML' | 'Markdown' = 'HTML'
     }
   } catch (err) {
     console.error('[Telegram] Network error:', err);
+  }
+}
+
+async function sendPhoto(imageBuffer: Buffer, caption?: string): Promise<void> {
+  const token = config.TELEGRAM_BOT_TOKEN;
+  const chatId = config.TELEGRAM_CHAT_ID;
+
+  try {
+    const formData = new FormData();
+    formData.append('chat_id', chatId);
+    formData.append('photo', new Blob([imageBuffer], { type: 'image/png' }), 'chart.png');
+    if (caption) {
+      formData.append('caption', caption.slice(0, 1024));
+      formData.append('parse_mode', 'HTML');
+    }
+
+    const res = await fetch(`${TELEGRAM_BASE}/bot${token}/sendPhoto`, {
+      method: 'POST',
+      body: formData,
+    });
+
+    if (!res.ok) {
+      const err = await res.text();
+      console.error('[Telegram] sendPhoto error:', err);
+    }
+  } catch (err) {
+    console.error('[Telegram] sendPhoto network error:', err);
+  }
+}
+
+/**
+ * Fetch a chart from chart-img.com and send it as a Telegram photo.
+ * Failures are silently logged — never breaks the system.
+ */
+async function sendChartForTicker(ticker: string, caption: string): Promise<void> {
+  try {
+    const image = await fetchChartImage({ ticker });
+    if (image) {
+      await sendPhoto(image, caption);
+    }
+  } catch (err) {
+    console.warn(`[Telegram] Chart send failed for ${ticker}:`, (err as Error).message);
   }
 }
 
@@ -425,6 +468,13 @@ export async function notifySignalAnalysis(result: PipelineResult): Promise<void
   }
 
   await sendMessage(msg);
+
+  // Send chart for actionable decisions (NEW_ENTRY, ADD_POSITION, EXIT, REDUCE_EXPOSURE)
+  const chartDecisions = ['NEW_ENTRY', 'ADD_POSITION', 'EXIT', 'REDUCE_EXPOSURE'];
+  if (decisionResult && chartDecisions.includes(decisionResult.decisionType)) {
+    const chartCaption = `📊 ${result.ticker} — ${decisionResult.decisionType} (DI+/-, VWAP, OBV)`;
+    void sendChartForTicker(result.ticker, chartCaption);
+  }
 }
 
 /** Fallback simple notification (when full context unavailable) */
@@ -685,6 +735,16 @@ export async function notifyDailyCleanup(
       `Error: ${error ?? 'unknown'}`,
     );
   }
+}
+
+/**
+ * Send a chart image for a trading event (EXIT, REDUCE, etc.).
+ * Called from order-agent after exit/reduce notifications.
+ * Failures are silently logged — never breaks the system.
+ */
+export async function sendTradeChart(ticker: string, event: string): Promise<void> {
+  const caption = `📊 ${ticker} — ${event} (DI+/-, VWAP, OBV)`;
+  void sendChartForTicker(ticker, caption);
 }
 
 /** System startup notification */
