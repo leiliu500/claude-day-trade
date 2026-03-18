@@ -742,9 +742,11 @@ export async function notifyDailyCleanup(
  * Called from order-agent after exit/reduce notifications.
  * Failures are silently logged — never breaks the system.
  */
-export async function sendTradeChart(ticker: string, event: string): Promise<void> {
+export function sendTradeChart(ticker: string, event: string): void {
   const caption = `📊 ${ticker} — ${event} (DI+/-, VWAP, OBV)`;
-  void sendChartForTicker(ticker, caption);
+  sendChartForTicker(ticker, caption).catch(err =>
+    console.warn(`[Telegram] sendTradeChart failed for ${ticker}:`, (err as Error).message),
+  );
 }
 
 /** System startup notification */

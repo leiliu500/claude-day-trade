@@ -1844,7 +1844,7 @@ export class OrderAgent {
     ).catch(err => console.warn(`[OrderAgent ${ticker}] Notify error:`, (err as Error).message));
 
     // Send chart for exit event (fire-and-forget)
-    void sendTradeChart(ticker, 'EXIT').catch(() => {});
+    sendTradeChart(ticker, 'EXIT');
 
     // Skip evaluation when fill price wasn't confirmed — a 0% P&L record would corrupt AI history
     if (exitPrice != null) {
@@ -1981,7 +1981,7 @@ export class OrderAgent {
     ).catch(err => console.warn(`[OrderAgent ${decision.ticker}] Notify error:`, (err as Error).message));
 
     // Send chart for reduce event (fire-and-forget)
-    void sendTradeChart(decision.ticker, 'REDUCE').catch(() => {});
+    sendTradeChart(decision.ticker, 'REDUCE');
   }
 
   private async _triggerEvaluation(exitPrice: number, closeReason: string): Promise<void> {
