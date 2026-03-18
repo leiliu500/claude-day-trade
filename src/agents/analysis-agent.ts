@@ -15,7 +15,7 @@ function computeConfidence(signal: SignalPayload, option: OptionEvaluation): Con
   const tfs = signal.timeframes;
   const [ltf, mtf, htf] = tfs;
   if (!ltf || !mtf || !htf) {
-    return { base: 0.38, diSpreadBonus: 0, adxBonus: 0, diCrossBonus: 0, alignmentBonus: 0, tdAdjustment: 0, obvBonus: 0, vwapBonus: 0, oiVolumeBonus: 0, pricePositionAdjustment: 0, adxMaturityPenalty: 0, trendPhaseBonus: 0, momentumAccelBonus: 0, structureBonus: 0, orbBonus: 0, recentPriceActionBonus: 0, lowVolPenalty: 0, total: 0.38 };
+    return { base: 0.38, diSpreadBonus: 0, adxBonus: 0, diCrossBonus: 0, alignmentBonus: 0, tdAdjustment: 0, obvBonus: 0, vwapBonus: 0, oiVolumeBonus: 0, pricePositionAdjustment: 0, adxMaturityPenalty: 0, trendPhaseBonus: 0, momentumAccelBonus: 0, structureBonus: 0, orbBonus: 0, recentPriceActionBonus: 0, trContractionPenalty: 0, lowVolPenalty: 0, total: 0.38 };
   }
 
   // Base: direction-neutral starting point
@@ -363,6 +363,48 @@ function computeConfidence(signal: SignalPayload, option: OptionEvaluation): Con
     }
   }
 
+  // TR contraction penalty — uses raw True Range from the last 3 LTF bars vs the prior
+  // 10-bar average TR to detect momentum drying up IN REAL TIME (no smoothing lag).
+  // When a trend is exhausting, bars get smaller (lower TR) even while lagging indicators
+  // like ADX/DI still read "strong trend".  This catches the instant momentum fade.
+  //   Recent TR < 50% of avg TR: -0.08 (severe contraction — momentum dried up)
+  //   Recent TR < 70% of avg TR: -0.05 (moderate contraction — momentum fading)
+  //   Recent TR > 130% of avg TR: +0.00 (expanding TR — no penalty, genuine momentum)
+  // Uses LTF bars for the most granular real-time read.
+  // Clamped -0.08..0
+  let trContractionPenalty = 0;
+  if (signal.direction !== 'neutral' && ltf) {
+    const bars = ltf.bars;
+    if (bars.length >= 14) { // need enough bars for avg + recent
+      // Compute TR for last 13 bars (index 1..13 relative to slice)
+      const window = bars.slice(-14);
+      const trValues: number[] = [];
+      for (let i = 1; i < window.length; i++) {
+        const curr = window[i]!;
+        const prev = window[i - 1]!;
+        const tr = Math.max(
+          curr.high - curr.low,
+          Math.abs(curr.high - prev.close),
+          Math.abs(curr.low - prev.close)
+        );
+        trValues.push(tr);
+      }
+      // Average TR of the first 10 bars (the "baseline")
+      const baselineTR = trValues.slice(0, 10).reduce((a, b) => a + b, 0) / 10;
+      // Average TR of the last 3 bars (the "recent")
+      const recentTR = trValues.slice(-3).reduce((a, b) => a + b, 0) / 3;
+
+      if (baselineTR > 0) {
+        const trRatio = recentTR / baselineTR;
+        if (trRatio < 0.50) {
+          trContractionPenalty = -0.08; // severe: bars shrunk to half or less
+        } else if (trRatio < 0.70) {
+          trContractionPenalty = -0.05; // moderate: bars noticeably smaller
+        }
+      }
+    }
+  }
+
   // Low volatility penalty — penalizes entries when HTF ADX is very low, indicating
   // a range-bound market with no real trend. Options theta eats premium while price
   // goes nowhere. DI spread can still show a directional lean in low-vol, but it's
@@ -383,17 +425,18 @@ function computeConfidence(signal: SignalPayload, option: OptionEvaluation): Con
     }
   }
 
-  let total = Math.max(0, Math.min(1, base + diSpreadBonus + adxBonus + diCrossBonus + alignmentBonus + tdAdjustment + obvBonus + vwapBonus + oiVolumeBonus + pricePositionAdjustment + adxMaturityPenalty + trendPhaseBonus + momentumAccelBonus + structureBonus + orbBonus + recentPriceActionBonus + lowVolPenalty));
+  let total = Math.max(0, Math.min(1, base + diSpreadBonus + adxBonus + diCrossBonus + alignmentBonus + tdAdjustment + obvBonus + vwapBonus + oiVolumeBonus + pricePositionAdjustment + adxMaturityPenalty + trendPhaseBonus + momentumAccelBonus + structureBonus + orbBonus + recentPriceActionBonus + trContractionPenalty + lowVolPenalty));
 
-  // Hard gate: exhausting trend (mature + declining ADX) without price confirmation
-  // is a late-phase chase — cap confidence below entry threshold (0.65).
-  // Skipped when recent price action confirms direction (recentPriceActionBonus > 0),
-  // which indicates genuine re-acceleration despite aging ADX.
-  if (isExhaustingTrend && recentPriceActionBonus <= 0) {
+  // Hard gate: TR contraction (instant momentum fade) without price confirmation
+  // is a dying trend — cap confidence below entry threshold (0.65).
+  // Uses raw TR (instant, no smoothing lag) instead of lagging ADX-based isExhaustingTrend.
+  // Skipped when recent price action confirms direction (recentPriceActionBonus > 0)
+  // AND TR is only moderately contracted — genuine re-acceleration shows expanding bars.
+  if (trContractionPenalty < 0 && recentPriceActionBonus <= 0) {
     total = Math.min(total, 0.60);
   }
 
-  return { base, diSpreadBonus, adxBonus, diCrossBonus, alignmentBonus, tdAdjustment, obvBonus, vwapBonus, oiVolumeBonus, pricePositionAdjustment, adxMaturityPenalty, trendPhaseBonus, momentumAccelBonus, structureBonus, orbBonus, recentPriceActionBonus, lowVolPenalty, total };
+  return { base, diSpreadBonus, adxBonus, diCrossBonus, alignmentBonus, tdAdjustment, obvBonus, vwapBonus, oiVolumeBonus, pricePositionAdjustment, adxMaturityPenalty, trendPhaseBonus, momentumAccelBonus, structureBonus, orbBonus, recentPriceActionBonus, trContractionPenalty, lowVolPenalty, total };
 }
 
 /**
@@ -431,6 +474,7 @@ async function generateExplanation(
       swing_low: htfPs?.swingLow ?? 0,
       price_position_adjustment: cb.pricePositionAdjustment.toFixed(3),
       recent_price_action_bonus: cb.recentPriceActionBonus.toFixed(3),
+      tr_contraction_penalty: cb.trContractionPenalty.toFixed(3),
       low_vol_penalty: cb.lowVolPenalty.toFixed(3),
       note: htfPs?.priceHalf === 'lower'
         ? 'Price in lower half of range — puts preferred, calls are higher risk'

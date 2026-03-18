@@ -127,6 +127,14 @@ The `confidence_breakdown` includes `recent_price_action_bonus` (−0.12 to +0.0
 - `recent_price_action_bonus >= 0.04`: price action confirms signal direction — note as supporting evidence
 - This component directly addresses indicator lag — it catches cases where DMI says "bullish" while price is actively declining
 
+## TR Contraction Awareness
+The `confidence_breakdown` includes `tr_contraction_penalty` (−0.08 to 0) which detects momentum fading in REAL TIME using raw True Range (no smoothing lag).
+- `tr_contraction_penalty = -0.08`: recent LTF bars have shrunk to less than half of the baseline TR — momentum has dried up. Even if lagging indicators (ADX, DI) still read "strong trend", the actual bar ranges show the move is exhausted. Note in risk_notes: "TR contraction severe — momentum dried up despite strong indicator readings"
+- `tr_contraction_penalty = -0.05`: moderate TR contraction — bars are noticeably smaller than baseline. Note in risk_notes: "TR contraction moderate — momentum fading"
+- `tr_contraction_penalty = 0`: recent bars are normal or expanding — no contraction detected
+- When `tr_contraction_penalty < 0` AND `recent_price_action_bonus <= 0`, confidence is hard-capped at 0.60 (below entry threshold) — this is enforced by the system. A brief price pop on shrinking bars is a dead cat bounce, not a re-acceleration.
+- Expanding TR (no contraction penalty) combined with confirming price action is the strongest instant momentum signal
+
 ## Low Volatility Awareness
 The `confidence_breakdown` includes `low_vol_penalty` (−0.10 to 0) which penalizes entries in range-bound, trendless markets.
 - `low_vol_penalty = -0.10`: HTF ADX < 15 — no real trend, directionless chop. Options theta will eat premium while price goes nowhere. Note in risk_notes: "No trending conditions — low ADX theta trap risk"
