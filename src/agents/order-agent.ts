@@ -215,6 +215,13 @@ export class OrderAgent {
           this.positionId = await insertPosition({ sessionId, decisionId: decision.id, ticker, candidate, sizing });
           await this._voidPosition('stale_entry_rejected');
           this.phase = 'FAILED';
+          void notifyAlert(
+            `<b>Stale entry rejected</b> — ${ticker}\n` +
+            `Option: ${candidate.contract.symbol}\n` +
+            `Selection mid: $${candidate.entryPremium.toFixed(2)}\n` +
+            `Current mid: $${currentMid.toFixed(2)}\n` +
+            `Drift: ${(driftPct * 100).toFixed(1)}% > ${(config.MAX_ENTRY_DRIFT_PCT * 100).toFixed(0)}% threshold`,
+          );
           this._selfRemove();
           return;
         }
