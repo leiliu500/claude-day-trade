@@ -11,7 +11,7 @@ const CHART_IMG_API_KEY = 'Y7j6O6Hfkw5dDGeSsDosl6UnUB8fgkE74wAaVzp5';
 export interface ChartOptions {
   /** Underlying ticker, e.g. "SPY", "MSFT" */
   ticker: string;
-  /** TradingView interval — default "5" (5 min) */
+  /** TradingView interval — default "5m" (5 min) */
   interval?: string;
   /** Image width in px (default 800) */
   width?: number;
@@ -23,10 +23,16 @@ export interface ChartOptions {
  * Fetch a TradingView chart PNG from chart-img.com with DI+/-, VWAP, OBV indicators.
  * Returns the image as a Buffer, or null if anything goes wrong.
  */
+// Map tickers to their TradingView exchange prefix
+const EXCHANGE_PREFIX: Record<string, string> = {
+  SPY: 'AMEX',
+};
+
 export async function fetchChartImage(opts: ChartOptions): Promise<Buffer | null> {
   try {
-    const symbol = `NASDAQ:${opts.ticker}`;
-    const interval = opts.interval ?? '5';
+    const exchange = EXCHANGE_PREFIX[opts.ticker] ?? 'NASDAQ';
+    const symbol = `${exchange}:${opts.ticker}`;
+    const interval = opts.interval ?? '5m';
     const width = opts.width ?? 800;
     const height = opts.height ?? 600;
 
