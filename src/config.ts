@@ -30,6 +30,7 @@ const configSchema = z.object({
   MAX_SPREAD_PCT: z.coerce.number().default(0.02),      // 2%
   MIN_RR_RATIO: z.coerce.number().default(0.6),
   DAILY_LOSS_LIMIT_PCT: z.coerce.number().default(0.02), // halt new entries after -2% equity loss today
+  MAX_ENTRY_DRIFT_PCT: z.coerce.number().default(0.05), // skip entry if option mid drifted >5% since selection
 });
 
 type Config = z.infer<typeof configSchema>;

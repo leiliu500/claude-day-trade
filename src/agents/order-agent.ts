@@ -200,6 +200,30 @@ export class OrderAgent {
     const { decision, candidate, sizing, sessionId } = this.cfg;
     const ticker = decision.ticker;
 
+    // ── Stale entry guard: reject if option mid drifted since selection ────
+    try {
+      const currentMid = await fetchOptionMid(candidate.contract.symbol);
+      if (currentMid !== null && candidate.entryPremium > 0) {
+        const driftPct = Math.abs(currentMid - candidate.entryPremium) / candidate.entryPremium;
+        if (driftPct > config.MAX_ENTRY_DRIFT_PCT) {
+          console.warn(
+            `[OrderAgent ${ticker}] Stale entry guard: ` +
+            `selection mid=$${candidate.entryPremium.toFixed(2)}, ` +
+            `current mid=$${currentMid.toFixed(2)}, ` +
+            `drift=${(driftPct * 100).toFixed(1)}% > ${(config.MAX_ENTRY_DRIFT_PCT * 100).toFixed(0)}% — skipping`,
+          );
+          this.positionId = await insertPosition({ sessionId, decisionId: decision.id, ticker, candidate, sizing });
+          await this._voidPosition('stale_entry_rejected');
+          this.phase = 'FAILED';
+          this._selfRemove();
+          return;
+        }
+      }
+    } catch (err) {
+      // Don't block entry on a failed price check — limit order provides natural protection
+      console.warn(`[OrderAgent ${ticker}] Stale entry guard skipped: ${(err as Error).message}`);
+    }
+
     let alpacaResponse: Record<string, string | undefined> = {};
     let errorMessage: string | undefined;
 

@@ -130,12 +130,22 @@ export async function runPipeline(
     const intervals = profile === 'S' ? '2m,3m,5m' : profile === 'M' ? '1m,5m,15m' : '5m,1h,1d';
     const sessionId = await getOrCreateSession(ticker, profile, intervals);
 
-    // ── Phase 3: Signal Generation ─────────────────────────────────────────
+    // ── Phase 3: Signal Generation + Option Contract Prefetch (parallel) ──
+    // Start fetching option contracts while signal computes indicators.
+    // Uses stream cache for ATM estimate; skips prefetch if cache is cold.
+    const { AlpacaStreamManager } = await import('../lib/alpaca-stream.js');
+    const latestBars = AlpacaStreamManager.getInstance().getBars(ticker, '1m', 1);
+    const estimatedAtm = latestBars?.[0] ? Math.round(latestBars[0].close) : 0;
+    const contractsPrefetch = estimatedAtm > 0
+      ? optionAgent.prefetchContracts(ticker, estimatedAtm)
+      : undefined;
+
     const signal = await signalAgent.run(ticker, profile, trigger, sessionId);
     console.log(`[Pipeline] Signal: ${signal.direction} (${signal.alignment})`);
 
-    // ── Phase 4: Option Selection ──────────────────────────────────────────
-    const optionEval = await optionAgent.run(signal);
+    // ── Phase 4: Option Selection (contracts already prefetched if stream was warm) ──
+    const prefetched = contractsPrefetch ? await contractsPrefetch : undefined;
+    const optionEval = await optionAgent.run(signal, prefetched);
     console.log(`[Pipeline] Option: winner=${optionEval.winner ?? 'none'}, liq=${optionEval.liquidityOk}`);
 
     // ── Phase 5: Analysis (deterministic confidence; AI explanation only when market open) ──
@@ -146,12 +156,12 @@ export async function runPipeline(
       console.log(`[Pipeline] ConfBreakdown[${ticker}]: base=${cb.base.toFixed(2)} di=${cb.diSpreadBonus.toFixed(3)} adx=${cb.adxBonus.toFixed(2)} cross=${cb.diCrossBonus.toFixed(3)} align=${cb.alignmentBonus.toFixed(2)} td=${cb.tdAdjustment.toFixed(3)} obv=${cb.obvBonus.toFixed(3)} vwap=${cb.vwapBonus.toFixed(3)} oiVol=${cb.oiVolumeBonus.toFixed(3)} pos=${cb.pricePositionAdjustment.toFixed(3)} maturity=${cb.adxMaturityPenalty.toFixed(3)} phase=${cb.trendPhaseBonus.toFixed(3)} accel=${cb.momentumAccelBonus.toFixed(3)} struct=${cb.structureBonus.toFixed(3)} orb=${cb.orbBonus.toFixed(3)} rpa=${cb.recentPriceActionBonus.toFixed(3)} trc=${cb.trContractionPenalty.toFixed(3)} lvp=${cb.lowVolPenalty.toFixed(3)}`);
     }
 
-    // ── Phase 6: Persist Signal Snapshot ──────────────────────────────────
-    const snapshotId = await insertSignalSnapshot(signal, optionEval, analysis, sessionId);
+    // ── Phase 6: Persist Signal Snapshot + Build Context (parallel) ───────
+    const [snapshotId, context] = await Promise.all([
+      insertSignalSnapshot(signal, optionEval, analysis, sessionId),
+      buildContext(ticker),
+    ]);
     signal.id = snapshotId;
-
-    // ── Phase 6: Build Orchestrator Context ────────────────────────────────
-    const context = await buildContext(ticker);
 
     // ── Phase 7: Decision Orchestrator (or deterministic bypass) ──────────
     const registry = OrderAgentRegistry.getInstance();

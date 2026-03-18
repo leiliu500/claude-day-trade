@@ -95,17 +95,41 @@ export class OptionAgent {
     };
   }
 
-  async run(signal: SignalPayload): Promise<OptionEvaluation> {
+  /**
+   * Pre-fetch option contracts using an estimated ATM price.
+   * Called in parallel with signal computation to reduce pipeline lag.
+   * Uses a wider strike range (+/-15 vs +/-10) to account for ATM drift.
+   */
+  async prefetchContracts(
+    ticker: string,
+    estimatedAtm: number,
+  ): Promise<{ callContracts: AlpacaOptionContract[]; putContracts: AlpacaOptionContract[] }> {
+    const expiry = getNextBusinessDay();
+    const strikeMin = estimatedAtm - 15;
+    const strikeMax = estimatedAtm + 15;
+    const [callContracts, putContracts] = await Promise.all([
+      this.fetchContracts(ticker, 'call', expiry, strikeMin, strikeMax),
+      this.fetchContracts(ticker, 'put', expiry, strikeMin, strikeMax),
+    ]);
+    return { callContracts, putContracts };
+  }
+
+  async run(
+    signal: SignalPayload,
+    prefetched?: { callContracts: AlpacaOptionContract[]; putContracts: AlpacaOptionContract[] },
+  ): Promise<OptionEvaluation> {
     const desiredSide: OptionSide = signal.direction === 'bearish' ? 'put' : 'call';
     const expiry = getNextBusinessDay();
     const strikeMin = signal.atm - 10;
     const strikeMax = signal.atm + 10;
 
-    // Fetch CALL + PUT contracts in parallel
-    const [callContracts, putContracts] = await Promise.all([
-      this.fetchContracts(signal.ticker, 'call', expiry, strikeMin, strikeMax),
-      this.fetchContracts(signal.ticker, 'put', expiry, strikeMin, strikeMax),
-    ]);
+    // Use prefetched contracts if available, otherwise fetch now
+    const [callContracts, putContracts] = prefetched
+      ? [prefetched.callContracts, prefetched.putContracts]
+      : await Promise.all([
+          this.fetchContracts(signal.ticker, 'call', expiry, strikeMin, strikeMax),
+          this.fetchContracts(signal.ticker, 'put', expiry, strikeMin, strikeMax),
+        ]);
 
     // Shortlist: take up to 8 nearest ATM strikes per side
     const callShortlist = this.shortlistByATM(callContracts, signal.atm, 8);
