@@ -111,6 +111,9 @@ export class ExecutionAgent {
       candidate.contract.spread,
     );
 
+    // LTF ATR% for volatility spike gate — LTF is timeframes[0]
+    const ltfAtrPct = signal.timeframes[0]?.atr.atrPct;
+
     const gates = checkSafetyGates({
       timeGateOk,
       analysis,
@@ -121,6 +124,7 @@ export class ExecutionAgent {
       dailyRealizedPnl,
       proposedQty:  sizing.qty,
       proposedCost: sizing.qty * candidate.entryPremium * 100,
+      ltfAtrPct,
     });
 
     if (!gates.passed) {

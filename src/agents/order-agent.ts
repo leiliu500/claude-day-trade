@@ -910,8 +910,8 @@ export class OrderAgent {
       const oldest = this.priceHistory.find(p => p.ts >= cutoffTs) ?? this.priceHistory[0]!;
       if (oldest.price > 0) {
         const velocityPct = ((midPrice - oldest.price) / oldest.price) * 100;
-        // Fast crash: dropped 4%+ in ≤15s — exit immediately regardless of peak/ticks
-        if (velocityPct <= -4) {
+        // Fast crash: dropped 3%+ in ≤15s — exit immediately regardless of peak/ticks
+        if (velocityPct <= -3) {
           await this._executeExit(`VELOCITY_CRASH [stream]: ${velocityPct.toFixed(1)}% in ${((now - oldest.ts) / 1000).toFixed(0)}s — rapid price collapse`);
           return;
         }
@@ -1185,7 +1185,7 @@ export class OrderAgent {
       const oldest = this.priceHistory.find(p => p.ts >= cutoffTs) ?? this.priceHistory[0]!;
       if (oldest.price > 0) {
         const velocityPct = ((currentPrice - oldest.price) / oldest.price) * 100;
-        if (velocityPct <= -4) {
+        if (velocityPct <= -3) {
           await this._executeExit(
             `VELOCITY_CRASH: ${velocityPct.toFixed(1)}% in ${((nowMs - oldest.ts) / 1000).toFixed(0)}s — rapid price collapse`,
           );

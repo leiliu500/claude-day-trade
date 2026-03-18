@@ -22,8 +22,9 @@ export function checkSafetyGates(params: {
   dailyRealizedPnl: number;
   proposedQty: number;
   proposedCost: number;
+  ltfAtrPct?: number;
 }): GateCheckResult {
-  const { timeGateOk, analysis, option, decision, accountBuyingPower, accountEquity, dailyRealizedPnl, proposedQty, proposedCost } = params;
+  const { timeGateOk, analysis, option, decision, accountBuyingPower, accountEquity, dailyRealizedPnl, proposedQty, proposedCost, ltfAtrPct } = params;
   const failed: string[] = [];
 
   // 1. Time gate — market must be open
@@ -96,6 +97,13 @@ export function checkSafetyGates(params: {
       const minsLeft = 30 - minutesSinceOpen;
       failed.push(`OPEN_VOLATILITY_GATE: first 30 min of session — ${minsLeft} min until 10:00 AM ET`);
     }
+  }
+
+  // 11. Volatility spike gate — skip entries when LTF ATR% indicates choppy/event-driven conditions
+  if (ltfAtrPct !== undefined && ltfAtrPct > config.MAX_LTF_ATR_PCT) {
+    failed.push(
+      `VOLATILITY_SPIKE_GATE: LTF ATR ${(ltfAtrPct * 100).toFixed(2)}% > ${(config.MAX_LTF_ATR_PCT * 100).toFixed(0)}% — conditions too volatile for entry`,
+    );
   }
 
   return { passed: failed.length === 0, failedGates: failed };
