@@ -67,6 +67,53 @@ export async function submitLimitBuyOrder(
   return res.json() as Promise<AlpacaOrderResponse>;
 }
 
+/** Submit a limit sell order (sell_to_close). */
+export async function submitLimitSellOrder(
+  symbol: string,
+  qty: number,
+  limitPrice: number,
+): Promise<{ alpacaOrderId?: string; fillPrice?: number; error?: string }> {
+  try {
+    const res = await fetch(`${config.ALPACA_BASE_URL}/v2/orders`, {
+      method: 'POST',
+      headers: headers(),
+      signal: AbortSignal.timeout(15_000),
+      body: JSON.stringify({
+        symbol,
+        qty: String(qty),
+        side: 'sell',
+        type: 'limit',
+        time_in_force: 'day',
+        position_intent: 'sell_to_close',
+        limit_price: limitPrice.toFixed(2),
+      }),
+    });
+
+    if (!res.ok) return { error: await res.text() };
+    const o = (await res.json()) as AlpacaOrderResponse;
+    return {
+      alpacaOrderId: o.id,
+      fillPrice: o.filled_avg_price ? parseFloat(o.filled_avg_price) : undefined,
+    };
+  } catch (err) {
+    return { error: (err as Error).message };
+  }
+}
+
+/** Cancel a single order by ID. Returns true if cancelled successfully. */
+export async function cancelOrder(orderId: string): Promise<boolean> {
+  try {
+    const res = await fetch(`${config.ALPACA_BASE_URL}/v2/orders/${orderId}`, {
+      method: 'DELETE',
+      headers: headers(),
+      signal: AbortSignal.timeout(10_000),
+    });
+    return res.ok || res.status === 204 || res.status === 422; // 422 = already filled/cancelled
+  } catch {
+    return false;
+  }
+}
+
 /** Submit a market sell order (sell_to_close). */
 export async function submitMarketSellOrder(
   symbol: string,

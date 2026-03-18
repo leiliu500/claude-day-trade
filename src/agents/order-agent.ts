@@ -33,6 +33,8 @@ import { notifyAlert, notifyOrderAgentDecision, notifyOrderAgentDispatch, notify
 import { loadSkill } from '../utils/skill-loader.js';
 import {
   submitLimitBuyOrder,
+  submitLimitSellOrder,
+  cancelOrder,
   submitMarketSellOrder,
   reduceAlpacaPosition,
   getAlpacaOrder,
@@ -935,15 +937,15 @@ export class OrderAgent {
     // Exit while still slightly positive to lock in small profits instead of giving them all back.
     // Without this, peaks of 1-5% have zero protection until they hit the trailing stop at -13%.
     if (this.peakPnlPct >= 3 && this.peakPnlPct < 5 && pnlPct <= 0.5 && this.tickCount >= 4) {
-      await this._executeExit(`SMALL_GAIN_LOCK [stream]: peak=+${this.peakPnlPct.toFixed(1)}%, now=+${pnlPct.toFixed(1)}% — locking remaining small profit`);
+      await this._executeExit(`SMALL_GAIN_LOCK [stream]: peak=+${this.peakPnlPct.toFixed(1)}%, now=+${pnlPct.toFixed(1)}% — locking remaining small profit`, midPrice);
       return;
     }
     if (this.peakPnlPct >= 2 && this.peakPnlPct < 3 && pnlPct <= 0.5 && this.tickCount >= 4) {
-      await this._executeExit(`TINY_GAIN_LOCK [stream]: peak=+${this.peakPnlPct.toFixed(1)}%, now=+${pnlPct.toFixed(1)}% — locking remaining tiny profit`);
+      await this._executeExit(`TINY_GAIN_LOCK [stream]: peak=+${this.peakPnlPct.toFixed(1)}%, now=+${pnlPct.toFixed(1)}% — locking remaining tiny profit`, midPrice);
       return;
     }
     if (this.peakPnlPct >= 1.0 && this.peakPnlPct < 2 && pnlPct <= 0.4 && this.tickCount >= 4) {
-      await this._executeExit(`MICRO_GAIN_LOCK [stream]: peak=+${this.peakPnlPct.toFixed(1)}%, now=+${pnlPct.toFixed(1)}% — locking remaining micro profit`);
+      await this._executeExit(`MICRO_GAIN_LOCK [stream]: peak=+${this.peakPnlPct.toFixed(1)}%, now=+${pnlPct.toFixed(1)}% — locking remaining micro profit`, midPrice);
       return;
     }
 
@@ -1208,21 +1210,26 @@ export class OrderAgent {
     }
 
     // ── Small-gain profit protection (peak 1-5% range) ──
+    // Use limit sell at mid-price to avoid spread slippage on these marginal-profit exits.
+    const gainLockMid = AlpacaStreamManager.getInstance().getOptionMid(symbol) ?? currentPrice;
     if (this.peakPnlPct >= 3 && this.peakPnlPct < 5 && pnlPctNow <= 0.5 && this.tickCount >= 4) {
       await this._executeExit(
         `SMALL_GAIN_LOCK: peak=+${this.peakPnlPct.toFixed(1)}%, now=+${pnlPctNow.toFixed(1)}% — locking remaining small profit`,
+        gainLockMid,
       );
       return;
     }
     if (this.peakPnlPct >= 2 && this.peakPnlPct < 3 && pnlPctNow <= 0.5 && this.tickCount >= 4) {
       await this._executeExit(
         `TINY_GAIN_LOCK: peak=+${this.peakPnlPct.toFixed(1)}%, now=+${pnlPctNow.toFixed(1)}% — locking remaining tiny profit`,
+        gainLockMid,
       );
       return;
     }
     if (this.peakPnlPct >= 1.0 && this.peakPnlPct < 2 && pnlPctNow <= 0.4 && this.tickCount >= 4) {
       await this._executeExit(
         `MICRO_GAIN_LOCK: peak=+${this.peakPnlPct.toFixed(1)}%, now=+${pnlPctNow.toFixed(1)}% — locking remaining micro profit`,
+        gainLockMid,
       );
       return;
     }
@@ -1708,7 +1715,7 @@ export class OrderAgent {
   }
 
   /** Close the full position. Idempotent — CLOSING/CLOSED phases guard double-exit. */
-  private async _executeExit(reason: string): Promise<void> {
+  private async _executeExit(reason: string, limitPrice?: number): Promise<void> {
     if (this.phase === 'CLOSING' || this.phase === 'CLOSED') return;
     this.phase = 'CLOSING';
     this._stopTick();
@@ -1750,7 +1757,43 @@ export class OrderAgent {
 
     console.log(`[OrderAgent ${ticker} ${symbol}] Exiting qty=${currentQty} — ${reason}`);
 
-    const { alpacaOrderId, fillPrice: immediateExitFill, error } = await submitMarketSellOrder(symbol, currentQty);
+    // Use limit sell at mid-price for gain-lock exits; market sell for everything else.
+    let alpacaOrderId: string | undefined;
+    let immediateExitFill: number | undefined;
+    let error: string | undefined;
+    let orderType: 'limit' | 'market' = 'market';
+
+    if (limitPrice && limitPrice > 0) {
+      orderType = 'limit';
+      console.log(`[OrderAgent ${ticker} ${symbol}] Limit sell @ $${limitPrice.toFixed(2)} (mid-price)`);
+      const limitResult = await submitLimitSellOrder(symbol, currentQty, limitPrice);
+      alpacaOrderId = limitResult.alpacaOrderId;
+      immediateExitFill = limitResult.fillPrice;
+      error = limitResult.error;
+
+      // If limit order submitted but not immediately filled, poll for up to 15s
+      if (!immediateExitFill && alpacaOrderId && !error) {
+        const limitFill = await this._pollSellFill(alpacaOrderId);
+        if (limitFill) {
+          immediateExitFill = limitFill;
+          console.log(`[OrderAgent ${ticker} ${symbol}] Limit sell filled: $${limitFill}`);
+        } else {
+          // Limit didn't fill — cancel and fall back to market
+          console.warn(`[OrderAgent ${ticker} ${symbol}] Limit sell not filled in 15s — cancelling, falling back to market`);
+          await cancelOrder(alpacaOrderId);
+          orderType = 'market';
+          const marketResult = await submitMarketSellOrder(symbol, currentQty);
+          alpacaOrderId = marketResult.alpacaOrderId;
+          immediateExitFill = marketResult.fillPrice;
+          error = marketResult.error;
+        }
+      }
+    } else {
+      const marketResult = await submitMarketSellOrder(symbol, currentQty);
+      alpacaOrderId = marketResult.alpacaOrderId;
+      immediateExitFill = marketResult.fillPrice;
+      error = marketResult.error;
+    }
 
     // Detect Alpaca 42210000 — "position intent mismatch, inferred: sell_to_open".
     // This means Alpaca has no long position for this symbol (expired worthless, already
@@ -1800,7 +1843,7 @@ export class OrderAgent {
         alpacaOrderId,
         alpacaStatus:  error ? 'error' : (exitFill ? 'filled' : 'fill_pending'),
         orderSide:     'sell',
-        orderType:     'market',
+        orderType:     orderType,
         positionIntent: 'sell_to_close',
         submittedQty:  currentQty,
         filledQty:     exitFill ? currentQty : 0,
