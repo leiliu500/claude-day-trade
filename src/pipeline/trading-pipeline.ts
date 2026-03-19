@@ -12,6 +12,7 @@ import { insertSignalSnapshot } from '../db/repositories/signals.js';
 import { insertDecision } from '../db/repositories/decisions.js';
 import { v4 as uuidv4 } from 'uuid';
 import { config } from '../config.js';
+import { fetchOptionMid } from '../lib/alpaca-api.js';
 import type { TradingProfile } from '../types/market.js';
 import type { DecisionType, DecisionResult, PositionContext } from '../types/decision.js';
 import type { SignalPayload } from '../types/signal.js';
@@ -164,15 +165,45 @@ export async function runPipeline(
     signal.id = snapshotId;
 
     // ── Phase 7: Decision Orchestrator (or deterministic bypass) ──────────
+    // Run AI decision + fresh option quote fetch in PARALLEL to minimize price drift.
+    // The fresh quote is captured at the same time as the AI streams its decision,
+    // so by the time execution starts, the option price is current (not 1-3s stale).
     const registry = OrderAgentRegistry.getInstance();
     const hasActiveAgents = registry.getByTicker(ticker).some(
       a => a.getPhase() === 'MONITORING' || a.getPhase() === 'AWAITING_FILL',
     );
     const useAI = needsAIOrchestration(analysis, context, timeGateOk, hasActiveAgents);
-    const decision = useAI
-      ? await decisionOrchestrator.run({ signal, option: optionEval, analysis, context, timeGateOk })
-      : deterministicWait(signal, analysis, ticker, profile, timeGateOk, sessionId);
+    const optionSymbol = optionEval.winnerCandidate?.contract.symbol;
+
+    // Fire both concurrently: AI streams decision while fresh quote fetches
+    const [decision, freshMid] = await Promise.all([
+      useAI
+        ? decisionOrchestrator.run({ signal, option: optionEval, analysis, context, timeGateOk })
+        : deterministicWait(signal, analysis, ticker, profile, timeGateOk, sessionId),
+      optionSymbol ? fetchOptionMid(optionSymbol).catch(() => null) : Promise.resolve(null),
+    ]);
     console.log(`[Pipeline] Decision: ${decision.decisionType} (execute=${decision.shouldExecute}${useAI ? '' : ', deterministic'})`);
+
+    // Refresh candidate entry premium with the fresh quote captured during AI call.
+    // This ensures execution-agent sizing and order-agent limit price use a current price
+    // instead of the stale mid from Phase 4 (which may be 1-3s old after AI streaming).
+    if (freshMid !== null && optionEval.winnerCandidate) {
+      const oldMid = optionEval.winnerCandidate.entryPremium;
+      const driftPct = Math.abs(freshMid - oldMid) / oldMid;
+      if (driftPct > 0.005) { // update if moved more than 0.5%
+        console.log(
+          `[Pipeline] Fresh option mid: $${oldMid.toFixed(2)} → $${freshMid.toFixed(2)} ` +
+          `(drift=${(driftPct * 100).toFixed(1)}%, refreshed during AI call)`,
+        );
+        optionEval.winnerCandidate.entryPremium = freshMid;
+        // Recalculate stop and TP proportionally to preserve R:R ratio
+        const ratio = freshMid / oldMid;
+        const oldStop = optionEval.winnerCandidate.stopPremium;
+        const oldTp = optionEval.winnerCandidate.tpPremium;
+        optionEval.winnerCandidate.stopPremium = Math.round(oldStop * ratio * 100) / 100;
+        optionEval.winnerCandidate.tpPremium = Math.round(oldTp * ratio * 100) / 100;
+      }
+    }
 
     await insertDecision(decision);
 

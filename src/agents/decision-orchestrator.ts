@@ -222,16 +222,24 @@ export class DecisionOrchestrator {
     };
 
     try {
-      const msg = await openai.chat.completions.create({
+      // Stream the response to reduce time-to-decision: first tokens arrive sooner
+      // than waiting for the full response, and we parse JSON as soon as stream ends.
+      const stream = await openai.chat.completions.create({
         model: 'gpt-4o',
         max_tokens: 1024,
+        stream: true,
         messages: [
           { role: 'system', content: ORCHESTRATOR_SYSTEM },
           { role: 'user', content: userMessage },
         ],
       });
 
-      const text = msg.choices[0]?.message?.content ?? '{}';
+      let text = '';
+      for await (const chunk of stream) {
+        const delta = chunk.choices[0]?.delta?.content;
+        if (delta) text += delta;
+      }
+      if (!text) text = '{}';
       const clean = text.replace(/```json\n?/g, '').replace(/```\n?/g, '').trim();
       const parsed = JSON.parse(clean) as Partial<OrchestratorRawOutput>;
 
