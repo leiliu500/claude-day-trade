@@ -36,26 +36,29 @@ export async function fetchChartImage(opts: ChartOptions): Promise<Buffer | null
     const width = opts.width ?? 800;
     const height = opts.height ?? 600;
 
-    const params = new URLSearchParams();
-    params.append('symbol', symbol);
-    params.append('interval', interval);
-    params.append('width', String(width));
-    params.append('height', String(height));
-    params.append('theme', 'dark');
-    params.append('format', 'png');
-    // DI+/DI-/ADX
-    params.append('studies', 'Average Directional Index');
-    // VWAP
-    params.append('studies', 'VWAP');
-    // OBV
-    params.append('studies', 'On Balance Volume');
+    const body = {
+      symbol,
+      interval,
+      width,
+      height,
+      theme: 'dark',
+      format: 'png',
+      studies: [
+        { name: 'Average Directional Index' },  // DI+/DI-/ADX
+        { name: 'VWAP' },
+        { name: 'On Balance Volume' },
+      ],
+    };
 
-    const url = `${CHART_IMG_BASE}/v1/tradingview/advanced-chart?${params.toString()}`;
+    const url = `${CHART_IMG_BASE}/v2/tradingview/advanced-chart`;
 
     const res = await fetch(url, {
+      method: 'POST',
       headers: {
-        'Authorization': `Bearer ${CHART_IMG_API_KEY}`,
+        'x-api-key': CHART_IMG_API_KEY,
+        'Content-Type': 'application/json',
       },
+      body: JSON.stringify(body),
       signal: AbortSignal.timeout(15_000), // 15s timeout
     });
 
