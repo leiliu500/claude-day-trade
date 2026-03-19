@@ -626,13 +626,19 @@ export class OrderAgent {
 
       this.phase = 'MONITORING';
       this._forceNextAI = true;
+
+      // ── Initialize in-memory stop/TP/peak from DB immediately so stream
+      //    handler has valid values from its very first callback ──
+      await this._initPostFillState();
+
       // Subscribe to real-time quotes for immediate stop/TP detection
       AlpacaStreamManager.getInstance().watchOptionQuote(candidate.contract.symbol, (mid) => {
         void this._handlePriceUpdate(mid);
       });
       console.log(
         `[OrderAgent ${decision.ticker} ${candidate.contract.symbol}] ` +
-        `[STREAM] Filled qty=${filledQty} @ $${fillPrice ?? 'n/a'} → Phase: MONITORING`,
+        `[STREAM] Filled qty=${filledQty} @ $${fillPrice ?? 'n/a'} → Phase: MONITORING` +
+        ` (stop=$${this.currentStop?.toFixed(2) ?? 'n/a'}, tp=$${this.currentTp?.toFixed(2) ?? 'n/a'})`,
       );
 
       // ── Post-fill underlying drift check: exit immediately if stock reversed ──
@@ -848,13 +854,19 @@ export class OrderAgent {
 
       this.phase = 'MONITORING';
       this._forceNextAI = true;
+
+      // ── Initialize in-memory stop/TP/peak from DB immediately so stream
+      //    handler has valid values from its very first callback ──
+      await this._initPostFillState();
+
       // Subscribe to real-time quotes for immediate stop/TP detection
       AlpacaStreamManager.getInstance().watchOptionQuote(candidate.contract.symbol, (mid) => {
         void this._handlePriceUpdate(mid);
       });
       console.log(
         `[OrderAgent ${decision.ticker} ${candidate.contract.symbol}] ` +
-        `[POLL] Filled qty=${filledQty} @ $${fillPrice ?? 'n/a'} → Phase: MONITORING`,
+        `[POLL] Filled qty=${filledQty} @ $${fillPrice ?? 'n/a'} → Phase: MONITORING` +
+        ` (stop=$${this.currentStop?.toFixed(2) ?? 'n/a'}, tp=$${this.currentTp?.toFixed(2) ?? 'n/a'})`,
       );
 
       // ── Post-fill underlying drift check: exit immediately if stock reversed ──
@@ -879,6 +891,45 @@ export class OrderAgent {
   private _monitorRunning = false;
   /** Set when transitioning to MONITORING so the immediate post-fill tick always runs AI. */
   private _forceNextAI = false;
+
+  /**
+   * Initialize in-memory stop/TP/peak state from DB immediately after fill.
+   * Called BEFORE subscribing to stream quotes so the very first _handlePriceUpdate
+   * callback has valid stop/TP values — prevents the gap where TP is null and hard
+   * stop lacks the DB floor until the first _doMonitorPosition completes.
+   */
+  private async _initPostFillState(): Promise<void> {
+    const { candidate } = this.cfg;
+    const entry = this.fillPrice ?? candidate.entryPremium;
+
+    // Initialize peak tracking from fill price
+    if (this.highestPrice === null) this.highestPrice = entry;
+
+    try {
+      const pool = getPool();
+      const { rows } = await pool.query<{
+        current_stop: string | null;
+        current_tp: string | null;
+      }>(
+        `SELECT current_stop, current_tp FROM trading.position_journal WHERE id=$1 AND status='OPEN'`,
+        [this.positionId],
+      );
+      if (rows[0]) {
+        const dbStop = rows[0].current_stop ? parseFloat(rows[0].current_stop) : null;
+        const dbTp   = rows[0].current_tp   ? parseFloat(rows[0].current_tp)   : null;
+        this.currentStop = dbStop;
+        this.currentTp   = dbTp;
+      }
+    } catch (err) {
+      // Fallback to candidate values if DB read fails — better than null
+      this.currentStop = candidate.stopPremium ?? null;
+      this.currentTp   = candidate.tpPremium ?? null;
+      console.warn(
+        `[OrderAgent ${this.cfg.decision.ticker}] _initPostFillState DB read failed, ` +
+        `using candidate stop/tp: ${(err as Error).message}`,
+      );
+    }
+  }
 
   /**
    * Called on every real-time option quote update from the data stream.
@@ -1096,10 +1147,17 @@ export class OrderAgent {
     const ticker = decision.ticker;
 
     const priceMap     = await getAlpacaPositionPrices();
-    const currentPrice = priceMap.get(symbol);
+    let currentPrice = priceMap.get(symbol);
     if (currentPrice == null) {
-      console.warn(`[OrderAgent ${ticker}] No broker price for ${symbol} — tick ${this.tickCount} skipped (position may have closed at broker)`);
-      return;
+      // Broker may not have the position yet right after fill — fall back to
+      // option mid or fill price so deterministic rules still fire immediately.
+      const midFallback = await fetchOptionMid(symbol);
+      currentPrice = midFallback ?? this.fillPrice ?? undefined;
+      if (currentPrice == null) {
+        console.warn(`[OrderAgent ${ticker}] No broker price for ${symbol} — tick ${this.tickCount} skipped (position may have closed at broker)`);
+        return;
+      }
+      console.log(`[OrderAgent ${ticker}] Broker price unavailable — using fallback $${currentPrice.toFixed(2)} for tick ${this.tickCount}`);
     }
 
     const pool = getPool();
