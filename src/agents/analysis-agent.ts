@@ -331,12 +331,20 @@ function computeConfidence(signal: SignalPayload, option: OptionEvaluation): Con
   // Recent price action — checks last 3 LTF bars to verify price is actually moving
   // in the signal direction RIGHT NOW.  Lagging indicators (DMI, ADX) can say "bullish"
   // while price is actively declining.  This penalty catches that disconnect.
+  //
+  // CRITICAL: The MOST RECENT bar has disproportionate weight.  When earlier bars
+  // confirmed a trend but the latest bar flips direction, that's a reversal signal —
+  // lagging indicators (DMI/ADX) haven't caught up yet but price already turned.
+  // This prevents entries right at the point of direction change.
+  //
+  //   Direction change detected (last bar opposes, prior bars confirmed): -0.15
   //   All 3 recent bars oppose direction AND net move opposes: -0.12 (strong contradiction)
   //   2 of 3 bars oppose AND net move opposes: -0.08 (moderate contradiction)
   //   Net move opposes but bars are mixed: -0.04 (mild headwind)
+  //   Last bar opposes (but prior bars also mixed): -0.06 (latest bar reversal)
   //   Price action confirms direction: +0.04 (small bonus for real-time confirmation)
   // Uses LTF bars (most granular) for the freshest price action read.
-  // Clamped -0.12..+0.04
+  // Clamped -0.15..+0.04
   let recentPriceActionBonus = 0;
   if (signal.direction !== 'neutral' && ltf) {
     const bars = ltf.bars;
@@ -351,13 +359,32 @@ function computeConfidence(signal: SignalPayload, option: OptionEvaluation): Con
       const opposingBarCount = isBullish ? bearishBars : bullishBars;
       const confirmingBarCount = isBullish ? bullishBars : bearishBars;
 
-      if (netOpposes && opposingBarCount >= 3) {
+      // Direction change detection: the LAST bar is the key reversal signal.
+      // When prior bars confirmed the trend but the latest bar flips, lagging
+      // indicators still read "strong trend" but price has already turned.
+      const lastBar = recentBars[recentBars.length - 1]!;
+      const lastBarOpposes = isBullish
+        ? lastBar.close < lastBar.open   // bearish candle in bullish signal
+        : lastBar.close > lastBar.open;  // bullish candle in bearish signal
+      const priorBars = recentBars.slice(0, -1);
+      const priorConfirming = priorBars.filter(b =>
+        isBullish ? b.close > b.open : b.close < b.open
+      ).length;
+
+      if (lastBarOpposes && priorConfirming >= 2) {
+        // Direction change: prior bars built the trend, last bar reversed.
+        // This is the exact scenario where lagging indicators peak at the reversal.
+        recentPriceActionBonus = -0.15;
+      } else if (netOpposes && opposingBarCount >= 3) {
         recentPriceActionBonus = -0.12; // strong: all bars + net move oppose
       } else if (netOpposes && opposingBarCount >= 2) {
         recentPriceActionBonus = -0.08; // moderate: most bars + net move oppose
+      } else if (lastBarOpposes) {
+        // Last bar opposes but prior bars were mixed — still a warning
+        recentPriceActionBonus = -0.06;
       } else if (netOpposes) {
         recentPriceActionBonus = -0.04; // mild: net move opposes but bars are mixed
-      } else if (!netOpposes && confirmingBarCount >= 2) {
+      } else if (!netOpposes && confirmingBarCount >= 2 && !lastBarOpposes) {
         recentPriceActionBonus = 0.04;  // bonus: price action confirms direction
       }
     }
@@ -433,6 +460,14 @@ function computeConfidence(signal: SignalPayload, option: OptionEvaluation): Con
   // Skipped when recent price action confirms direction (recentPriceActionBonus > 0)
   // AND TR is only moderately contracted — genuine re-acceleration shows expanding bars.
   if (trContractionPenalty < 0 && recentPriceActionBonus <= 0) {
+    total = Math.min(total, 0.60);
+  }
+
+  // Hard gate: direction change detected — the most recent bar flipped against the
+  // signal while lagging indicators (DMI/ADX) still show a strong trend.  This is
+  // the exact moment when confidence peaks but price has already reversed.
+  // Cap confidence below entry threshold to prevent entries at reversal points.
+  if (recentPriceActionBonus <= -0.15) {
     total = Math.min(total, 0.60);
   }
 
