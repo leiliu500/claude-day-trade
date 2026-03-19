@@ -206,7 +206,12 @@ export class OrderAgent {
     const { decision, candidate, sizing, sessionId } = this.cfg;
     const ticker = decision.ticker;
 
-    // ── Stale entry guard: reject if option mid drifted since selection ────
+    // ── Stale entry guard + limit price refresh ────────────────────────────
+    // Re-check the option mid NOW (after the AI decision lag) and either:
+    //   1. Reject if drift > MAX_ENTRY_DRIFT_PCT (too stale to trust)
+    //   2. Recalculate limit price from fresh mid if drift > 1% (price moved meaningfully)
+    //   3. Keep original limit price if drift <= 1% (negligible)
+    let effectiveLimitPrice = sizing.limitPrice;
     try {
       const currentMid = await fetchOptionMid(candidate.contract.symbol);
       if (currentMid !== null && candidate.entryPremium > 0) {
@@ -231,6 +236,20 @@ export class OrderAgent {
           this._selfRemove();
           return;
         }
+
+        // Recalculate limit price from fresh mid when drift is meaningful (>1%)
+        if (driftPct > 0.01) {
+          const freshLimitPrice = Math.round((currentMid + 0.30 * candidate.contract.spread) * 100) / 100;
+          console.log(
+            `[OrderAgent ${ticker}] Limit price refreshed: ` +
+            `old=$${sizing.limitPrice.toFixed(2)} (mid=$${candidate.entryPremium.toFixed(2)}), ` +
+            `new=$${freshLimitPrice.toFixed(2)} (mid=$${currentMid.toFixed(2)}), ` +
+            `drift=${(driftPct * 100).toFixed(1)}%`,
+          );
+          effectiveLimitPrice = freshLimitPrice;
+          // Update sizing record so downstream (DB, notifications) reflect the actual submitted price
+          sizing.limitPrice = freshLimitPrice;
+        }
       }
     } catch (err) {
       // Don't block entry on a failed price check — limit order provides natural protection
@@ -244,7 +263,7 @@ export class OrderAgent {
       const resp = await submitLimitBuyOrder(
         candidate.contract.symbol,
         sizing.qty,
-        sizing.limitPrice,
+        effectiveLimitPrice,
       );
       alpacaResponse = resp as Record<string, string | undefined>;
     } catch (err) {
