@@ -189,6 +189,8 @@ export class OrderAgent {
   private streamConsecutiveDeclines = 0;
   /** Rolling price+timestamp buffer for velocity detection — keeps last 20 entries (~100s at 5s stream cadence). */
   private priceHistory: { price: number; ts: number }[] = [];
+  /** True once we've scaled out (sold half) at the profit-take threshold — prevents double-reduce. */
+  private hasScaledOut = false;
 
   constructor(private readonly cfg: OrderAgentConfig | RestoredOrderAgentConfig) {
     if ('positionId' in cfg) {
@@ -970,7 +972,7 @@ export class OrderAgent {
     else if (this.peakPnlPct >= 20) profitFloor = parseFloat((entry * 1.08).toFixed(2));
     else if (this.peakPnlPct >= 15) profitFloor = parseFloat((entry * 1.03).toFixed(2));
     else if (this.peakPnlPct >= 10) profitFloor = parseFloat(entry.toFixed(2));
-    else if (this.peakPnlPct >= 5)  profitFloor = parseFloat(entry.toFixed(2)); // breakeven floor once 5% peak reached
+    else if (this.peakPnlPct >= 5)  profitFloor = parseFloat((entry * 1.015).toFixed(2)); // +1.5% floor once 5% peak reached (was breakeven — too loose)
     else if (this.peakPnlPct >= 3)  profitFloor = parseFloat((entry * 0.995).toFixed(2)); // near-breakeven floor for small gains
     // currentStop is the last DB-synced value; use it as a floor too (never regress below DB stop)
     const streamStop = Math.max(rawTrailingStop, profitFloor, this.currentStop ?? 0);
@@ -1016,27 +1018,43 @@ export class OrderAgent {
       return;
     }
 
+    // ── Partial profit-take: sell half at +10% to lock in gains, let the rest ride ──
+    if (!this.hasScaledOut && pnlPct >= 10 && this.cfg.sizing.qty >= 2) {
+      this.hasScaledOut = true;
+      const reduceQty = Math.max(1, Math.floor(this.cfg.sizing.qty / 2));
+      console.log(
+        `[OrderAgent ${decision.ticker}] [STREAM] PARTIAL_TAKE: pnl=+${pnlPct.toFixed(1)}% — scaling out ${reduceQty} of ${this.cfg.sizing.qty} contracts`,
+      );
+      void this._executeReduce(`PARTIAL_TAKE [stream]: pnl=+${pnlPct.toFixed(1)}% — locking in half at +10%`, reduceQty);
+      // Don't return — let remaining position continue with tighter trailing stop
+    }
+
     // ── Dynamic trailing stop: lock in a percentage of peak gains ──
-    // Tighter retention rates to prevent excessive peak erosion:
-    //   Peak >= 15%: retain 65% (e.g. peak=20% → floor=13%)
-    //   Peak >= 10%: retain 60% (e.g. peak=11.5% → floor=6.9%)
-    //   Peak >=  5%: retain 45% (e.g. peak=8% → floor=3.6%)
+    // Time-decay bonus: after 10 min, tighten retention by up to +10% (capped at 20 min).
+    // Options lose value over time — the longer we hold moderate gains, the tighter we protect them.
+    const heldMinutes = Math.floor((now - new Date(this.openedAt).getTime()) / 60_000);
+    const timeBonus = Math.min(0.10, Math.max(0, (heldMinutes - 10) * 0.01)); // +1% per min after 10min, max +10%
+
+    //   Peak >= 15%: retain 65%+bonus   Peak >= 10%: retain 60%+bonus   Peak >= 5%: retain 55%+bonus
     if (this.peakPnlPct >= 15) {
-      const trailingFloor = this.peakPnlPct * 0.65;
+      const retain = Math.min(0.85, 0.65 + timeBonus);
+      const trailingFloor = this.peakPnlPct * retain;
       if (pnlPct <= trailingFloor) {
-        await this._executeExit(`TRAILING_STOP [stream]: peak=+${this.peakPnlPct.toFixed(1)}%, floor=+${trailingFloor.toFixed(1)}%, now=+${pnlPct.toFixed(1)}% — locking 65% of peak gains`);
+        await this._executeExit(`TRAILING_STOP [stream]: peak=+${this.peakPnlPct.toFixed(1)}%, floor=+${trailingFloor.toFixed(1)}% (retain=${(retain*100).toFixed(0)}%), now=+${pnlPct.toFixed(1)}%`);
         return;
       }
     } else if (this.peakPnlPct >= 10) {
-      const trailingFloor = this.peakPnlPct * 0.60;
+      const retain = Math.min(0.80, 0.60 + timeBonus);
+      const trailingFloor = this.peakPnlPct * retain;
       if (pnlPct <= trailingFloor) {
-        await this._executeExit(`TRAILING_STOP [stream]: peak=+${this.peakPnlPct.toFixed(1)}%, floor=+${trailingFloor.toFixed(1)}%, now=+${pnlPct.toFixed(1)}% — locking 60% of peak gains`);
+        await this._executeExit(`TRAILING_STOP [stream]: peak=+${this.peakPnlPct.toFixed(1)}%, floor=+${trailingFloor.toFixed(1)}% (retain=${(retain*100).toFixed(0)}%), now=+${pnlPct.toFixed(1)}%`);
         return;
       }
     } else if (this.peakPnlPct >= 5) {
-      const trailingFloor = this.peakPnlPct * 0.45;
+      const retain = Math.min(0.75, 0.55 + timeBonus);
+      const trailingFloor = this.peakPnlPct * retain;
       if (pnlPct <= trailingFloor) {
-        await this._executeExit(`TRAILING_STOP [stream]: peak=+${this.peakPnlPct.toFixed(1)}%, floor=+${trailingFloor.toFixed(1)}%, now=+${pnlPct.toFixed(1)}% — protecting moderate gains`);
+        await this._executeExit(`TRAILING_STOP [stream]: peak=+${this.peakPnlPct.toFixed(1)}%, floor=+${trailingFloor.toFixed(1)}% (retain=${(retain*100).toFixed(0)}%), now=+${pnlPct.toFixed(1)}%`);
         return;
       }
     }
@@ -1261,35 +1279,50 @@ export class OrderAgent {
       return;
     }
 
+    // ── Partial profit-take: sell half at +10% to lock in gains, let the rest ride ──
+    if (!this.hasScaledOut && pnlPctNow >= 10 && this.cfg.sizing.qty >= 2) {
+      this.hasScaledOut = true;
+      const reduceQty = Math.max(1, Math.floor(this.cfg.sizing.qty / 2));
+      console.log(
+        `[OrderAgent ${ticker}] PARTIAL_TAKE: pnl=+${pnlPctNow.toFixed(1)}% — scaling out ${reduceQty} of ${this.cfg.sizing.qty} contracts`,
+      );
+      void this._executeReduce(`PARTIAL_TAKE: pnl=+${pnlPctNow.toFixed(1)}% — locking in half at +10%`, reduceQty);
+    }
+
     // ── Profit-lock exits: deterministic — no consecutiveDeclines dependency ──
     // Fire purely on peak-erosion % + minimum hold time (tickCount).
     // Catches slow bleed-outs where small bounces reset consecutiveDeclines.
     // Ordered largest peak first so the tightest threshold wins.
 
     // ── Dynamic trailing stop: lock in a percentage of peak gains ──
-    // Tighter retention rates to prevent excessive peak erosion:
-    //   Peak >= 15%: retain 65%   Peak >= 10%: retain 60%   Peak >= 5%: retain 45%
+    // Time-decay bonus: after 10 min, tighten retention by up to +10% (capped at 20 min).
+    const heldMin = Math.floor((Date.now() - new Date(this.openedAt).getTime()) / 60_000);
+    const timeBonusPoll = Math.min(0.10, Math.max(0, (heldMin - 10) * 0.01));
+
     if (this.peakPnlPct >= 15) {
-      const trailingFloor = this.peakPnlPct * 0.65;
+      const retain = Math.min(0.85, 0.65 + timeBonusPoll);
+      const trailingFloor = this.peakPnlPct * retain;
       if (pnlPctNow <= trailingFloor) {
         await this._executeExit(
-          `TRAILING_STOP: peak=+${this.peakPnlPct.toFixed(1)}%, floor=+${trailingFloor.toFixed(1)}%, now=+${pnlPctNow.toFixed(1)}% — locking 65% of peak gains`,
+          `TRAILING_STOP: peak=+${this.peakPnlPct.toFixed(1)}%, floor=+${trailingFloor.toFixed(1)}% (retain=${(retain*100).toFixed(0)}%), now=+${pnlPctNow.toFixed(1)}%`,
         );
         return;
       }
     } else if (this.peakPnlPct >= 10) {
-      const trailingFloor = this.peakPnlPct * 0.60;
+      const retain = Math.min(0.80, 0.60 + timeBonusPoll);
+      const trailingFloor = this.peakPnlPct * retain;
       if (pnlPctNow <= trailingFloor) {
         await this._executeExit(
-          `TRAILING_STOP: peak=+${this.peakPnlPct.toFixed(1)}%, floor=+${trailingFloor.toFixed(1)}%, now=+${pnlPctNow.toFixed(1)}% — locking 60% of peak gains`,
+          `TRAILING_STOP: peak=+${this.peakPnlPct.toFixed(1)}%, floor=+${trailingFloor.toFixed(1)}% (retain=${(retain*100).toFixed(0)}%), now=+${pnlPctNow.toFixed(1)}%`,
         );
         return;
       }
     } else if (this.peakPnlPct >= 5) {
-      const trailingFloor = this.peakPnlPct * 0.45;
+      const retain = Math.min(0.75, 0.55 + timeBonusPoll);
+      const trailingFloor = this.peakPnlPct * retain;
       if (pnlPctNow <= trailingFloor) {
         await this._executeExit(
-          `TRAILING_STOP: peak=+${this.peakPnlPct.toFixed(1)}%, floor=+${trailingFloor.toFixed(1)}%, now=+${pnlPctNow.toFixed(1)}% — protecting moderate gains`,
+          `TRAILING_STOP: peak=+${this.peakPnlPct.toFixed(1)}%, floor=+${trailingFloor.toFixed(1)}% (retain=${(retain*100).toFixed(0)}%), now=+${pnlPctNow.toFixed(1)}%`,
         );
         return;
       }
@@ -1297,7 +1330,7 @@ export class OrderAgent {
 
     // ── Mature position profit protection ──────────────────────────────────────
     // After 40+ min, option theta decay accelerates. Lock in profits — no decline dependency.
-    const minutesHeld = Math.floor((Date.now() - new Date(this.openedAt).getTime()) / 60_000);
+    const minutesHeld = heldMin;
     if (minutesHeld >= 40 && pnlPctNow >= 15 && pnlPctNow < this.peakPnlPct * 0.85) {
       await this._executeExit(
         `MATURE_PROFIT_EXIT: held=${minutesHeld}min, pnl=+${pnlPctNow.toFixed(1)}%, peak=+${this.peakPnlPct.toFixed(1)}% — protecting mature profit`,
@@ -1846,7 +1879,7 @@ export class OrderAgent {
     else if (this.peakPnlPct >= 20) profitFloor = parseFloat((entryForTrail * 1.08).toFixed(2));
     else if (this.peakPnlPct >= 15) profitFloor = parseFloat((entryForTrail * 1.03).toFixed(2));
     else if (this.peakPnlPct >= 10) profitFloor = parseFloat(entryForTrail.toFixed(2));
-    else if (this.peakPnlPct >= 5)  profitFloor = parseFloat(entryForTrail.toFixed(2)); // breakeven floor once 5% peak reached
+    else if (this.peakPnlPct >= 5)  profitFloor = parseFloat((entryForTrail * 1.015).toFixed(2)); // +1.5% floor once 5% peak reached (was breakeven — too loose)
     else if (this.peakPnlPct >= 3)  profitFloor = parseFloat((entryForTrail * 0.995).toFixed(2)); // near-breakeven floor for small gains
 
     const trailingStop = parseFloat(Math.max(rawTrailingStop, profitFloor).toFixed(2));
