@@ -14,7 +14,7 @@ export interface ConfidenceBreakdown {
   momentumAccelBonus: number;      // -0.06..+0.05 — DI spread velocity: widening=accelerating, narrowing=decelerating
   structureBonus: number;          // -0.08..+0.06 — prior day levels (PDH/PDL) alignment bonus/penalty
   orbBonus: number;                // -0.08..+0.06 — opening range breakout direction alignment
-  recentPriceActionBonus: number;  // -0.15..+0.04 — last 3 LTF bars confirm or contradict signal direction (latest bar weighted heavily for reversal detection)
+  recentPriceActionBonus: number;  // -0.15..+0.08 — last 3 LTF bars confirm or contradict signal direction (latest bar weighted heavily for reversal detection)
   trContractionPenalty: number;    // -0.08..0 — penalty when recent LTF True Range is contracting (momentum drying up)
   lowVolPenalty: number;           // -0.10..0 — penalty when HTF ADX is very low (no real trend, theta trap)
   total: number;                   // clamped 0..1

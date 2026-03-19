@@ -194,10 +194,13 @@ function computeConfidence(signal: SignalPayload, option: OptionEvaluation): Con
   // Falling ADX = trend weakening (exhaustion) → penalty to avoid late entries
   // This directly addresses the "not too early, not too late" timing problem.
   // Uses HTF ADX slope (most reliable) with MTF as confirmation.
-  // Skipped when HTF ADX < 15 (no real trend to measure slope of).
+  // Applies when HTF ADX >= 15, OR when ADX >= 10 with a strong rising slope (>3).
+  // The strong-slope exception catches emerging trends where ADX is still building
+  // but price is clearly trending — prevents the 30-min gap where confidence stays
+  // low because ADX hasn't crossed the threshold yet.
   // Clamped -0.08..+0.06
   let trendPhaseBonus = 0;
-  if (signal.direction !== 'neutral' && htf.dmi.adx >= 15) {
+  if (signal.direction !== 'neutral' && (htf.dmi.adx >= 15 || (htf.dmi.adx >= 10 && htf.dmi.adxSlope > 3))) {
     const htfSlope = htf.dmi.adxSlope;
     const mtfSlope = mtf.dmi.adxSlope;
 
@@ -384,8 +387,10 @@ function computeConfidence(signal: SignalPayload, option: OptionEvaluation): Con
         recentPriceActionBonus = -0.06;
       } else if (netOpposes) {
         recentPriceActionBonus = -0.04; // mild: net move opposes but bars are mixed
+      } else if (!netOpposes && confirmingBarCount >= 3 && !lastBarOpposes) {
+        recentPriceActionBonus = 0.08;  // strong: all 3 bars + net move confirm direction
       } else if (!netOpposes && confirmingBarCount >= 2 && !lastBarOpposes) {
-        recentPriceActionBonus = 0.04;  // bonus: price action confirms direction
+        recentPriceActionBonus = 0.04;  // moderate: 2 of 3 bars confirm direction
       }
     }
   }
@@ -438,16 +443,22 @@ function computeConfidence(signal: SignalPayload, option: OptionEvaluation): Con
   // unreliable without trending ADX to back it up.
   //   HTF ADX < 15: -0.10 (no trend at all — directionless chop)
   //   HTF ADX 15-20: -0.05 (weak/emerging trend — marginal)
-  //   Skipped when a fresh DI cross is present (cross can precede the ADX rise).
+  //   Skipped when a recent DI cross (2-bar window) is present — cross precedes ADX rise.
+  //   Halved when price action confirms direction (bars are moving, ADX just hasn't caught up).
   // Clamped -0.10..0
   let lowVolPenalty = 0;
   if (signal.direction !== 'neutral') {
-    const htfFreshCross2 = signal.direction === 'bullish' ? htf.dmi.crossedUp : htf.dmi.crossedDown;
-    if (!htfFreshCross2) {
+    const htfRecentCross = signal.direction === 'bullish' ? htf.dmi.recentCrossUp : htf.dmi.recentCrossDown;
+    if (!htfRecentCross) {
       if (htf.dmi.adx < 15) {
         lowVolPenalty = -0.10;
       } else if (htf.dmi.adx < 20) {
         lowVolPenalty = -0.05;
+      }
+      // When price action confirms direction, ADX is lagging — halve the penalty.
+      // The bars are clearly moving in the signal direction, just ADX hasn't caught up.
+      if (lowVolPenalty < 0 && recentPriceActionBonus > 0) {
+        lowVolPenalty = lowVolPenalty / 2;
       }
     }
   }
