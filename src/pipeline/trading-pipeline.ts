@@ -230,6 +230,7 @@ export async function runPipeline(
         const newPositionId = await registry.createAndStart({
           decision, candidate: optionEval.winnerCandidate, sizing: newSizing, sessionId,
           entryConfidence: analysis.confidence, entryAlignment: signal.alignment, entryDirection: signal.direction,
+          signalPrice: signal.currentPrice,
         });
         if (!newPositionId) {
           console.warn(`[Pipeline] NEW_ENTRY: registry.createAndStart returned empty — position cap reached or agent.start() failed for ${ticker}`);
@@ -277,6 +278,7 @@ export async function runPipeline(
         const addPositionId = await registry.createAndStart({
           decision, candidate: optionEval.winnerCandidate, sizing: addSizing, sessionId,
           entryConfidence: analysis.confidence, entryAlignment: signal.alignment, entryDirection: signal.direction,
+          signalPrice: signal.currentPrice,
         });
         if (!addPositionId) {
           console.warn(`[Pipeline] ADD_POSITION: registry.createAndStart returned empty — position cap reached or agent.start() failed for ${ticker}`);
@@ -380,6 +382,7 @@ export async function runPipeline(
         const revPositionId = await registry.createAndStart({
           decision, candidate: optionEval.winnerCandidate, sizing: revSizing, sessionId,
           entryConfidence: analysis.confidence, entryAlignment: signal.alignment, entryDirection: signal.direction,
+          signalPrice: signal.currentPrice,
         });
         if (!revPositionId) {
           console.warn(`[Pipeline] REVERSE: registry.createAndStart returned empty — position cap reached or agent.start() failed for ${ticker}`);

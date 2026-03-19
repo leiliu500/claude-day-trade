@@ -61,6 +61,7 @@ export class OrderAgentRegistry {
     entryConfidence: number;
     entryAlignment: string;
     entryDirection: string;
+    signalPrice: number;
   }): Promise<string> {
     // Registry-level cap: never allow more than 2 concurrent positions per ticker.
     // ADD_POSITION is intentional scaling but must stay bounded.
@@ -82,6 +83,7 @@ export class OrderAgentRegistry {
       entryConfidence:  params.entryConfidence,
       entryAlignment:   params.entryAlignment,
       entryDirection:   params.entryDirection,
+      signalPrice:      params.signalPrice,
     };
 
     const agent = new OrderAgent(config);
@@ -532,6 +534,7 @@ export class OrderAgentRegistry {
           entryConfidence: decision.orchestrationConfidence,
           entryAlignment:  '',
           entryDirection:  '',
+          signalPrice:     0,
           positionId:      row.position_id,
           alpacaOrderId:   row.alpaca_order_id,
           openedAt:        row.opened_at,

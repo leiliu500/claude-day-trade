@@ -77,6 +77,8 @@ export interface OrderAgentConfig {
   entryConfidence: number;
   entryAlignment: string;
   entryDirection: string;
+  /** Underlying stock price at signal generation time — used for post-fill directional validation */
+  signalPrice: number;
 }
 
 /** Restored from DB on app restart. */
@@ -132,8 +134,9 @@ export interface OrderAgentOutcome {
 const TICK_INTERVAL_MS          = 10_000;   // 10 s — fast deterministic checks (was 30 s)
 const AI_TICK_INTERVAL          = 2;        // AI check every 2nd tick (~20 s) — balances responsiveness with mutex contention
 const FILL_TIMEOUT_MS           = 90_000;   // cancel unfilled limit order after 90 s
-const FILL_STALE_CHECK_MS    = 45_000; // check for adverse price move at 45 s
-const FILL_STALE_ABORT_PCT   = 0.15;  // cancel if current mid dropped > 15% below limit price
+const FILL_STALE_CHECK_MS    = 20_000; // first stale check at 20 s (was 45 s — too late to catch reversals)
+const FILL_STALE_ABORT_PCT   = 0.10;  // cancel if current mid dropped > 10% below limit price (was 15%)
+const UNDERLYING_DRIFT_PCT   = 0.0025; // 0.25% underlying move against signal direction → stale signal exit
 
 const openai            = new OpenAI({ apiKey: config.OPENAI_API_KEY });
 const ORDER_AGENT_SKILL = loadSkill('order-agent');
@@ -160,7 +163,6 @@ export class OrderAgent {
   /** Rolling buffer of last 5 pnlPctNow values — used to detect sustained-loss hold traps. */
   private recentTickPnls: number[] = [];
   /** True once the 45 s stale-price fill check has run (runs at most once per order). */
-  private fillStaleChecked = false;
   /**
    * Mutex: true while an AI evaluation (_runAIDecision) is in-flight.
    * Prevents concurrent calls from the 30 s tick and the orchestrator pipeline
@@ -632,6 +634,10 @@ export class OrderAgent {
         `[OrderAgent ${decision.ticker} ${candidate.contract.symbol}] ` +
         `[STREAM] Filled qty=${filledQty} @ $${fillPrice ?? 'n/a'} → Phase: MONITORING`,
       );
+
+      // ── Post-fill underlying drift check: exit immediately if stock reversed ──
+      if (await this._checkUnderlyingDrift('[STREAM]')) return;
+
       // Immediately run the first monitor tick instead of waiting up to 30 s
       // for the next setInterval fire (which would then also delay the AI check
       // by another 30 s due to AI_TICK_INTERVAL = 2).
@@ -668,6 +674,55 @@ export class OrderAgent {
   }
 
   /**
+   * Post-fill underlying drift check.
+   * Compares the current stock price against the signal-time price.
+   * If the underlying moved against the signal direction by more than UNDERLYING_DRIFT_PCT,
+   * the signal thesis is stale — exit immediately rather than waiting for bad-entry-cut rules.
+   * Returns true if the position was exited (caller should return early).
+   */
+  private async _checkUnderlyingDrift(tag: string): Promise<boolean> {
+    const { decision, candidate, signalPrice } = this.cfg;
+    const direction = this.cfg.entryDirection;
+
+    // Skip for restored agents (signalPrice = 0) or missing data
+    if (!signalPrice || !direction || direction === 'neutral') return false;
+
+    try {
+      const stream = AlpacaStreamManager.getInstance();
+      const bars = stream.getBars(decision.ticker, '1m', 1);
+      if (!bars || bars.length === 0) return false;
+
+      const nowPrice = bars[bars.length - 1]!.close;
+      const movePct = (nowPrice - signalPrice) / signalPrice;
+
+      // For bullish signals: stock dropping is adverse. For bearish: stock rising is adverse.
+      const adverse = direction === 'bullish' ? -movePct : movePct;
+
+      if (adverse > UNDERLYING_DRIFT_PCT) {
+        const moveDesc = direction === 'bullish'
+          ? `dropped ${(-movePct * 100).toFixed(2)}%`
+          : `rose ${(movePct * 100).toFixed(2)}%`;
+        console.warn(
+          `[OrderAgent ${decision.ticker} ${candidate.contract.symbol}] ` +
+          `${tag} SIGNAL_STALE — underlying ${moveDesc} since signal ` +
+          `($${signalPrice.toFixed(2)} → $${nowPrice.toFixed(2)}), ` +
+          `threshold=${(UNDERLYING_DRIFT_PCT * 100).toFixed(2)}% — exiting immediately`,
+        );
+        await this._executeExit(
+          `SIGNAL_STALE ${tag}: underlying ${decision.ticker} ${moveDesc} since signal ` +
+          `($${signalPrice.toFixed(2)} → $${nowPrice.toFixed(2)}) — direction reversed`,
+        );
+        return true;
+      }
+    } catch (err) {
+      console.warn(
+        `[OrderAgent ${decision.ticker}] ${tag} Underlying drift check skipped: ${(err as Error).message}`,
+      );
+    }
+    return false;
+  }
+
+  /**
    * 30 s polling fallback for fill detection.
    * Runs every tick while in AWAITING_FILL phase.
    * Harmless if _handleTradeUpdate already transitioned to MONITORING.
@@ -695,11 +750,10 @@ export class OrderAgent {
       return;
     }
 
-    // Mid-wait stale-price guard: if the underlying has moved against us significantly
-    // since the order was placed, cancel rather than risk filling into a losing entry.
-    // Only checked once at the FILL_STALE_CHECK_MS mark (first tick after 45 s).
-    if (elapsedMs >= FILL_STALE_CHECK_MS && !this.fillStaleChecked) {
-      this.fillStaleChecked = true;
+    // Mid-wait stale-price guard: if the option mid has dropped significantly from our
+    // limit price, cancel rather than risk filling into a losing entry.
+    // Checked every tick starting at FILL_STALE_CHECK_MS (20s) — continuous, not one-shot.
+    if (elapsedMs >= FILL_STALE_CHECK_MS) {
       const { decision, candidate } = this.cfg;
       const currentMid = await fetchOptionMid(candidate.contract.symbol);
       if (currentMid !== null) {
@@ -726,6 +780,43 @@ export class OrderAgent {
           }).catch(() => {});
           this._selfRemove();
           return;
+        }
+      }
+    }
+
+    // Pre-fill underlying drift: cancel order if stock already reversed since signal
+    if (elapsedMs >= FILL_STALE_CHECK_MS && this.cfg.signalPrice > 0) {
+      const { decision: d, candidate: c, signalPrice, entryDirection } = this.cfg;
+      if (entryDirection && entryDirection !== 'neutral') {
+        const stream = AlpacaStreamManager.getInstance();
+        const bars = stream.getBars(d.ticker, '1m', 1);
+        if (bars && bars.length > 0) {
+          const nowPrice = bars[bars.length - 1]!.close;
+          const movePct = (nowPrice - signalPrice) / signalPrice;
+          const adverse = entryDirection === 'bullish' ? -movePct : movePct;
+          if (adverse > UNDERLYING_DRIFT_PCT) {
+            const moveDesc = entryDirection === 'bullish'
+              ? `dropped ${(-movePct * 100).toFixed(2)}%`
+              : `rose ${(movePct * 100).toFixed(2)}%`;
+            console.warn(
+              `[OrderAgent ${d.ticker} ${c.contract.symbol}] ` +
+              `PREFILL_STALE — underlying ${moveDesc} since signal ` +
+              `($${signalPrice.toFixed(2)} → $${nowPrice.toFixed(2)}) — cancelling unfilled order`,
+            );
+            if (this.alpacaOrderId) AlpacaStreamManager.getInstance().unwatchOrder(this.alpacaOrderId);
+            await cancelOpenOrdersForSymbol(c.contract.symbol);
+            await this._voidPosition('prefill_underlying_stale');
+            this.phase = 'FAILED';
+            this._stopTick();
+            void notifyAlert(
+              `<b>Pre-fill cancel</b> — ${d.ticker}\n` +
+              `Underlying ${moveDesc} since signal\n` +
+              `Signal: $${signalPrice.toFixed(2)} → Now: $${nowPrice.toFixed(2)}\n` +
+              `Direction: ${entryDirection}`,
+            );
+            this._selfRemove();
+            return;
+          }
         }
       }
     }
@@ -765,6 +856,10 @@ export class OrderAgent {
         `[OrderAgent ${decision.ticker} ${candidate.contract.symbol}] ` +
         `[POLL] Filled qty=${filledQty} @ $${fillPrice ?? 'n/a'} → Phase: MONITORING`,
       );
+
+      // ── Post-fill underlying drift check: exit immediately if stock reversed ──
+      if (await this._checkUnderlyingDrift('[POLL]')) return;
+
       // Immediately run the first monitor tick instead of waiting for the next interval.
       void this._monitorPosition();
 
