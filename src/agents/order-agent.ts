@@ -1037,14 +1037,15 @@ export class OrderAgent {
       return;
     }
 
-    // ── Partial profit-take: sell half at +10% to lock in gains, let the rest ride ──
-    if (!this.hasScaledOut && pnlPct >= 10 && this.cfg.sizing.qty >= 2) {
+    // ── Partial profit-take: sell half at +8% to lock in gains, let the rest ride ──
+    // Lowered from +10% → +8%: short-dated options fade quickly — secure profits earlier.
+    if (!this.hasScaledOut && pnlPct >= 8 && this.cfg.sizing.qty >= 2) {
       this.hasScaledOut = true;
       const reduceQty = Math.max(1, Math.floor(this.cfg.sizing.qty / 2));
       console.log(
         `[OrderAgent ${decision.ticker}] [STREAM] PARTIAL_TAKE: pnl=+${pnlPct.toFixed(1)}% — scaling out ${reduceQty} of ${this.cfg.sizing.qty} contracts`,
       );
-      void this._executeReduce(`PARTIAL_TAKE [stream]: pnl=+${pnlPct.toFixed(1)}% — locking in half at +10%`, reduceQty);
+      void this._executeReduce(`PARTIAL_TAKE [stream]: pnl=+${pnlPct.toFixed(1)}% — locking in half at +8%`, reduceQty);
       // Don't return — let remaining position continue with tighter trailing stop
     }
 
@@ -1054,7 +1055,7 @@ export class OrderAgent {
     const heldMinutes = Math.floor((now - new Date(this.openedAt).getTime()) / 60_000);
     const timeBonus = Math.min(0.10, Math.max(0, (heldMinutes - 10) * 0.01)); // +1% per min after 10min, max +10%
 
-    //   Peak >= 15%: retain 65%+bonus   Peak >= 10%: retain 60%+bonus   Peak >= 5%: retain 55%+bonus
+    //   Peak >= 15%: retain 65%+bonus   Peak >= 10%: retain 60%+bonus   Peak >= 5%: retain 65%+bonus
     if (this.peakPnlPct >= 15) {
       const retain = Math.min(0.85, 0.65 + timeBonus);
       const trailingFloor = this.peakPnlPct * retain;
@@ -1070,7 +1071,9 @@ export class OrderAgent {
         return;
       }
     } else if (this.peakPnlPct >= 5) {
-      const retain = Math.min(0.75, 0.55 + timeBonus);
+      // Tightened from 55% → 65%: short-dated options give back gains fast.
+      // At 7% peak, old floor was +3.85% → new floor +4.55% — captures ~1% more.
+      const retain = Math.min(0.80, 0.65 + timeBonus);
       const trailingFloor = this.peakPnlPct * retain;
       if (pnlPct <= trailingFloor) {
         await this._executeExit(`TRAILING_STOP [stream]: peak=+${this.peakPnlPct.toFixed(1)}%, floor=+${trailingFloor.toFixed(1)}% (retain=${(retain*100).toFixed(0)}%), now=+${pnlPct.toFixed(1)}%`);
@@ -1105,10 +1108,15 @@ export class OrderAgent {
           await this._executeExit(`VELOCITY_FADE [stream]: ${velocityPct.toFixed(1)}% in ${((now - oldest.ts) / 1000).toFixed(0)}s, pnl=${pnlPct.toFixed(1)}% — accelerating loss`);
           return;
         }
-        // Profit velocity reversal: scale sensitivity with peak — higher peaks get tighter thresholds
+        // Profit velocity reversal: scale sensitivity with peak AND current profit level.
         //   Peak >= 8%: trigger at -2% velocity (protect larger gains aggressively)
         //   Peak >= 5%: trigger at -2.5% velocity
-        const velThreshold = this.peakPnlPct >= 8 ? -2 : -2.5;
+        //   Exception: if still > 50% of peak profit, relax by 0.5% to avoid exiting healthy retracements.
+        //   E.g. peak 7%, now 5% (71% of peak) → threshold relaxed from -2.5% to -3.0%.
+        //   This prevents premature exits when a position is still solidly profitable.
+        let velThreshold = this.peakPnlPct >= 8 ? -2 : -2.5;
+        const retainedPct = this.peakPnlPct > 0 ? (pnlPct / this.peakPnlPct) : 0;
+        if (retainedPct > 0.50) velThreshold -= 0.5; // still holding >50% of peak → relax threshold
         if (velocityPct <= velThreshold && pnlPct > 0 && this.peakPnlPct >= 5) {
           await this._executeExit(`VELOCITY_PROFIT_DROP [stream]: ${velocityPct.toFixed(1)}% in ${((now - oldest.ts) / 1000).toFixed(0)}s, pnl=+${pnlPct.toFixed(1)}%, peak=+${this.peakPnlPct.toFixed(1)}% — rapid profit erosion`);
           return;
@@ -1134,7 +1142,19 @@ export class OrderAgent {
 
     // ── Bad entry fast-cut rules (minimize loss on entries that were immediately wrong) ──
 
-    // Never confirmed: position never went positive within first 3 ticks (~30s) and already -1.5%
+    // Declining since fill: price has dropped on every stream tick since fill AND never reached +1%.
+    // Catches the pattern where price slowly slides from fill without ever truly confirming,
+    // eventually leading to a velocity crash. A brief wick to +0.5% doesn't count as confirmation.
+    // Exits at 3 consecutive stream declines (~15s) before the crash materializes.
+    // Minimum -1% loss to avoid triggering on fill-bar noise.
+    if (this.peakPnlPct < 1.0 && pnlPct <= -1.0 && this.streamConsecutiveDeclines >= 3 && this.tickCount >= 2) {
+      await this._executeExit(`DECLINING_SINCE_FILL [stream]: peak=+${this.peakPnlPct.toFixed(1)}%, now=${pnlPct.toFixed(1)}%, ${this.streamConsecutiveDeclines} consecutive stream drops — never confirmed, cutting`);
+      return;
+    }
+
+    // Never confirmed: position never went positive within first 3 stream ticks (~30s) and already -1.5%.
+    // We keep the 3-tick minimum to allow fill-bar noise to settle — exiting at tick 2 can
+    // catch a deeper dip before a partial bounce (Trade #1: tick 2 was -2.4% but exit was -2.1%).
     if (this.peakPnlPct < 0.3 && pnlPct <= -1.5 && this.tickCount >= 3 && this.tickCount <= 8) {
       await this._executeExit(`NEVER_CONFIRMED [stream]: peak=+${this.peakPnlPct.toFixed(1)}%, now=${pnlPct.toFixed(1)}% — price never went positive, cutting early`);
       return;
@@ -1298,14 +1318,15 @@ export class OrderAgent {
       return;
     }
 
-    // ── Partial profit-take: sell half at +10% to lock in gains, let the rest ride ──
-    if (!this.hasScaledOut && pnlPctNow >= 10 && this.cfg.sizing.qty >= 2) {
+    // ── Partial profit-take: sell half at +8% to lock in gains, let the rest ride ──
+    // Lowered from +10% → +8%: short-dated options fade quickly — secure profits earlier.
+    if (!this.hasScaledOut && pnlPctNow >= 8 && this.cfg.sizing.qty >= 2) {
       this.hasScaledOut = true;
       const reduceQty = Math.max(1, Math.floor(this.cfg.sizing.qty / 2));
       console.log(
         `[OrderAgent ${ticker}] PARTIAL_TAKE: pnl=+${pnlPctNow.toFixed(1)}% — scaling out ${reduceQty} of ${this.cfg.sizing.qty} contracts`,
       );
-      void this._executeReduce(`PARTIAL_TAKE: pnl=+${pnlPctNow.toFixed(1)}% — locking in half at +10%`, reduceQty);
+      void this._executeReduce(`PARTIAL_TAKE: pnl=+${pnlPctNow.toFixed(1)}% — locking in half at +8%`, reduceQty);
     }
 
     // ── Profit-lock exits: deterministic — no consecutiveDeclines dependency ──
@@ -1337,7 +1358,8 @@ export class OrderAgent {
         return;
       }
     } else if (this.peakPnlPct >= 5) {
-      const retain = Math.min(0.75, 0.55 + timeBonusPoll);
+      // Tightened from 55% → 65%: short-dated options give back gains fast.
+      const retain = Math.min(0.80, 0.65 + timeBonusPoll);
       const trailingFloor = this.peakPnlPct * retain;
       if (pnlPctNow <= trailingFloor) {
         await this._executeExit(
@@ -1404,7 +1426,9 @@ export class OrderAgent {
           );
           return;
         }
-        const velThreshold = this.peakPnlPct >= 8 ? -2 : -2.5;
+        let velThreshold = this.peakPnlPct >= 8 ? -2 : -2.5;
+        const retainedPctPoll = this.peakPnlPct > 0 ? (pnlPctNow / this.peakPnlPct) : 0;
+        if (retainedPctPoll > 0.50) velThreshold -= 0.5; // still holding >50% of peak → relax
         if (velocityPct <= velThreshold && pnlPctNow > 0 && this.peakPnlPct >= 5) {
           await this._executeExit(
             `VELOCITY_PROFIT_DROP: ${velocityPct.toFixed(1)}% in ${((nowMs - oldest.ts) / 1000).toFixed(0)}s, pnl=+${pnlPctNow.toFixed(1)}%, peak=+${this.peakPnlPct.toFixed(1)}% — rapid profit erosion`,
