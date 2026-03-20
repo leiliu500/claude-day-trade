@@ -715,12 +715,6 @@ async function main() {
       process.stdout.write(`  Processed ${tickCount} ticks (${timeET} ET, $${currentPrice.toFixed(2)}, ${direction} ${alignment} conf=${cb.total.toFixed(2)})\n`);
     }
 
-    // DEBUG
-    const etMin = parseInt(timeET.split(':')[0]!) * 60 + parseInt(timeET.split(':')[1]!);
-    if (etMin >= 12*60+20 && etMin <= 12*60+50) {
-      const b = cb;
-      process.stdout.write(`\n  DBG ${timeET} $${currentPrice.toFixed(2)} ${direction} ${alignment} | base=${b.base.toFixed(3)} diSpr=${b.diSpreadBonus.toFixed(3)} adx=${b.adxBonus.toFixed(3)} diX=${b.diCrossBonus.toFixed(3)} align=${b.alignmentBonus.toFixed(3)} td=${b.tdAdjustment.toFixed(3)} obv=${b.obvBonus.toFixed(3)} vwap=${b.vwapBonus.toFixed(3)} oi=${b.oiVolumeBonus.toFixed(3)} prPos=${b.pricePositionAdjustment.toFixed(3)} adxMat=${b.adxMaturityPenalty.toFixed(3)} trendPh=${b.trendPhaseBonus.toFixed(3)} momAcc=${b.momentumAccelBonus.toFixed(3)} struct=${b.structureBonus.toFixed(3)} orb=${b.orbBonus.toFixed(3)} pa=${b.recentPriceActionBonus.toFixed(3)} trCont=${b.trContractionPenalty.toFixed(3)} lowVol=${b.lowVolPenalty.toFixed(3)} moveExh=${b.moveExhaustionPenalty.toFixed(3)} consol=${b.consolidationPenalty.toFixed(3)} nearLvl=${b.nearLevelPenalty.toFixed(3)} theta=${b.thetaDecayPenalty.toFixed(3)} | TOTAL=${b.total.toFixed(3)}\n`);
-    }
 
   }
 
