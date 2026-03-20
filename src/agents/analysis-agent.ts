@@ -463,11 +463,8 @@ function computeConfidence(signal: SignalPayload, option: OptionEvaluation): Con
       } else if (htf.dmi.adx < 20) {
         lowVolPenalty = -0.05;
       }
-      // When price action confirms direction, ADX is lagging — halve the penalty.
-      // The bars are clearly moving in the signal direction, just ADX hasn't caught up.
-      if (lowVolPenalty < 0 && recentPriceActionBonus > 0) {
-        lowVolPenalty = lowVolPenalty / 2;
-      }
+      // NOTE: Price action confirmation does NOT reduce low-vol penalty.
+      // In low-ADX environments, confirming bars are noise, not signal.
     }
   }
 
@@ -475,11 +472,11 @@ function computeConfidence(signal: SignalPayload, option: OptionEvaluation): Con
   // Uses HTF bars to measure the recent move magnitude relative to ATR.
   // After a big move (e.g. $3 drop on SPY), lagging indicators still read "strong trend" but
   // entering is chasing — most of the edge is gone and a bounce/consolidation is likely.
-  //   Move ≥ 3.0× ATR in signal direction: -0.12 (major move complete, extreme chasing risk)
-  //   Move ≥ 2.0× ATR: -0.08 (large move, high chasing risk)
-  //   Move ≥ 1.5× ATR: -0.04 (moderate move, some chasing risk)
+  //   Move ≥ 2.5× ATR in signal direction: -0.15 (major move complete, extreme chasing risk)
+  //   Move ≥ 1.5× ATR: -0.10 (large move, high chasing risk)
+  //   Move ≥ 1.0× ATR: -0.06 (moderate move, some chasing risk)
   // Skipped when a fresh HTF DI cross is present (cross = new phase, not exhaustion).
-  // Clamped -0.12..0
+  // Clamped -0.15..0
   let moveExhaustionPenalty = 0;
   if (signal.direction !== 'neutral' && !htfFreshCross && htf.bars.length >= 6) {
     const recentHTF = htf.bars.slice(-5); // last 5 HTF bars
@@ -499,18 +496,16 @@ function computeConfidence(signal: SignalPayload, option: OptionEvaluation): Con
       // Only penalize if the move was IN the signal direction (we'd be chasing it)
       if (moveInDirection > 0) {
         const moveATRs = moveInDirection / htfATR;
-        if (moveATRs >= 3.0) {
-          moveExhaustionPenalty = -0.12;
-        } else if (moveATRs >= 2.0) {
-          moveExhaustionPenalty = -0.08;
+        if (moveATRs >= 2.5) {
+          moveExhaustionPenalty = -0.15;
         } else if (moveATRs >= 1.5) {
-          moveExhaustionPenalty = -0.04;
+          moveExhaustionPenalty = -0.10;
+        } else if (moveATRs >= 1.0) {
+          moveExhaustionPenalty = -0.06;
         }
-        // When price action confirms direction (bars actively continuing the move),
-        // halve the penalty — this is fresh momentum extending the move, not chasing.
-        if (recentPriceActionBonus > 0 && moveExhaustionPenalty < 0) {
-          moveExhaustionPenalty = moveExhaustionPenalty / 2;
-        }
+        // NOTE: Price action confirmation does NOT reduce exhaustion penalty.
+        // At the tail end of an exhausted move, recent bars still confirm direction
+        // — that's what "chasing" looks like, not fresh momentum.
       }
     }
   }
@@ -525,7 +520,7 @@ function computeConfidence(signal: SignalPayload, option: OptionEvaluation): Con
   // Skipped when recent price action strongly confirms direction (recentPriceActionBonus >= 0.04)
   // Clamped -0.10..0
   let consolidationPenalty = 0;
-  if (signal.direction !== 'neutral' && ltf && ltf.bars.length >= 8 && recentPriceActionBonus < 0.04) {
+  if (signal.direction !== 'neutral' && ltf && ltf.bars.length >= 8) {
     const chopBars = ltf.bars.slice(-6); // last 6 LTF bars
     const totalBarRange = chopBars.reduce((sum, b) => sum + (b.high - b.low), 0);
     let overallHigh = -Infinity;
@@ -586,11 +581,8 @@ function computeConfidence(signal: SignalPayload, option: OptionEvaluation): Con
         nearLevelPenalty = -0.03;
       }
     }
-    // When price action confirms the move (bars actively pushing through the level),
-    // halve the penalty — this distinguishes a breakdown from a bounce approach.
-    if (activeBreakdown && nearLevelPenalty < 0) {
-      nearLevelPenalty = nearLevelPenalty / 2;
-    }
+    // NOTE: Price action confirmation does NOT reduce near-level penalty.
+    // Confirming bars near support/resistance are the tail end before a bounce.
   }
 
   // Theta decay penalty — penalizes short-dated option entries as expiration approaches.
@@ -678,8 +670,21 @@ function computeConfidence(signal: SignalPayload, option: OptionEvaluation): Con
   // Hard gate: move already exhausted + consolidation.  When a large move has played out
   // AND price is now chopping sideways, the setup is spent — even strong indicators are
   // just reflecting the completed move, not predicting continuation.
-  if (moveExhaustionPenalty <= -0.08 && consolidationPenalty < 0) {
+  if (moveExhaustionPenalty <= -0.06 && consolidationPenalty < 0) {
     total = Math.min(total, 0.58);
+  }
+
+  // Hard gate: severe move exhaustion (2.5+ ATR).  At this magnitude, the move is almost
+  // certainly done regardless of what other indicators say.  Cap below entry threshold.
+  if (moveExhaustionPenalty <= -0.15) {
+    total = Math.min(total, 0.60);
+  }
+
+  // Hard gate: mature trend + exhaustion.  When ADX has been above 25 for 10+ bars AND
+  // the move is 1.0+ ATR extended, the trend is late-stage and stretched — entering now
+  // is chasing the tail end.  PA still reads "confirming" but the edge is gone.
+  if (adxMaturityPenalty <= -0.08 && moveExhaustionPenalty <= -0.06) {
+    total = Math.min(total, 0.62);
   }
 
   // Hard gate: 0DTE with extreme theta (≤ 30 min to close).
