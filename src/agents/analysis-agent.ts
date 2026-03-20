@@ -54,6 +54,12 @@ function computeConfidence(signal: SignalPayload, option: OptionEvaluation): Con
     // Growth cross (DI cross + rising ADX) is a phase-change signal — extra bonus
     const htfGrowth = signal.direction === 'bullish' ? htf.dmi.growthCrossUp : htf.dmi.growthCrossDown;
     if (htfGrowth) diCrossBonus += 0.04;
+    // Discount cross bonus when HTF ADX is low AND declining — a cross in a fading
+    // low-ADX market is unreliable (loser #5: ADX=13, slope=-2.1).
+    // Any positive ADX slope means trend is emerging — trust the cross.
+    if (diCrossBonus > 0 && htf.dmi.adx < 20 && htf.dmi.adxSlope <= 0) {
+      diCrossBonus *= 0.50; // half credit for crosses in low-ADX with declining momentum
+    }
     diCrossBonus = Math.max(-0.06, Math.min(0.10, diCrossBonus));
   }
 
@@ -147,6 +153,15 @@ function computeConfidence(signal: SignalPayload, option: OptionEvaluation): Con
     } else {
       if (htfPrice < htfLower)              vwapBonus += beyond2sigPenalty;
       else if (htfPrice < htfVwap - htfDev) vwapBonus += beyond1sigPenalty;
+    }
+    // Suppress positive VWAP bonus when HTF DI spread is narrowing — being on the "right"
+    // side of VWAP during a fading trend is a mean-reversion trap, not a confirmation.
+    // Losers #1 (diSlope=-0.8), #4 (diSlope=-6.5), #5 (diSlope=+1.4 but ADX declining) all
+    // had positive VWAP bonuses that inflated confidence during exhausting moves.
+    // Only suppress when momentum is clearly fading (slope < -2), not on minor fluctuations.
+    // Threshold -1 was too aggressive — killed winners with mild slope jitter.
+    if (vwapBonus > 0 && htf.dmi.diSpreadSlope < -2) {
+      vwapBonus = 0; // VWAP alignment is unreliable when momentum is clearly fading
     }
     vwapBonus = Math.max(-0.12, Math.min(0.10, vwapBonus));
   }
@@ -271,20 +286,35 @@ function computeConfidence(signal: SignalPayload, option: OptionEvaluation): Con
 
   // Price position adjustment — penalizes entering in the direction of an already-extended move.
   // Uses HTF rangePosition: 0.0 = at swing low, 1.0 = at swing high.
-  //   Bullish from upper half: price already extended up, limited upside → penalty up to -0.08
-  //   Bearish from lower half: price already extended down, limited downside → penalty up to -0.08
+  //   Bullish from upper half: price already extended up, limited upside → penalty up to -0.12
+  //   Bearish from lower half: price already extended down, limited downside → penalty up to -0.12
   //   Bullish from lower half / bearish from upper half = following momentum with room to run (no penalty).
-  // Mutually exclusive with adxMaturityPenalty: both measure the same "extended trend" condition.
-  // When adxMaturityPenalty already applies, skip this to avoid double-penalizing valid trend entries.
+  // Extreme positions (>85% bullish or <15% bearish) get aggressive penalty — entering at the edge
+  // of a range is almost always chasing the last move.
+  // Losers #2 (93%), #4 (81%), #6 (9%) all entered at range extremes.
   let pricePositionAdjustment = 0;
-  if (adxMaturityPenalty === 0) {
+  {
     const htfRangePosition = htf.priceStructure.rangePosition;
+    // Strong active trend (ADX > 25 + rising) means genuine breakout/breakdown — range is
+    // resetting, not about to reverse. Exempt from extreme penalty.
+    // Very low ADX (< 15) means the swing range is too narrow to be meaningful — the
+    // extreme penalty (-0.12) would punish entries in ranges of just $0.50-1.00.
+    // The gradual penalty still applies via the normal path.
+    const strongActiveTrend = htf.dmi.adx > 25 && htf.dmi.adxSlope > 0;
+    const extremePenaltyApplies = !strongActiveTrend && htf.dmi.adx >= 15;
+
     if (signal.direction === 'bullish' && htfRangePosition > 0.5) {
-      // Bullish from upper half — price already extended, limited upside
-      pricePositionAdjustment = Math.max(-0.08, -(htfRangePosition - 0.5) * 0.16);
+      if (htfRangePosition >= 0.85 && extremePenaltyApplies) {
+        pricePositionAdjustment = -0.12;
+      } else if (adxMaturityPenalty === 0) {
+        pricePositionAdjustment = Math.max(-0.08, -(htfRangePosition - 0.5) * 0.16);
+      }
     } else if (signal.direction === 'bearish' && htfRangePosition < 0.5) {
-      // Bearish from lower half — price already extended down, limited downside
-      pricePositionAdjustment = Math.max(-0.08, -(0.5 - htfRangePosition) * 0.16);
+      if (htfRangePosition <= 0.15 && extremePenaltyApplies) {
+        pricePositionAdjustment = -0.12;
+      } else if (adxMaturityPenalty === 0) {
+        pricePositionAdjustment = Math.max(-0.08, -(0.5 - htfRangePosition) * 0.16);
+      }
     }
   }
 
@@ -400,6 +430,17 @@ function computeConfidence(signal: SignalPayload, option: OptionEvaluation): Con
       } else if (!netOpposes && confirmingBarCount >= 2 && !lastBarOpposes) {
         recentPriceActionBonus = 0.04;  // moderate: 2 of 3 bars confirm direction
       }
+      // Suppress positive price action bonus when at range extreme — consecutive confirming
+      // bars at a range boundary are the final push of exhaustion, not fresh momentum.
+      // Loser #2 had 5 green bars into 93% range, #4 had 4 green bars into 81%, #5 had 4 green bars into range top.
+      // Only suppress at range extremes when the range is meaningful (ADX >= 15).
+      if (recentPriceActionBonus > 0 && htf.dmi.adx >= 15) {
+        const rp = htf.priceStructure.rangePosition;
+        const atExtreme = (signal.direction === 'bullish' && rp >= 0.80) || (signal.direction === 'bearish' && rp <= 0.20);
+        if (atExtreme) {
+          recentPriceActionBonus = 0; // confirming bars at range edge = exhaustion, not signal
+        }
+      }
     }
   }
 
@@ -456,15 +497,23 @@ function computeConfidence(signal: SignalPayload, option: OptionEvaluation): Con
   // Clamped -0.10..0
   let lowVolPenalty = 0;
   if (signal.direction !== 'neutral') {
+    const htfFreshCrossAligned = signal.direction === 'bullish' ? htf.dmi.crossedUp : htf.dmi.crossedDown;
     const htfRecentCross = signal.direction === 'bullish' ? htf.dmi.recentCrossUp : htf.dmi.recentCrossDown;
-    if (!htfRecentCross) {
-      if (htf.dmi.adx < 15) {
-        lowVolPenalty = -0.10;
-      } else if (htf.dmi.adx < 20) {
-        lowVolPenalty = -0.05;
+    if (htf.dmi.adx < 15) {
+      lowVolPenalty = -0.10;
+    } else if (htf.dmi.adx < 20) {
+      lowVolPenalty = -0.05;
+    }
+    // Fresh 1-bar cross fully waives — this is the strongest timing signal and often
+    // precedes ADX rise. Recent (2-bar) cross only halves — the signal is aging.
+    // Loser #5 (ADX=13, recentCross) had full waive but cross didn't follow through.
+    // Mar 19 winner (ADX=11, fresh cross) correctly got full waive.
+    if (lowVolPenalty < 0) {
+      if (htfFreshCrossAligned) {
+        lowVolPenalty = 0; // fresh cross: full waive
+      } else if (htfRecentCross) {
+        lowVolPenalty *= 0.50; // recent cross: half waive
       }
-      // NOTE: Price action confirmation does NOT reduce low-vol penalty.
-      // In low-ADX environments, confirming bars are noise, not signal.
     }
   }
 
@@ -685,6 +734,25 @@ function computeConfidence(signal: SignalPayload, option: OptionEvaluation): Con
   // is chasing the tail end.  PA still reads "confirming" but the edge is gone.
   if (adxMaturityPenalty <= -0.08 && moveExhaustionPenalty <= -0.06) {
     total = Math.min(total, 0.62);
+  }
+
+  // Hard gate: range position extreme — entering at the edge of the HTF range.
+  // Buying calls at >85% range position or puts at <15% is chasing the last move.
+  // Loser #2 (93%), #4 (81% + nearLevel), #6 (9%) all failed from range extremes.
+  // Exempt when strong active trend (ADX > 25 + rising) — genuine breakout/breakdown.
+  {
+    const rp = htf.priceStructure.rangePosition;
+    const strongActiveTrend = htf.dmi.adx > 25 && htf.dmi.adxSlope > 0;
+    const extremeGateApplies = !strongActiveTrend && htf.dmi.adx >= 15;
+    const atExtreme = (signal.direction === 'bullish' && rp >= 0.85) || (signal.direction === 'bearish' && rp <= 0.15);
+    if (atExtreme && extremeGateApplies) {
+      total = Math.min(total, 0.62);
+    }
+    // Softer gate: near extreme + DI spread narrowing = fading momentum at boundary
+    const nearExtreme = (signal.direction === 'bullish' && rp >= 0.75) || (signal.direction === 'bearish' && rp <= 0.25);
+    if (nearExtreme && htf.dmi.diSpreadSlope < -3 && htf.dmi.adx >= 15) {
+      total = Math.min(total, 0.64);
+    }
   }
 
   // Hard gate: 0DTE with extreme theta (≤ 30 min to close).

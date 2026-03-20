@@ -200,6 +200,7 @@ function computeConfidence(signal: SignalPayload, option: OptionEvaluation): Con
     if (mtfAdverse) diCrossBonus -= 0.03;
     const htfGrowth = signal.direction === 'bullish' ? htf.dmi.growthCrossUp : htf.dmi.growthCrossDown;
     if (htfGrowth) diCrossBonus += 0.04;
+    if (diCrossBonus > 0 && htf.dmi.adx < 20 && htf.dmi.adxSlope <= 0) { diCrossBonus *= 0.50; }
     diCrossBonus = Math.max(-0.06, Math.min(0.10, diCrossBonus));
   }
 
@@ -256,6 +257,7 @@ function computeConfidence(signal: SignalPayload, option: OptionEvaluation): Con
       if (htfPrice < htfLower) vwapBonus += beyond2sigPenalty;
       else if (htfPrice < htfVwap - htfDev) vwapBonus += -0.02;
     }
+    if (vwapBonus > 0 && htf.dmi.diSpreadSlope < -2) vwapBonus = 0;
     vwapBonus = Math.max(-0.12, Math.min(0.10, vwapBonus));
   }
 
@@ -301,12 +303,17 @@ function computeConfidence(signal: SignalPayload, option: OptionEvaluation): Con
 
   // Price position adjustment
   let pricePositionAdjustment = 0;
-  if (adxMaturityPenalty === 0) {
-    const htfRangePosition = htf.priceStructure.rangePosition;
-    if (signal.direction === 'bullish' && htfRangePosition > 0.5)
-      pricePositionAdjustment = Math.max(-0.08, -(htfRangePosition - 0.5) * 0.16);
-    else if (signal.direction === 'bearish' && htfRangePosition < 0.5)
-      pricePositionAdjustment = Math.max(-0.08, -(0.5 - htfRangePosition) * 0.16);
+  {
+    const rp = htf.priceStructure.rangePosition;
+    const strongActiveTrend = htf.dmi.adx > 25 && htf.dmi.adxSlope > 0;
+    const extremePenaltyApplies = !strongActiveTrend && htf.dmi.adx >= 15;
+    if (signal.direction === 'bullish' && rp > 0.5) {
+      if (rp >= 0.85 && extremePenaltyApplies) pricePositionAdjustment = -0.12;
+      else if (adxMaturityPenalty === 0) pricePositionAdjustment = Math.max(-0.08, -(rp - 0.5) * 0.16);
+    } else if (signal.direction === 'bearish' && rp < 0.5) {
+      if (rp <= 0.15 && extremePenaltyApplies) pricePositionAdjustment = -0.12;
+      else if (adxMaturityPenalty === 0) pricePositionAdjustment = Math.max(-0.08, -(0.5 - rp) * 0.16);
+    }
   }
 
   // Structure bonus (prior day levels)
@@ -360,6 +367,12 @@ function computeConfidence(signal: SignalPayload, option: OptionEvaluation): Con
       else if (netOpposes) recentPriceActionBonus = -0.04;
       else if (!netOpposes && confirmingBarCount >= 3 && !lastBarOpposes) recentPriceActionBonus = 0.08;
       else if (!netOpposes && confirmingBarCount >= 2 && !lastBarOpposes) recentPriceActionBonus = 0.04;
+      if (recentPriceActionBonus > 0 && htf.dmi.adx >= 15) {
+        const rp = htf.priceStructure.rangePosition;
+        const strongActiveTrend = htf.dmi.adx > 25 && htf.dmi.adxSlope > 0;
+        const atExtreme = (signal.direction === 'bullish' && rp >= 0.80) || (signal.direction === 'bearish' && rp <= 0.20);
+        if (atExtreme && !strongActiveTrend) recentPriceActionBonus = 0;
+      }
     }
   }
 
@@ -388,11 +401,13 @@ function computeConfidence(signal: SignalPayload, option: OptionEvaluation): Con
   // Low vol penalty
   let lowVolPenalty = 0;
   if (signal.direction !== 'neutral') {
+    const htfFreshCrossAligned = signal.direction === 'bullish' ? htf.dmi.crossedUp : htf.dmi.crossedDown;
     const htfRecentCross = signal.direction === 'bullish' ? htf.dmi.recentCrossUp : htf.dmi.recentCrossDown;
-    if (!htfRecentCross) {
-      if (htf.dmi.adx < 15) lowVolPenalty = -0.10;
-      else if (htf.dmi.adx < 20) lowVolPenalty = -0.05;
-      // PA does NOT reduce low-vol penalty
+    if (htf.dmi.adx < 15) lowVolPenalty = -0.10;
+    else if (htf.dmi.adx < 20) lowVolPenalty = -0.05;
+    if (lowVolPenalty < 0) {
+      if (htfFreshCrossAligned) lowVolPenalty = 0;
+      else if (htfRecentCross) lowVolPenalty *= 0.50;
     }
   }
 
@@ -472,6 +487,7 @@ function computeConfidence(signal: SignalPayload, option: OptionEvaluation): Con
   if (moveExhaustionPenalty <= -0.06 && consolidationPenalty < 0) total = Math.min(total, 0.58);
   if (moveExhaustionPenalty <= -0.15) total = Math.min(total, 0.60);
   if (adxMaturityPenalty <= -0.08 && moveExhaustionPenalty <= -0.06) total = Math.min(total, 0.62);
+  { const rp = htf.priceStructure.rangePosition; const strongActiveTrend = htf.dmi.adx > 25 && htf.dmi.adxSlope > 0; const extremeGateApplies = !strongActiveTrend && htf.dmi.adx >= 15; const atExtreme = (signal.direction === 'bullish' && rp >= 0.85) || (signal.direction === 'bearish' && rp <= 0.15); if (atExtreme && extremeGateApplies) total = Math.min(total, 0.62); const nearExtreme = (signal.direction === 'bullish' && rp >= 0.75) || (signal.direction === 'bearish' && rp <= 0.25); if (nearExtreme && htf.dmi.diSpreadSlope < -3 && htf.dmi.adx >= 15) total = Math.min(total, 0.64); }
   if (thetaDecayPenalty <= -0.10) total = Math.min(total, 0.55);
 
   return { base, diSpreadBonus, adxBonus, diCrossBonus, alignmentBonus, tdAdjustment, obvBonus, vwapBonus, oiVolumeBonus, pricePositionAdjustment, adxMaturityPenalty, trendPhaseBonus, momentumAccelBonus, structureBonus, orbBonus, recentPriceActionBonus, trContractionPenalty, lowVolPenalty, moveExhaustionPenalty, consolidationPenalty, nearLevelPenalty, thetaDecayPenalty, total };
