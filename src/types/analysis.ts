@@ -17,6 +17,10 @@ export interface ConfidenceBreakdown {
   recentPriceActionBonus: number;  // -0.15..+0.08 — last 3 LTF bars confirm or contradict signal direction (latest bar weighted heavily for reversal detection)
   trContractionPenalty: number;    // -0.08..0 — penalty when recent LTF True Range is contracting (momentum drying up)
   lowVolPenalty: number;           // -0.10..0 — penalty when HTF ADX is very low (no real trend, theta trap)
+  moveExhaustionPenalty: number;   // -0.12..0 — penalty when a large directional move has already played out (chasing)
+  consolidationPenalty: number;    // -0.10..0 — penalty when recent bars show sideways chop (high overlap, no trend)
+  nearLevelPenalty: number;        // -0.10..0 — penalty for buying puts near support or calls near resistance
+  thetaDecayPenalty: number;       // -0.10..0 — penalty for 0DTE entries late in the day when theta accelerates
   total: number;                   // clamped 0..1
 }
 

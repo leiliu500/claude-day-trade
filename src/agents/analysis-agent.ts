@@ -15,7 +15,7 @@ function computeConfidence(signal: SignalPayload, option: OptionEvaluation): Con
   const tfs = signal.timeframes;
   const [ltf, mtf, htf] = tfs;
   if (!ltf || !mtf || !htf) {
-    return { base: 0.38, diSpreadBonus: 0, adxBonus: 0, diCrossBonus: 0, alignmentBonus: 0, tdAdjustment: 0, obvBonus: 0, vwapBonus: 0, oiVolumeBonus: 0, pricePositionAdjustment: 0, adxMaturityPenalty: 0, trendPhaseBonus: 0, momentumAccelBonus: 0, structureBonus: 0, orbBonus: 0, recentPriceActionBonus: 0, trContractionPenalty: 0, lowVolPenalty: 0, total: 0.38 };
+    return { base: 0.38, diSpreadBonus: 0, adxBonus: 0, diCrossBonus: 0, alignmentBonus: 0, tdAdjustment: 0, obvBonus: 0, vwapBonus: 0, oiVolumeBonus: 0, pricePositionAdjustment: 0, adxMaturityPenalty: 0, trendPhaseBonus: 0, momentumAccelBonus: 0, structureBonus: 0, orbBonus: 0, recentPriceActionBonus: 0, trContractionPenalty: 0, lowVolPenalty: 0, moveExhaustionPenalty: 0, consolidationPenalty: 0, nearLevelPenalty: 0, thetaDecayPenalty: 0, total: 0.38 };
   }
 
   // Base: direction-neutral starting point
@@ -178,12 +178,20 @@ function computeConfidence(signal: SignalPayload, option: OptionEvaluation): Con
 
   // ADX maturity penalty — penalizes entering a trend that has already been running strong for many bars.
   // Skipped when a fresh DI cross is present on HTF (cross signals new momentum regardless of maturity).
-  // HTF adxBarsAbove25 >= 10 bars: trend is very mature → -0.08
-  // HTF adxBarsAbove25 >= 5 bars:  trend is mature      → -0.04
-  // Clamped -0.08..0
+  // Very mature trends (15-20+ bars) get aggressive penalties because lagging indicators (DMI/ADX)
+  // still read "strong trend" at the exact point where price is most likely to reverse.
+  // HTF adxBarsAbove25 >= 20 bars: extremely mature → -0.15 (trend exhaustion highly likely)
+  // HTF adxBarsAbove25 >= 15 bars: very mature      → -0.12 (late entry, reversal risk elevated)
+  // HTF adxBarsAbove25 >= 10 bars: mature            → -0.08
+  // HTF adxBarsAbove25 >= 5 bars:  moderately mature → -0.04
+  // Clamped -0.15..0
   let adxMaturityPenalty = 0;
   const htfFreshCross = signal.direction === 'bullish' ? htf.dmi.crossedUp : htf.dmi.crossedDown;
-  if (!htfFreshCross && htf.dmi.adxBarsAbove25 >= 10) {
+  if (!htfFreshCross && htf.dmi.adxBarsAbove25 >= 20) {
+    adxMaturityPenalty = -0.15;
+  } else if (!htfFreshCross && htf.dmi.adxBarsAbove25 >= 15) {
+    adxMaturityPenalty = -0.12;
+  } else if (!htfFreshCross && htf.dmi.adxBarsAbove25 >= 10) {
     adxMaturityPenalty = -0.08;
   } else if (!htfFreshCross && htf.dmi.adxBarsAbove25 >= 5) {
     adxMaturityPenalty = -0.04;
@@ -463,7 +471,177 @@ function computeConfidence(signal: SignalPayload, option: OptionEvaluation): Con
     }
   }
 
-  let total = Math.max(0, Math.min(1, base + diSpreadBonus + adxBonus + diCrossBonus + alignmentBonus + tdAdjustment + obvBonus + vwapBonus + oiVolumeBonus + pricePositionAdjustment + adxMaturityPenalty + trendPhaseBonus + momentumAccelBonus + structureBonus + orbBonus + recentPriceActionBonus + trContractionPenalty + lowVolPenalty));
+  // Move exhaustion penalty — detects when a large directional move has already played out.
+  // Uses HTF bars to measure the recent move magnitude relative to ATR.
+  // After a big move (e.g. $3 drop on SPY), lagging indicators still read "strong trend" but
+  // entering is chasing — most of the edge is gone and a bounce/consolidation is likely.
+  //   Move ≥ 3.0× ATR in signal direction: -0.12 (major move complete, extreme chasing risk)
+  //   Move ≥ 2.0× ATR: -0.08 (large move, high chasing risk)
+  //   Move ≥ 1.5× ATR: -0.04 (moderate move, some chasing risk)
+  // Skipped when a fresh HTF DI cross is present (cross = new phase, not exhaustion).
+  // Clamped -0.12..0
+  let moveExhaustionPenalty = 0;
+  if (signal.direction !== 'neutral' && !htfFreshCross && htf.bars.length >= 6) {
+    const recentHTF = htf.bars.slice(-5); // last 5 HTF bars
+    const htfATR = htf.atr.atr;
+    if (htfATR > 0) {
+      // Measure max directional move in last 5 bars
+      let maxHigh = -Infinity;
+      let minLow = Infinity;
+      for (const bar of recentHTF) {
+        if (bar.high > maxHigh) maxHigh = bar.high;
+        if (bar.low < minLow) minLow = bar.low;
+      }
+      const moveMagnitude = maxHigh - minLow;
+      const moveInDirection = signal.direction === 'bearish'
+        ? recentHTF[0]!.high - recentHTF[recentHTF.length - 1]!.low    // bearish: high→low drop
+        : recentHTF[recentHTF.length - 1]!.high - recentHTF[0]!.low;   // bullish: low→high rise
+      // Only penalize if the move was IN the signal direction (we'd be chasing it)
+      if (moveInDirection > 0) {
+        const moveATRs = moveInDirection / htfATR;
+        if (moveATRs >= 3.0) {
+          moveExhaustionPenalty = -0.12;
+        } else if (moveATRs >= 2.0) {
+          moveExhaustionPenalty = -0.08;
+        } else if (moveATRs >= 1.5) {
+          moveExhaustionPenalty = -0.04;
+        }
+        // When price action confirms direction (bars actively continuing the move),
+        // halve the penalty — this is fresh momentum extending the move, not chasing.
+        if (recentPriceActionBonus > 0 && moveExhaustionPenalty < 0) {
+          moveExhaustionPenalty = moveExhaustionPenalty / 2;
+        }
+      }
+    }
+  }
+
+  // Consolidation penalty — detects sideways/choppy price action where bars heavily overlap.
+  // In a trending market, each bar makes new territory (low overlap). In a range, bars retrace
+  // over the same prices (high overlap). Buying directional options in chop = theta burn with no edge.
+  // Uses LTF bars overlap ratio: sum of bar ranges vs total range covered.
+  //   Overlap ratio ≥ 3.0: -0.10 (extreme chop — bars cover 3× the same ground)
+  //   Overlap ratio ≥ 2.5: -0.06 (heavy chop)
+  //   Overlap ratio ≥ 2.0: -0.03 (moderate chop)
+  // Skipped when recent price action strongly confirms direction (recentPriceActionBonus >= 0.04)
+  // Clamped -0.10..0
+  let consolidationPenalty = 0;
+  if (signal.direction !== 'neutral' && ltf && ltf.bars.length >= 8 && recentPriceActionBonus < 0.04) {
+    const chopBars = ltf.bars.slice(-6); // last 6 LTF bars
+    const totalBarRange = chopBars.reduce((sum, b) => sum + (b.high - b.low), 0);
+    let overallHigh = -Infinity;
+    let overallLow = Infinity;
+    for (const b of chopBars) {
+      if (b.high > overallHigh) overallHigh = b.high;
+      if (b.low < overallLow) overallLow = b.low;
+    }
+    const overallRange = overallHigh - overallLow;
+    if (overallRange > 0) {
+      const overlapRatio = totalBarRange / overallRange;
+      if (overlapRatio >= 3.0) {
+        consolidationPenalty = -0.10;
+      } else if (overlapRatio >= 2.5) {
+        consolidationPenalty = -0.06;
+      } else if (overlapRatio >= 2.0) {
+        consolidationPenalty = -0.03;
+      }
+    }
+  }
+
+  // Near-level penalty — penalizes buying puts near support or calls near resistance.
+  // When price is within 0.3% of the swing low (for puts) or swing high (for calls),
+  // the move is more likely to bounce than continue. Buying options at these levels
+  // means paying premium right where mean-reversion kicks in.
+  // Uses HTF swing levels (more meaningful than LTF noise).
+  //   Price within 0.15% of level: -0.10 (right at support/resistance)
+  //   Price within 0.30% of level: -0.06 (near support/resistance)
+  //   Price within 0.50% of level: -0.03 (approaching support/resistance)
+  // Skipped when price has already broken through the level (structure bonus confirms breakdown/breakout).
+  // Clamped -0.10..0
+  let nearLevelPenalty = 0;
+  if (signal.direction !== 'neutral') {
+    const ps = htf.priceStructure;
+    const price = signal.currentPrice;
+    // Halve the penalty when price action confirms direction — this may be a genuine
+    // breakdown through support / breakout through resistance, not a bounce zone.
+    const activeBreakdown = recentPriceActionBonus > 0;
+    if (signal.direction === 'bearish') {
+      // For puts: penalize when near swing low (support)
+      const distToSupport = ps.swingLow > 0 ? ((price - ps.swingLow) / ps.swingLow) * 100 : 999;
+      // Only penalize when price is ABOVE support (approaching it, not yet broken)
+      if (distToSupport > 0 && distToSupport <= 0.15) {
+        nearLevelPenalty = -0.10;
+      } else if (distToSupport > 0 && distToSupport <= 0.30) {
+        nearLevelPenalty = -0.06;
+      } else if (distToSupport > 0 && distToSupport <= 0.50) {
+        nearLevelPenalty = -0.03;
+      }
+    } else {
+      // For calls: penalize when near swing high (resistance)
+      const distToResistance = ps.swingHigh > 0 ? ((ps.swingHigh - price) / ps.swingHigh) * 100 : 999;
+      if (distToResistance > 0 && distToResistance <= 0.15) {
+        nearLevelPenalty = -0.10;
+      } else if (distToResistance > 0 && distToResistance <= 0.30) {
+        nearLevelPenalty = -0.06;
+      } else if (distToResistance > 0 && distToResistance <= 0.50) {
+        nearLevelPenalty = -0.03;
+      }
+    }
+    // When price action confirms the move (bars actively pushing through the level),
+    // halve the penalty — this distinguishes a breakdown from a bounce approach.
+    if (activeBreakdown && nearLevelPenalty < 0) {
+      nearLevelPenalty = nearLevelPenalty / 2;
+    }
+  }
+
+  // Theta decay penalty — penalizes short-dated option entries as expiration approaches.
+  // Theta accelerates dramatically for options nearing expiration. The penalty scales based
+  // on hours remaining until the option expires (market close on expiration day = 20:00 UTC).
+  //
+  // 0DTE (expires today):
+  //   ≤ 30 min to close: -0.10 (extreme theta, almost guaranteed loss without massive move)
+  //   ≤ 60 min to close: -0.06 (heavy theta, need fast move)
+  //   ≤ 90 min to close: -0.03 (elevated theta, reduced edge)
+  //
+  // 1DTE (expires tomorrow, entering late in the day):
+  //   ≤ 150 min to today's close: -0.06 (overnight theta + gamma risk, entering near close)
+  //   ≤ 180 min to today's close: -0.03 (elevated next-day theta, reduced edge)
+  //
+  // Market close = 20:00 UTC (4 PM ET).
+  // Clamped -0.10..0
+  let thetaDecayPenalty = 0;
+  if (option.winnerCandidate) {
+    const expDate = option.winnerCandidate.contract.expiration; // YYYY-MM-DD
+    const now = new Date();
+    const todayStr = now.toISOString().slice(0, 10);
+    const marketCloseUtc = new Date(`${todayStr}T20:00:00Z`);
+    const minutesToClose = (marketCloseUtc.getTime() - now.getTime()) / 60000;
+
+    if (expDate === todayStr) {
+      // 0DTE: aggressive penalty
+      if (minutesToClose <= 30) {
+        thetaDecayPenalty = -0.10;
+      } else if (minutesToClose <= 60) {
+        thetaDecayPenalty = -0.06;
+      } else if (minutesToClose <= 90) {
+        thetaDecayPenalty = -0.03;
+      }
+    } else {
+      // 1DTE check: expiration is tomorrow
+      const tomorrow = new Date(now);
+      tomorrow.setUTCDate(tomorrow.getUTCDate() + 1);
+      const tomorrowStr = tomorrow.toISOString().slice(0, 10);
+      if (expDate === tomorrowStr) {
+        // 1DTE: moderate penalty for late-day entries (high overnight theta + gamma decay)
+        if (minutesToClose <= 150) {
+          thetaDecayPenalty = -0.06;
+        } else if (minutesToClose <= 180) {
+          thetaDecayPenalty = -0.03;
+        }
+      }
+    }
+  }
+
+  let total = Math.max(0, Math.min(1, base + diSpreadBonus + adxBonus + diCrossBonus + alignmentBonus + tdAdjustment + obvBonus + vwapBonus + oiVolumeBonus + pricePositionAdjustment + adxMaturityPenalty + trendPhaseBonus + momentumAccelBonus + structureBonus + orbBonus + recentPriceActionBonus + trContractionPenalty + lowVolPenalty + moveExhaustionPenalty + consolidationPenalty + nearLevelPenalty + thetaDecayPenalty));
 
   // Hard gate: TR contraction (instant momentum fade) without price confirmation
   // is a dying trend — cap confidence below entry threshold (0.65).
@@ -474,6 +652,21 @@ function computeConfidence(signal: SignalPayload, option: OptionEvaluation): Con
     total = Math.min(total, 0.60);
   }
 
+  // Hard gate: extremely mature trend (20+ bars above ADX 25) without fresh price
+  // action confirmation.  At this stage, lagging indicators peak while the underlying
+  // trend is most likely to reverse.  Even with all bonuses stacking, entering this
+  // late is a losing proposition — cap below entry threshold.
+  // Relaxed to 0.64 (just below 0.65) when price action actively confirms, since
+  // rare cases of genuine trend continuation do exist but should still require
+  // elevated confidence from other factors to pass.
+  if (adxMaturityPenalty <= -0.15) {
+    if (recentPriceActionBonus > 0) {
+      total = Math.min(total, 0.64);
+    } else {
+      total = Math.min(total, 0.55);
+    }
+  }
+
   // Hard gate: direction change detected — the most recent bar flipped against the
   // signal while lagging indicators (DMI/ADX) still show a strong trend.  This is
   // the exact moment when confidence peaks but price has already reversed.
@@ -482,7 +675,20 @@ function computeConfidence(signal: SignalPayload, option: OptionEvaluation): Con
     total = Math.min(total, 0.60);
   }
 
-  return { base, diSpreadBonus, adxBonus, diCrossBonus, alignmentBonus, tdAdjustment, obvBonus, vwapBonus, oiVolumeBonus, pricePositionAdjustment, adxMaturityPenalty, trendPhaseBonus, momentumAccelBonus, structureBonus, orbBonus, recentPriceActionBonus, trContractionPenalty, lowVolPenalty, total };
+  // Hard gate: move already exhausted + consolidation.  When a large move has played out
+  // AND price is now chopping sideways, the setup is spent — even strong indicators are
+  // just reflecting the completed move, not predicting continuation.
+  if (moveExhaustionPenalty <= -0.08 && consolidationPenalty < 0) {
+    total = Math.min(total, 0.58);
+  }
+
+  // Hard gate: 0DTE with extreme theta (≤ 30 min to close).
+  // Even with strong signals, the theta burn is too aggressive for new entries.
+  if (thetaDecayPenalty <= -0.10) {
+    total = Math.min(total, 0.55);
+  }
+
+  return { base, diSpreadBonus, adxBonus, diCrossBonus, alignmentBonus, tdAdjustment, obvBonus, vwapBonus, oiVolumeBonus, pricePositionAdjustment, adxMaturityPenalty, trendPhaseBonus, momentumAccelBonus, structureBonus, orbBonus, recentPriceActionBonus, trContractionPenalty, lowVolPenalty, moveExhaustionPenalty, consolidationPenalty, nearLevelPenalty, thetaDecayPenalty, total };
 }
 
 /**
@@ -522,6 +728,10 @@ async function generateExplanation(
       recent_price_action_bonus: cb.recentPriceActionBonus.toFixed(3),
       tr_contraction_penalty: cb.trContractionPenalty.toFixed(3),
       low_vol_penalty: cb.lowVolPenalty.toFixed(3),
+      move_exhaustion_penalty: cb.moveExhaustionPenalty.toFixed(3),
+      consolidation_penalty: cb.consolidationPenalty.toFixed(3),
+      near_level_penalty: cb.nearLevelPenalty.toFixed(3),
+      theta_decay_penalty: cb.thetaDecayPenalty.toFixed(3),
       note: htfPs?.priceHalf === 'lower'
         ? 'Price in lower half of range — puts preferred, calls are higher risk'
         : 'Price in upper half of range — calls preferred, puts are higher risk',
