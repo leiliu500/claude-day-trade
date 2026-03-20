@@ -184,7 +184,7 @@ function computeConfidence(signal: SignalPayload, option: OptionEvaluation): Con
           : tf.dmi.minusDI - tf.dmi.plusDI;
         return sum + spread;
       }, 0) / tfs.length;
-  const diSpreadBonus = Math.max(-0.15, Math.min(0.15, (avgDISpread / 40) * 0.15));
+  let diSpreadBonus = Math.max(-0.15, Math.min(0.15, (avgDISpread / 40) * 0.15));
 
   const adxBonus = htf.dmi.adx > 25 ? 0.05 : (htf.dmi.adx > 20 && htf.dmi.adxSlope > 2 ? 0.03 : 0);
 
@@ -205,7 +205,8 @@ function computeConfidence(signal: SignalPayload, option: OptionEvaluation): Con
   }
 
   const alignmentBonusMap: Record<string, number> = { all_aligned: 0.06, htf_mtf_aligned: 0.03, mtf_ltf_aligned: 0.02, mixed: 0 };
-  const alignmentBonus = alignmentBonusMap[signal.alignment] ?? 0;
+  let alignmentBonus = alignmentBonusMap[signal.alignment] ?? 0;
+  if (signal.reversalOverride && alignmentBonus < 0.06) alignmentBonus = 0.06;
 
   let tdAdjustment = 0;
   for (const tf of tfs) {
@@ -373,7 +374,7 @@ function computeConfidence(signal: SignalPayload, option: OptionEvaluation): Con
       const priorBars = recentBars.slice(0, -1);
       const priorConfirming = priorBars.filter(b => isBullish ? b.close > b.open : b.close < b.open).length;
 
-      if (lastBarOpposes && priorConfirming >= 2) recentPriceActionBonus = -0.15;
+      if (lastBarOpposes && priorConfirming >= 2) recentPriceActionBonus = (signal.alignment === 'all_aligned' || signal.reversalOverride) ? -0.08 : -0.15;
       else if (netOpposes && opposingBarCount >= 3) recentPriceActionBonus = -0.12;
       else if (netOpposes && opposingBarCount >= 2) recentPriceActionBonus = -0.08;
       else if (lastBarOpposes) recentPriceActionBonus = -0.06;
@@ -450,6 +451,11 @@ function computeConfidence(signal: SignalPayload, option: OptionEvaluation): Con
     }
   }
 
+  // Deferred lowVol reduction: all-aligned + ADX rising + no exhaustion
+  if (lowVolPenalty < 0 && signal.alignment === 'all_aligned' && htf.dmi.adxSlope > 0 && moveExhaustionPenalty === 0) {
+    lowVolPenalty *= 0.50;
+  }
+
   // Consolidation penalty
   let consolidationPenalty = 0;
   if (signal.direction !== 'neutral' && ltf && ltf.bars.length >= 8) {
@@ -491,10 +497,30 @@ function computeConfidence(signal: SignalPayload, option: OptionEvaluation): Con
     if (nearLevelPenalty < 0 && signal.alignment === 'all_aligned') {
       nearLevelPenalty *= 0.5;
     }
+    if (nearLevelPenalty < 0) {
+      const activelySetting = signal.direction === 'bearish'
+        ? ps.swingLowBarsAgo <= 2
+        : ps.swingHighBarsAgo <= 2;
+      if (activelySetting) {
+        nearLevelPenalty *= 0.5;
+      }
+    }
   }
 
   // Theta decay — use backtest simulated time (no 0DTE concern for backtest, set to 0)
   const thetaDecayPenalty = 0;
+
+  // Reversal override adjustments (same as analysis-agent.ts)
+  if (signal.reversalOverride) {
+    if (moveExhaustionPenalty < 0) moveExhaustionPenalty = 0;
+    if (nearLevelPenalty < 0) nearLevelPenalty = 0;
+    if (trendPhaseBonus < 0) trendPhaseBonus = 0;
+    if (momentumAccelBonus < 0) momentumAccelBonus = 0;
+    if (pricePositionAdjustment < 0) pricePositionAdjustment = 0;
+    if (diSpreadBonus < 0) diSpreadBonus = 0;
+    if (lowVolPenalty < 0) lowVolPenalty = 0;
+    if (vwapBonus === 0) vwapBonus = 0.06;
+  }
 
   let total = Math.max(0, Math.min(1, base + diSpreadBonus + adxBonus + diCrossBonus + alignmentBonus + tdAdjustment + obvBonus + vwapBonus + oiVolumeBonus + pricePositionAdjustment + adxMaturityPenalty + trendPhaseBonus + momentumAccelBonus + structureBonus + orbBonus + recentPriceActionBonus + trContractionPenalty + lowVolPenalty + moveExhaustionPenalty + consolidationPenalty + nearLevelPenalty + thetaDecayPenalty));
 
@@ -633,7 +659,30 @@ async function main() {
     const dirVotes = dmiOnly.map(d => d.trend);
     const bullish = dirVotes.filter(v => v === 'bullish').length;
     const bearish = dirVotes.filter(v => v === 'bearish').length;
-    const direction: SignalDirection = bullish > bearish ? 'bullish' : bearish > bullish ? 'bearish' : 'neutral';
+    let direction: SignalDirection = bullish > bearish ? 'bullish' : bearish > bullish ? 'bearish' : 'neutral';
+
+    // Early reversal override (same logic as signal-agent.ts)
+    let reversalOverride = false;
+    const [ltfDmi, , htfDmi] = dmiOnly;
+    if (direction !== 'neutral' && ltfDmi && htfDmi) {
+      const ltfOpposesDir = direction === 'bullish' ? ltfDmi.trend === 'bearish'
+                                                     : ltfDmi.trend === 'bullish';
+      const htfFading = htfDmi.diSpreadSlope < -2;
+      const htfBarsForRange = htfBars.slice(-20);
+      let rangeHigh = -Infinity, rangeLow = Infinity;
+      for (const b of htfBarsForRange) {
+        if (b.high > rangeHigh) rangeHigh = b.high;
+        if (b.low < rangeLow) rangeLow = b.low;
+      }
+      const rangeSize = rangeHigh - rangeLow;
+      const lastPrice = htfBarsForRange[htfBarsForRange.length - 1]?.close ?? 0;
+      const rangePos = rangeSize > 0 ? (lastPrice - rangeLow) / rangeSize : 0.5;
+      const atExtreme = direction === 'bullish' ? rangePos >= 0.75 : rangePos <= 0.25;
+      if (ltfOpposesDir && htfFading && atExtreme) {
+        direction = direction === 'bullish' ? 'bearish' : 'bullish';
+        reversalOverride = true;
+      }
+    }
 
     // Second pass: full indicators
     const tfIndicators: TimeframeIndicators[] = [
@@ -655,6 +704,7 @@ async function main() {
       timeframes: tfIndicators, ltf: '1m', mtf: '3m', htf: '5m',
       direction, alignment, currentPrice, atr, atm, strengthScore,
       priorDayLevels, orb,
+      reversalOverride: reversalOverride || undefined,
       triggeredBy: 'AUTO', createdAt: timeStr,
     };
 

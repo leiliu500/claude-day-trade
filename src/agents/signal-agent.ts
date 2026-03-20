@@ -141,9 +141,42 @@ export class SignalAgent {
     const directionVotes = dmiOnly.map(d => d.trend);
     const bullishVotes = directionVotes.filter(v => v === 'bullish').length;
     const bearishVotes = directionVotes.filter(v => v === 'bearish').length;
-    const direction: SignalDirection =
+    let direction: SignalDirection =
       bullishVotes > bearishVotes ? 'bullish' :
       bearishVotes > bullishVotes ? 'bearish' : 'neutral';
+
+    // Early reversal override: when LTF just crossed opposite to majority direction,
+    // HTF momentum is fading fast, AND price is at range extreme, the LTF is leading
+    // a direction change that MTF/HTF haven't caught up to yet (DMI lag on higher TFs).
+    // Override direction to match LTF so we don't miss the first 10-15 min of a reversal.
+    // Mar 20 SPY: price peaked at $653.80 (rangePos 0.88), LTF crossed bearish at 12:26 ET,
+    // but MTF+HTF stayed bullish for 9 more min → missed $1.50 drop.
+    let reversalOverride = false;
+    const [ltfDmi, , htfDmi] = dmiOnly;
+    if (direction !== 'neutral' && ltfDmi && htfDmi) {
+      // Use LTF trend (not just fresh cross) — trend persists longer than the 2-bar cross window.
+      const ltfOpposesDir = direction === 'bullish' ? ltfDmi.trend === 'bearish'
+                                                     : ltfDmi.trend === 'bullish';
+      // HTF DI spread fading: diSpreadSlope uses |DI+ - DI-|, so negative = spread
+      // narrowing regardless of direction (momentum fading in either trend).
+      const htfFading = htfDmi.diSpreadSlope < -2;
+      // Price at range extreme in current direction (using raw price structure from HTF bars)
+      const htfBarsForRange = htfBars.slice(-20);
+      let rangeHigh = -Infinity, rangeLow = Infinity;
+      for (const b of htfBarsForRange) {
+        if (b.high > rangeHigh) rangeHigh = b.high;
+        if (b.low < rangeLow) rangeLow = b.low;
+      }
+      const rangeSize = rangeHigh - rangeLow;
+      const lastPrice = htfBarsForRange[htfBarsForRange.length - 1]?.close ?? 0;
+      const rangePos = rangeSize > 0 ? (lastPrice - rangeLow) / rangeSize : 0.5;
+      const atExtreme = direction === 'bullish' ? rangePos >= 0.75 : rangePos <= 0.25;
+
+      if (ltfOpposesDir && htfFading && atExtreme) {
+        direction = direction === 'bullish' ? 'bearish' : 'bullish';
+        reversalOverride = true;
+      }
+    }
 
     // Second pass: build full TF indicators with direction for accurate price levels
     const tfIndicators: TimeframeIndicators[] = [
@@ -180,6 +213,7 @@ export class SignalAgent {
       strengthScore,
       priorDayLevels,
       orb,
+      reversalOverride: reversalOverride || undefined,
       triggeredBy: trigger,
       sessionId,
       createdAt: new Date().toISOString(),

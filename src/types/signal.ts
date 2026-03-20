@@ -25,6 +25,9 @@ export interface SignalPayload {
   priorDayLevels: PriorDayLevels;   // PDH / PDL / PDC from yesterday's completed session
   orb: ORBResult;                   // Opening range breakout (9:30–10:00 ET)
 
+  // Early reversal override: LTF crossed opposite to majority while HTF fading + range extreme.
+  reversalOverride?: boolean;
+
   triggeredBy: 'AUTO' | 'MANUAL';
   sessionId?: string;
   createdAt: string;

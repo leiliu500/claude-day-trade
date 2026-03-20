@@ -32,7 +32,7 @@ function computeConfidence(signal: SignalPayload, option: OptionEvaluation): Con
           : tf.dmi.minusDI - tf.dmi.plusDI;
         return sum + spread;
       }, 0) / tfs.length;
-  const diSpreadBonus = Math.max(-0.15, Math.min(0.15, (avgDISpread / 40) * 0.15));
+  let diSpreadBonus = Math.max(-0.15, Math.min(0.15, (avgDISpread / 40) * 0.15));
 
   // ADX bonus: HTF ADX > 25
   // Full bonus at ADX > 25; partial bonus at ADX 20-25 with rapidly rising slope —
@@ -72,7 +72,13 @@ function computeConfidence(signal: SignalPayload, option: OptionEvaluation): Con
     mtf_ltf_aligned: 0.02,
     mixed: 0,
   };
-  const alignmentBonus = alignmentBonusMap[signal.alignment] ?? 0;
+  // Reversal override: LTF is leading a direction change, higher TFs haven't caught up.
+  // Floor alignment at all_aligned (+0.06) — the 3-condition reversal detection
+  // (LTF opposing + HTF fading + range extreme) is a strong composite signal.
+  let alignmentBonus = alignmentBonusMap[signal.alignment] ?? 0;
+  if (signal.reversalOverride && alignmentBonus < 0.06) {
+    alignmentBonus = 0.06;
+  }
 
   // TD adjustment — TERTIARY indicator with minimal weight. Late-stage confirming setups (7-9)
   // provide minor support; opposing completed setups are weak exhaustion signals. TD does NOT
@@ -443,7 +449,12 @@ function computeConfidence(signal: SignalPayload, option: OptionEvaluation): Con
       if (lastBarOpposes && priorConfirming >= 2) {
         // Direction change: prior bars built the trend, last bar reversed.
         // This is the exact scenario where lagging indicators peak at the reversal.
-        recentPriceActionBonus = -0.15;
+        // When all_aligned, cap at -0.08: a single opposing 1m bar in a confirmed
+        // multi-TF trend is likely noise, not a genuine reversal. Without this cap,
+        // the -0.15 triggers the 60% hard gate and blocks valid entries.
+        // Mar 20 SPY: bearish all_aligned at $652, single green 1m bar triggered
+        // -0.15 + hard gate → missed the $1.70 continuation drop.
+        recentPriceActionBonus = (signal.alignment === 'all_aligned' || signal.reversalOverride) ? -0.08 : -0.15;
       } else if (netOpposes && opposingBarCount >= 3) {
         recentPriceActionBonus = -0.12; // strong: all bars + net move oppose
       } else if (netOpposes && opposingBarCount >= 2) {
@@ -542,6 +553,7 @@ function computeConfidence(signal: SignalPayload, option: OptionEvaluation): Con
       } else if (htfRecentCross) {
         lowVolPenalty *= 0.50; // recent cross: half waive
       }
+      // All-aligned + ADX trending up reduction is applied after exhaustion is computed (see below).
     }
   }
 
@@ -590,6 +602,14 @@ function computeConfidence(signal: SignalPayload, option: OptionEvaluation): Con
         }
       }
     }
+  }
+
+  // Deferred lowVol reduction: all-aligned + ADX trending up = trend forming, ADX just
+  // hasn't crossed 20 yet. Skip when move exhaustion is active — weak ADX + extended
+  // move = don't ease up. Mar 20 SPY 13:36 ET: lowVol + exhaustion both halved → 65.6%
+  // bad entry at day's low that bounced $0.67.
+  if (lowVolPenalty < 0 && signal.alignment === 'all_aligned' && htf.dmi.adxSlope > 0 && moveExhaustionPenalty === 0) {
+    lowVolPenalty *= 0.50;
   }
 
   // Consolidation penalty — detects sideways/choppy price action where bars heavily overlap.
@@ -673,6 +693,18 @@ function computeConfidence(signal: SignalPayload, option: OptionEvaluation): Con
     if (nearLevelPenalty < 0 && signal.alignment === 'all_aligned') {
       nearLevelPenalty *= 0.5;
     }
+    // When swing low/high was set very recently (within last 2 bars), price is actively
+    // making new lows/highs — the level is breaking down, not acting as support/resistance.
+    // Mar 20 SPY: bearish at $652 near swing low $651.50 got -5% near-level, but price
+    // was actively pushing new lows — the swing low kept moving with price.
+    if (nearLevelPenalty < 0) {
+      const activelySetting = signal.direction === 'bearish'
+        ? ps.swingLowBarsAgo <= 2
+        : ps.swingHighBarsAgo <= 2;
+      if (activelySetting) {
+        nearLevelPenalty *= 0.5;
+      }
+    }
   }
 
   // Theta decay penalty — penalizes short-dated option entries as expiration approaches.
@@ -721,6 +753,20 @@ function computeConfidence(signal: SignalPayload, option: OptionEvaluation): Con
         }
       }
     }
+  }
+
+  // Reversal override adjustments: suppress penalties that are artifacts of the old direction.
+  // In a reversal, exhaustion/nearLevel/fading momentum/DI spread/low ADX all reflect the
+  // OLD trend completing, not the new direction being weak.
+  if (signal.reversalOverride) {
+    if (moveExhaustionPenalty < 0) moveExhaustionPenalty = 0;
+    if (nearLevelPenalty < 0) nearLevelPenalty = 0;
+    if (trendPhaseBonus < 0) trendPhaseBonus = 0;
+    if (momentumAccelBonus < 0) momentumAccelBonus = 0;
+    if (pricePositionAdjustment < 0) pricePositionAdjustment = 0;
+    if (diSpreadBonus < 0) diSpreadBonus = 0;   // MTF/HTF show old direction's DI dominance
+    if (lowVolPenalty < 0) lowVolPenalty = 0;    // low ADX = old trend weakening, expected
+    if (vwapBonus === 0) vwapBonus = 0.06;       // restore VWAP bonus killed by fading diSpreadSlope
   }
 
   let total = Math.max(0, Math.min(1, base + diSpreadBonus + adxBonus + diCrossBonus + alignmentBonus + tdAdjustment + obvBonus + vwapBonus + oiVolumeBonus + pricePositionAdjustment + adxMaturityPenalty + trendPhaseBonus + momentumAccelBonus + structureBonus + orbBonus + recentPriceActionBonus + trContractionPenalty + lowVolPenalty + moveExhaustionPenalty + consolidationPenalty + nearLevelPenalty + thetaDecayPenalty));
