@@ -35,7 +35,9 @@ function computeConfidence(signal: SignalPayload, option: OptionEvaluation): Con
   const diSpreadBonus = Math.max(-0.15, Math.min(0.15, (avgDISpread / 40) * 0.15));
 
   // ADX bonus: HTF ADX > 25
-  const adxBonus = htf.dmi.adx > 25 ? 0.05 : 0;
+  // Full bonus at ADX > 25; partial bonus at ADX 20-25 with rapidly rising slope —
+  // catches early-trend entries where ADX hasn't peaked yet but momentum is building.
+  const adxBonus = htf.dmi.adx > 25 ? 0.05 : (htf.dmi.adx > 20 && htf.dmi.adxSlope > 2 ? 0.03 : 0);
 
   // DI cross bonus — fresh DI crossover on the most recent bar is a strong timing signal.
   // HTF aligned cross: +0.05 | MTF aligned cross: +0.03 | HTF growth cross: +0.04 extra (cap +0.10)
@@ -211,6 +213,16 @@ function computeConfidence(signal: SignalPayload, option: OptionEvaluation): Con
   } else if (!htfFreshCross && htf.dmi.adxBarsAbove25 >= 5) {
     adxMaturityPenalty = -0.04;
   }
+  // Halve ADX maturity penalty when all timeframes align + DI spread still widening.
+  // All-aligned with expanding directional momentum = genuine continuation, not late chase.
+  if (adxMaturityPenalty < 0 && signal.alignment === 'all_aligned') {
+    const dirSpread = signal.direction === 'bullish'
+      ? htf.dmi.plusDI - htf.dmi.minusDI
+      : htf.dmi.minusDI - htf.dmi.plusDI;
+    if (dirSpread > 0 && htf.dmi.diSpreadSlope > 0) {
+      adxMaturityPenalty *= 0.5;
+    }
+  }
 
   // Trend phase bonus — uses ADX slope to detect WHERE in the trend lifecycle we are.
   // Rising ADX = trend strengthening (growth phase) → bonus for entering
@@ -243,6 +255,15 @@ function computeConfidence(signal: SignalPayload, option: OptionEvaluation): Con
       trendPhaseBonus -= 0.03;
     }
     trendPhaseBonus = Math.max(-0.08, Math.min(0.06, trendPhaseBonus));
+    // Halve negative trendPhase when all timeframes align + DI spread still widening.
+    // All-aligned with expanding DI spread = genuine trending move still in progress,
+    // even if ADX slope is declining (ADX peaks during strong trends).
+    const htfDirSpread = signal.direction === 'bullish'
+      ? htf.dmi.plusDI - htf.dmi.minusDI
+      : htf.dmi.minusDI - htf.dmi.plusDI;
+    if (trendPhaseBonus < 0 && signal.alignment === 'all_aligned' && htfDirSpread > 0 && htf.dmi.diSpreadSlope > 0) {
+      trendPhaseBonus *= 0.5;
+    }
   }
 
   // Momentum acceleration bonus — uses DI spread velocity to detect momentum changes.
@@ -303,18 +324,25 @@ function computeConfidence(signal: SignalPayload, option: OptionEvaluation): Con
     const strongActiveTrend = htf.dmi.adx > 25 && htf.dmi.adxSlope > 0;
     const extremePenaltyApplies = !strongActiveTrend && htf.dmi.adx >= 15;
 
+    // Softer extreme penalty when all_aligned — genuine trend pushes price to range edge.
+    const extremePenalty = signal.alignment === 'all_aligned' ? -0.06 : -0.12;
     if (signal.direction === 'bullish' && htfRangePosition > 0.5) {
       if (htfRangePosition >= 0.85 && extremePenaltyApplies) {
-        pricePositionAdjustment = -0.12;
+        pricePositionAdjustment = extremePenalty;
       } else if (adxMaturityPenalty === 0) {
         pricePositionAdjustment = Math.max(-0.08, -(htfRangePosition - 0.5) * 0.16);
       }
     } else if (signal.direction === 'bearish' && htfRangePosition < 0.5) {
       if (htfRangePosition <= 0.15 && extremePenaltyApplies) {
-        pricePositionAdjustment = -0.12;
+        pricePositionAdjustment = extremePenalty;
       } else if (adxMaturityPenalty === 0) {
         pricePositionAdjustment = Math.max(-0.08, -(0.5 - htfRangePosition) * 0.16);
       }
+    }
+    // Halve scaled price-position penalty when all_aligned — genuine trend pushes
+    // through range, not a reversal setup.
+    if (pricePositionAdjustment < 0 && pricePositionAdjustment > -0.06 && signal.alignment === 'all_aligned') {
+      pricePositionAdjustment *= 0.5;
     }
   }
 
@@ -555,6 +583,11 @@ function computeConfidence(signal: SignalPayload, option: OptionEvaluation): Con
         // NOTE: Price action confirmation does NOT reduce exhaustion penalty.
         // At the tail end of an exhausted move, recent bars still confirm direction
         // — that's what "chasing" looks like, not fresh momentum.
+        // However, when ALL timeframes align + momentum still accelerating AND the
+        // exhaustion is moderate (not severe 2.5+ ATR), the trend may be continuing.
+        if (moveExhaustionPenalty > -0.15 && moveExhaustionPenalty < 0 && signal.alignment === 'all_aligned' && momentumAccelBonus > 0) {
+          moveExhaustionPenalty *= 0.5;
+        }
       }
     }
   }
@@ -588,6 +621,10 @@ function computeConfidence(signal: SignalPayload, option: OptionEvaluation): Con
       } else if (overlapRatio >= 2.0) {
         consolidationPenalty = -0.03;
       }
+    }
+    // Halve consolidation when all_aligned — "pause that refreshes" in a genuine trend.
+    if (consolidationPenalty < 0 && signal.alignment === 'all_aligned') {
+      consolidationPenalty *= 0.5;
     }
   }
 
@@ -632,6 +669,10 @@ function computeConfidence(signal: SignalPayload, option: OptionEvaluation): Con
     }
     // NOTE: Price action confirmation does NOT reduce near-level penalty.
     // Confirming bars near support/resistance are the tail end before a bounce.
+    // However, all-aligned trends break through levels — reduce by 50%.
+    if (nearLevelPenalty < 0 && signal.alignment === 'all_aligned') {
+      nearLevelPenalty *= 0.5;
+    }
   }
 
   // Theta decay penalty — penalizes short-dated option entries as expiration approaches.
@@ -700,7 +741,8 @@ function computeConfidence(signal: SignalPayload, option: OptionEvaluation): Con
   // Relaxed to 0.64 (just below 0.65) when price action actively confirms, since
   // rare cases of genuine trend continuation do exist but should still require
   // elevated confidence from other factors to pass.
-  if (adxMaturityPenalty <= -0.15) {
+  // Exempt all_aligned — genuine trend continuation across all timeframes.
+  if (adxMaturityPenalty <= -0.15 && signal.alignment !== 'all_aligned') {
     if (recentPriceActionBonus > 0) {
       total = Math.min(total, 0.64);
     } else {
@@ -745,7 +787,8 @@ function computeConfidence(signal: SignalPayload, option: OptionEvaluation): Con
     const strongActiveTrend = htf.dmi.adx > 25 && htf.dmi.adxSlope > 0;
     const extremeGateApplies = !strongActiveTrend && htf.dmi.adx >= 15;
     const atExtreme = (signal.direction === 'bullish' && rp >= 0.85) || (signal.direction === 'bearish' && rp <= 0.15);
-    if (atExtreme && extremeGateApplies) {
+    // Also exempt all_aligned — genuine trend across all timeframes pushes price to range edge.
+    if (atExtreme && extremeGateApplies && signal.alignment !== 'all_aligned') {
       total = Math.min(total, 0.62);
     }
     // Softer gate: near extreme + DI spread narrowing = fading momentum at boundary

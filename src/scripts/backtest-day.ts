@@ -186,7 +186,7 @@ function computeConfidence(signal: SignalPayload, option: OptionEvaluation): Con
       }, 0) / tfs.length;
   const diSpreadBonus = Math.max(-0.15, Math.min(0.15, (avgDISpread / 40) * 0.15));
 
-  const adxBonus = htf.dmi.adx > 25 ? 0.05 : 0;
+  const adxBonus = htf.dmi.adx > 25 ? 0.05 : (htf.dmi.adx > 20 && htf.dmi.adxSlope > 2 ? 0.03 : 0);
 
   let diCrossBonus = 0;
   if (signal.direction !== 'neutral') {
@@ -271,6 +271,11 @@ function computeConfidence(signal: SignalPayload, option: OptionEvaluation): Con
   else if (!htfFreshCross && htf.dmi.adxBarsAbove25 >= 15) adxMaturityPenalty = -0.12;
   else if (!htfFreshCross && htf.dmi.adxBarsAbove25 >= 10) adxMaturityPenalty = -0.08;
   else if (!htfFreshCross && htf.dmi.adxBarsAbove25 >= 5) adxMaturityPenalty = -0.04;
+  if (adxMaturityPenalty < 0 && signal.alignment === 'all_aligned') {
+    const dirSpread = signal.direction === 'bullish'
+      ? htf.dmi.plusDI - htf.dmi.minusDI : htf.dmi.minusDI - htf.dmi.plusDI;
+    if (dirSpread > 0 && htf.dmi.diSpreadSlope > 0) adxMaturityPenalty *= 0.5;
+  }
 
   // Trend phase bonus
   let trendPhaseBonus = 0;
@@ -282,6 +287,12 @@ function computeConfidence(signal: SignalPayload, option: OptionEvaluation): Con
     else if (htfSlope < -2) { trendPhaseBonus -= 0.06; if (mtfSlope < -1) trendPhaseBonus -= 0.02; }
     else if (htfSlope < -0.5) trendPhaseBonus -= 0.03;
     trendPhaseBonus = Math.max(-0.08, Math.min(0.06, trendPhaseBonus));
+    const htfDirSpread = signal.direction === 'bullish'
+      ? htf.dmi.plusDI - htf.dmi.minusDI
+      : htf.dmi.minusDI - htf.dmi.plusDI;
+    if (trendPhaseBonus < 0 && signal.alignment === 'all_aligned' && htfDirSpread > 0 && htf.dmi.diSpreadSlope > 0) {
+      trendPhaseBonus *= 0.5;
+    }
   }
 
   // Momentum acceleration
@@ -307,13 +318,15 @@ function computeConfidence(signal: SignalPayload, option: OptionEvaluation): Con
     const rp = htf.priceStructure.rangePosition;
     const strongActiveTrend = htf.dmi.adx > 25 && htf.dmi.adxSlope > 0;
     const extremePenaltyApplies = !strongActiveTrend && htf.dmi.adx >= 15;
+    const extremePenalty = signal.alignment === 'all_aligned' ? -0.06 : -0.12;
     if (signal.direction === 'bullish' && rp > 0.5) {
-      if (rp >= 0.85 && extremePenaltyApplies) pricePositionAdjustment = -0.12;
+      if (rp >= 0.85 && extremePenaltyApplies) pricePositionAdjustment = extremePenalty;
       else if (adxMaturityPenalty === 0) pricePositionAdjustment = Math.max(-0.08, -(rp - 0.5) * 0.16);
     } else if (signal.direction === 'bearish' && rp < 0.5) {
-      if (rp <= 0.15 && extremePenaltyApplies) pricePositionAdjustment = -0.12;
+      if (rp <= 0.15 && extremePenaltyApplies) pricePositionAdjustment = extremePenalty;
       else if (adxMaturityPenalty === 0) pricePositionAdjustment = Math.max(-0.08, -(0.5 - rp) * 0.16);
     }
+    if (pricePositionAdjustment < 0 && pricePositionAdjustment > -0.06 && signal.alignment === 'all_aligned') pricePositionAdjustment *= 0.5;
   }
 
   // Structure bonus (prior day levels)
@@ -430,6 +443,9 @@ function computeConfidence(signal: SignalPayload, option: OptionEvaluation): Con
         if (moveATRs >= 2.5) moveExhaustionPenalty = -0.15;
         else if (moveATRs >= 1.5) moveExhaustionPenalty = -0.10;
         else if (moveATRs >= 1.0) moveExhaustionPenalty = -0.06;
+        if (moveExhaustionPenalty > -0.15 && moveExhaustionPenalty < 0 && signal.alignment === 'all_aligned' && momentumAccelBonus > 0) {
+          moveExhaustionPenalty *= 0.5;
+        }
       }
     }
   }
@@ -451,6 +467,7 @@ function computeConfidence(signal: SignalPayload, option: OptionEvaluation): Con
       else if (overlapRatio >= 2.5) consolidationPenalty = -0.06;
       else if (overlapRatio >= 2.0) consolidationPenalty = -0.03;
     }
+    if (consolidationPenalty < 0 && signal.alignment === 'all_aligned') consolidationPenalty *= 0.5;
   }
 
   // Near level penalty
@@ -471,6 +488,9 @@ function computeConfidence(signal: SignalPayload, option: OptionEvaluation): Con
       else if (distToResist > 0 && distToResist <= 0.50) nearLevelPenalty = -0.03;
     }
     // PA does NOT reduce near-level penalty
+    if (nearLevelPenalty < 0 && signal.alignment === 'all_aligned') {
+      nearLevelPenalty *= 0.5;
+    }
   }
 
   // Theta decay — use backtest simulated time (no 0DTE concern for backtest, set to 0)
@@ -480,14 +500,14 @@ function computeConfidence(signal: SignalPayload, option: OptionEvaluation): Con
 
   // Hard gates
   if (trContractionPenalty < 0 && recentPriceActionBonus <= 0) total = Math.min(total, 0.60);
-  if (adxMaturityPenalty <= -0.15) {
+  if (adxMaturityPenalty <= -0.15 && signal.alignment !== 'all_aligned') {
     total = Math.min(total, recentPriceActionBonus > 0 ? 0.64 : 0.55);
   }
   if (recentPriceActionBonus <= -0.15) total = Math.min(total, 0.60);
   if (moveExhaustionPenalty <= -0.06 && consolidationPenalty < 0) total = Math.min(total, 0.58);
   if (moveExhaustionPenalty <= -0.15) total = Math.min(total, 0.60);
   if (adxMaturityPenalty <= -0.08 && moveExhaustionPenalty <= -0.06) total = Math.min(total, 0.62);
-  { const rp = htf.priceStructure.rangePosition; const strongActiveTrend = htf.dmi.adx > 25 && htf.dmi.adxSlope > 0; const extremeGateApplies = !strongActiveTrend && htf.dmi.adx >= 15; const atExtreme = (signal.direction === 'bullish' && rp >= 0.85) || (signal.direction === 'bearish' && rp <= 0.15); if (atExtreme && extremeGateApplies) total = Math.min(total, 0.62); const nearExtreme = (signal.direction === 'bullish' && rp >= 0.75) || (signal.direction === 'bearish' && rp <= 0.25); if (nearExtreme && htf.dmi.diSpreadSlope < -3 && htf.dmi.adx >= 15) total = Math.min(total, 0.64); }
+  { const rp = htf.priceStructure.rangePosition; const strongActiveTrend = htf.dmi.adx > 25 && htf.dmi.adxSlope > 0; const extremeGateApplies = !strongActiveTrend && htf.dmi.adx >= 15; const atExtreme = (signal.direction === 'bullish' && rp >= 0.85) || (signal.direction === 'bearish' && rp <= 0.15); if (atExtreme && extremeGateApplies && signal.alignment !== 'all_aligned') total = Math.min(total, 0.62); const nearExtreme = (signal.direction === 'bullish' && rp >= 0.75) || (signal.direction === 'bearish' && rp <= 0.25); if (nearExtreme && htf.dmi.diSpreadSlope < -3 && htf.dmi.adx >= 15) total = Math.min(total, 0.64); }
   if (thetaDecayPenalty <= -0.10) total = Math.min(total, 0.55);
 
   return { base, diSpreadBonus, adxBonus, diCrossBonus, alignmentBonus, tdAdjustment, obvBonus, vwapBonus, oiVolumeBonus, pricePositionAdjustment, adxMaturityPenalty, trendPhaseBonus, momentumAccelBonus, structureBonus, orbBonus, recentPriceActionBonus, trContractionPenalty, lowVolPenalty, moveExhaustionPenalty, consolidationPenalty, nearLevelPenalty, thetaDecayPenalty, total };
@@ -694,6 +714,14 @@ async function main() {
     if (tickCount % 30 === 0) {
       process.stdout.write(`  Processed ${tickCount} ticks (${timeET} ET, $${currentPrice.toFixed(2)}, ${direction} ${alignment} conf=${cb.total.toFixed(2)})\n`);
     }
+
+    // DEBUG
+    const etMin = parseInt(timeET.split(':')[0]!) * 60 + parseInt(timeET.split(':')[1]!);
+    if (etMin >= 12*60+20 && etMin <= 12*60+50) {
+      const b = cb;
+      process.stdout.write(`\n  DBG ${timeET} $${currentPrice.toFixed(2)} ${direction} ${alignment} | base=${b.base.toFixed(3)} diSpr=${b.diSpreadBonus.toFixed(3)} adx=${b.adxBonus.toFixed(3)} diX=${b.diCrossBonus.toFixed(3)} align=${b.alignmentBonus.toFixed(3)} td=${b.tdAdjustment.toFixed(3)} obv=${b.obvBonus.toFixed(3)} vwap=${b.vwapBonus.toFixed(3)} oi=${b.oiVolumeBonus.toFixed(3)} prPos=${b.pricePositionAdjustment.toFixed(3)} adxMat=${b.adxMaturityPenalty.toFixed(3)} trendPh=${b.trendPhaseBonus.toFixed(3)} momAcc=${b.momentumAccelBonus.toFixed(3)} struct=${b.structureBonus.toFixed(3)} orb=${b.orbBonus.toFixed(3)} pa=${b.recentPriceActionBonus.toFixed(3)} trCont=${b.trContractionPenalty.toFixed(3)} lowVol=${b.lowVolPenalty.toFixed(3)} moveExh=${b.moveExhaustionPenalty.toFixed(3)} consol=${b.consolidationPenalty.toFixed(3)} nearLvl=${b.nearLevelPenalty.toFixed(3)} theta=${b.thetaDecayPenalty.toFixed(3)} | TOTAL=${b.total.toFixed(3)}\n`);
+    }
+
   }
 
   // ── Step 3: Report ─────────────────────────────────────────────────────────
