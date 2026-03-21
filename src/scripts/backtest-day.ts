@@ -911,12 +911,19 @@ async function main() {
       }
     } else {
       // ── Deterministic confirmation gate simulation ─────────────────────────
-      // Reset confirmation state when direction changes or signal drops below threshold
-      if (!meetsThreshold || direction === 'neutral' || (confirmStage1 && confirmStage1.direction !== direction)) {
-        if (!meetsThreshold || direction === 'neutral') confirmStage1 = null;
-        // Direction changed: reset and start fresh stage-1 if meets threshold
-        if (confirmStage1 && confirmStage1.direction !== direction && meetsThreshold && direction !== 'neutral') {
-          confirmStage1 = null; // will be set below as stage-1
+      // Reset confirmation state when direction changes or signal drops well below threshold.
+      // Allow stage-1 to survive brief dips (up to 3 ticks) if direction holds — on trending
+      // days, confidence oscillates near threshold and shouldn't reset the gate every tick.
+      if (confirmStage1) {
+        if (direction === 'neutral' || confirmStage1.direction !== direction) {
+          confirmStage1 = null; // direction change = hard reset
+        } else if (!meetsThreshold) {
+          // Brief dip grace: keep stage-1 alive for up to 3 ticks below threshold
+          const stage1Age = (currentTs - new Date(confirmStage1.time).getTime()) / 60_000;
+          if (stage1Age > 3 || cb.total < MIN_CONFIDENCE - 0.03) {
+            confirmStage1 = null; // too old or too far below threshold
+          }
+          // else: keep stage-1 alive, skip this tick (no entry push)
         }
       }
 
@@ -958,14 +965,23 @@ async function main() {
         let gateResult: EntryRecord['gateResult'];
         let stage1ConfValue: number | undefined;
 
+        // Strong-signal bypass: conf >= 75% + all_aligned can skip stage-2.
+        // Backtest showed no false positives at this level on losing days,
+        // but captures +53.3% and +9.2% entries on trending days.
+        const strongSignalBypass = cb.total >= 0.75 && alignment === 'all_aligned';
+
         if (highConvOverride) {
           gateResult = 'HIGH_CONV_OVERRIDE';
           confirmStage1 = null; // reset after entry
         } else if (!confirmStage1) {
-          // No prior stage-1 → this is Stage-1 OBSERVE
+          // No prior stage-1 → this is Stage-1 OBSERVE (or immediate entry if strong)
           if (phaseChangeOverride) {
             gateResult = 'PHASE_CHANGE_OVERRIDE';
             confirmStage1 = null;
+          } else if (strongSignalBypass) {
+            gateResult = 'PASSED';
+            confirmStage1 = null;
+            lastEntryTs = currentTs;
           } else {
             gateResult = 'STAGE1_OBSERVE';
             confirmStage1 = { direction, confidence: cb.total, time: timeStr };

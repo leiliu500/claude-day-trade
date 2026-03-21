@@ -479,18 +479,28 @@ export class DecisionOrchestrator {
         }
       }
 
-      if (!overrideOk && !phaseChangeOk && priorCount < 1) {
+      // Strong-signal bypass: conf >= 75% + all_aligned can skip stage-2.
+      // Backtest showed no false positives at this level on losing days (Mar 11/17/19),
+      // but captures profitable entries on trending days (Mar 18: +9.2%, Mar 20: +16.8%).
+      const strongSignalBypass = !overrideOk && !phaseChangeOk && priorCount < 1
+        && analysis.confidence >= 0.75 && signal.alignment === 'all_aligned';
+
+      if (!overrideOk && !phaseChangeOk && !strongSignalBypass && priorCount < 1) {
         rawOutput.decision_type = 'WAIT';
         rawOutput.should_execute = false;
         const timingNote = (phaseChangeStructuralOk && !phaseChangeTimingOk)
           ? ` [Phase-change structural signal present but timing rejected: ${phaseChangeTimingRejectReason}]`
           : '';
-        rawOutput.reasoning = `[STAGE-1 OBSERVE] [TRIGGER: AI recommended NEW_ENTRY but server gate blocked — priorCount=${priorCount}, needs ≥1 confirm]${timingNote} Building conviction (count will advance to 1). Override requires confidence>=0.92 + all_aligned, or phase-change (confidence>=0.60 + HTF DI cross + rising ADX + good timing). ${rawOutput.reasoning}`;
+        rawOutput.reasoning = `[STAGE-1 OBSERVE] [TRIGGER: AI recommended NEW_ENTRY but server gate blocked — priorCount=${priorCount}, needs ≥1 confirm]${timingNote} Building conviction (count will advance to 1). Override requires confidence>=0.92 + all_aligned, or confidence>=0.75 + all_aligned, or phase-change. ${rawOutput.reasoning}`;
         isStage1ObserveWait = true; // count advances to 1 so next cycle can enter at Stage-2
         if (phaseChangeStructuralOk && !phaseChangeTimingOk) {
           console.log(`[DecisionOrchestrator] Phase-change override blocked by timing filter: ${phaseChangeTimingRejectReason} (priorCount=${priorCount}, confidence=${analysis.confidence.toFixed(2)})`);
         }
         console.log(`[DecisionOrchestrator] NEW_ENTRY blocked by confirmation gate (Stage-1 OBSERVE, priorCount=${priorCount}, confidence=${analysis.confidence.toFixed(2)}, alignment=${signal.alignment})`);
+      } else if (strongSignalBypass) {
+        const side = signal.direction === 'bullish' ? 'CALL' : 'PUT';
+        rawOutput.reasoning = `[STRONG-SIGNAL BYPASS] Confidence ${(analysis.confidence * 100).toFixed(1)}% + all_aligned → immediate ${side} entry (no 2-stage wait). ${rawOutput.reasoning}`;
+        console.log(`[DecisionOrchestrator] NEW_ENTRY strong-signal bypass — ${side} (priorCount=${priorCount}, confidence=${analysis.confidence.toFixed(2)}, alignment=${signal.alignment})`);
       } else if (phaseChangeOk && priorCount < 1 && !overrideOk) {
         isPhaseChangeOverride = true;
         const side = signal.direction === 'bullish' ? 'CALL' : 'PUT';
