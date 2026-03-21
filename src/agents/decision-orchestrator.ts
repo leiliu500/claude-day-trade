@@ -129,6 +129,7 @@ export class DecisionOrchestrator {
         consolidation_penalty: analysis.confidenceBreakdown.consolidationPenalty,
         near_level_penalty: analysis.confidenceBreakdown.nearLevelPenalty,
         theta_decay_penalty: analysis.confidenceBreakdown.thetaDecayPenalty,
+        narrow_range_penalty: analysis.confidenceBreakdown.narrowRangePenalty,
         price_half: signal.timeframes[2]?.priceStructure.priceHalf ?? signal.timeframes[0]?.priceStructure.priceHalf ?? 'lower',
         range_position: parseFloat((signal.timeframes[2]?.priceStructure.rangePosition ?? signal.timeframes[0]?.priceStructure.rangePosition ?? 0.5).toFixed(2)),
         note: (signal.timeframes[2]?.priceStructure.priceHalf ?? signal.timeframes[0]?.priceStructure.priceHalf) === 'lower'

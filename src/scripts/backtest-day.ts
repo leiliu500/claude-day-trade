@@ -171,7 +171,7 @@ function computeConfidence(signal: SignalPayload, option: OptionEvaluation): Con
   const tfs = signal.timeframes;
   const [ltf, mtf, htf] = tfs;
   if (!ltf || !mtf || !htf) {
-    return { base: 0.38, diSpreadBonus: 0, adxBonus: 0, diCrossBonus: 0, alignmentBonus: 0, tdAdjustment: 0, obvBonus: 0, vwapBonus: 0, oiVolumeBonus: 0, pricePositionAdjustment: 0, adxMaturityPenalty: 0, trendPhaseBonus: 0, momentumAccelBonus: 0, structureBonus: 0, orbBonus: 0, recentPriceActionBonus: 0, trContractionPenalty: 0, lowVolPenalty: 0, moveExhaustionPenalty: 0, consolidationPenalty: 0, nearLevelPenalty: 0, thetaDecayPenalty: 0, total: 0.38 };
+    return { base: 0.38, diSpreadBonus: 0, adxBonus: 0, diCrossBonus: 0, alignmentBonus: 0, tdAdjustment: 0, obvBonus: 0, vwapBonus: 0, oiVolumeBonus: 0, pricePositionAdjustment: 0, adxMaturityPenalty: 0, trendPhaseBonus: 0, momentumAccelBonus: 0, structureBonus: 0, orbBonus: 0, recentPriceActionBonus: 0, trContractionPenalty: 0, lowVolPenalty: 0, moveExhaustionPenalty: 0, consolidationPenalty: 0, nearLevelPenalty: 0, thetaDecayPenalty: 0, narrowRangePenalty: 0, total: 0.38 };
   }
 
   const base = 0.38;
@@ -272,7 +272,7 @@ function computeConfidence(signal: SignalPayload, option: OptionEvaluation): Con
   else if (!htfFreshCross && htf.dmi.adxBarsAbove25 >= 15) adxMaturityPenalty = -0.12;
   else if (!htfFreshCross && htf.dmi.adxBarsAbove25 >= 10) adxMaturityPenalty = -0.08;
   else if (!htfFreshCross && htf.dmi.adxBarsAbove25 >= 5) adxMaturityPenalty = -0.04;
-  if (adxMaturityPenalty < 0 && signal.alignment === 'all_aligned') {
+  if (adxMaturityPenalty < 0 && signal.alignment === 'all_aligned' && htf.dmi.adx >= 20) {
     const dirSpread = signal.direction === 'bullish'
       ? htf.dmi.plusDI - htf.dmi.minusDI : htf.dmi.minusDI - htf.dmi.plusDI;
     if (dirSpread > 0 && htf.dmi.diSpreadSlope > 0) adxMaturityPenalty *= 0.5;
@@ -291,7 +291,7 @@ function computeConfidence(signal: SignalPayload, option: OptionEvaluation): Con
     const htfDirSpread = signal.direction === 'bullish'
       ? htf.dmi.plusDI - htf.dmi.minusDI
       : htf.dmi.minusDI - htf.dmi.plusDI;
-    if (trendPhaseBonus < 0 && signal.alignment === 'all_aligned' && htfDirSpread > 0 && htf.dmi.diSpreadSlope > 0) {
+    if (trendPhaseBonus < 0 && signal.alignment === 'all_aligned' && htf.dmi.adx >= 20 && htfDirSpread > 0 && htf.dmi.diSpreadSlope > 0) {
       trendPhaseBonus *= 0.5;
     }
   }
@@ -319,7 +319,7 @@ function computeConfidence(signal: SignalPayload, option: OptionEvaluation): Con
     const rp = htf.priceStructure.rangePosition;
     const strongActiveTrend = htf.dmi.adx > 25 && htf.dmi.adxSlope > 0;
     const extremePenaltyApplies = !strongActiveTrend && htf.dmi.adx >= 15;
-    const extremePenalty = signal.alignment === 'all_aligned' ? -0.06 : -0.12;
+    const extremePenalty = (signal.alignment === 'all_aligned' && htf.dmi.adx >= 20) ? -0.06 : -0.12;
     if (signal.direction === 'bullish' && rp > 0.5) {
       if (rp >= 0.85 && extremePenaltyApplies) pricePositionAdjustment = extremePenalty;
       else if (adxMaturityPenalty === 0) pricePositionAdjustment = Math.max(-0.08, -(rp - 0.5) * 0.16);
@@ -327,7 +327,7 @@ function computeConfidence(signal: SignalPayload, option: OptionEvaluation): Con
       if (rp <= 0.15 && extremePenaltyApplies) pricePositionAdjustment = extremePenalty;
       else if (adxMaturityPenalty === 0) pricePositionAdjustment = Math.max(-0.08, -(0.5 - rp) * 0.16);
     }
-    if (pricePositionAdjustment < 0 && pricePositionAdjustment > -0.06 && signal.alignment === 'all_aligned') pricePositionAdjustment *= 0.5;
+    if (pricePositionAdjustment < 0 && pricePositionAdjustment > -0.06 && signal.alignment === 'all_aligned' && htf.dmi.adx >= 20) pricePositionAdjustment *= 0.5;
   }
 
   // Structure bonus (prior day levels)
@@ -420,7 +420,9 @@ function computeConfidence(signal: SignalPayload, option: OptionEvaluation): Con
     if (htf.dmi.adx < 15) lowVolPenalty = -0.10;
     else if (htf.dmi.adx < 20) lowVolPenalty = -0.05;
     if (lowVolPenalty < 0) {
-      if (htfFreshCrossAligned) lowVolPenalty = 0;
+      // Fresh cross waiver: fully waive only when ADX is rising (genuine new trend).
+      // When ADX slope < 0, the cross happened but momentum is fading — halve instead.
+      if (htfFreshCrossAligned) lowVolPenalty = htf.dmi.adxSlope >= 0 ? 0 : lowVolPenalty * 0.50;
       else if (htfRecentCross) lowVolPenalty *= 0.50;
     }
   }
@@ -444,7 +446,7 @@ function computeConfidence(signal: SignalPayload, option: OptionEvaluation): Con
         if (moveATRs >= 2.5) moveExhaustionPenalty = -0.15;
         else if (moveATRs >= 1.5) moveExhaustionPenalty = -0.10;
         else if (moveATRs >= 1.0) moveExhaustionPenalty = -0.06;
-        if (moveExhaustionPenalty > -0.15 && moveExhaustionPenalty < 0 && signal.alignment === 'all_aligned' && momentumAccelBonus > 0) {
+        if (moveExhaustionPenalty > -0.15 && moveExhaustionPenalty < 0 && signal.alignment === 'all_aligned' && htf.dmi.adx >= 20 && momentumAccelBonus > 0) {
           moveExhaustionPenalty *= 0.5;
         }
       }
@@ -452,7 +454,7 @@ function computeConfidence(signal: SignalPayload, option: OptionEvaluation): Con
   }
 
   // Deferred lowVol reduction: all-aligned + ADX rising + no exhaustion
-  if (lowVolPenalty < 0 && signal.alignment === 'all_aligned' && htf.dmi.adxSlope > 0 && moveExhaustionPenalty === 0) {
+  if (lowVolPenalty < 0 && signal.alignment === 'all_aligned' && htf.dmi.adx >= 15 && htf.dmi.adxSlope > 0 && moveExhaustionPenalty === 0) {
     lowVolPenalty *= 0.50;
   }
 
@@ -473,7 +475,7 @@ function computeConfidence(signal: SignalPayload, option: OptionEvaluation): Con
       else if (overlapRatio >= 2.5) consolidationPenalty = -0.06;
       else if (overlapRatio >= 2.0) consolidationPenalty = -0.03;
     }
-    if (consolidationPenalty < 0 && signal.alignment === 'all_aligned') consolidationPenalty *= 0.5;
+    if (consolidationPenalty < 0 && signal.alignment === 'all_aligned' && htf.dmi.adx >= 20) consolidationPenalty *= 0.5;
   }
 
   // Near level penalty
@@ -494,7 +496,7 @@ function computeConfidence(signal: SignalPayload, option: OptionEvaluation): Con
       else if (distToResist > 0 && distToResist <= 0.50) nearLevelPenalty = -0.03;
     }
     // PA does NOT reduce near-level penalty
-    if (nearLevelPenalty < 0 && signal.alignment === 'all_aligned') {
+    if (nearLevelPenalty < 0 && signal.alignment === 'all_aligned' && htf.dmi.adx >= 20) {
       nearLevelPenalty *= 0.5;
     }
     if (nearLevelPenalty < 0) {
@@ -510,6 +512,20 @@ function computeConfidence(signal: SignalPayload, option: OptionEvaluation): Con
   // Theta decay — use backtest simulated time (no 0DTE concern for backtest, set to 0)
   const thetaDecayPenalty = 0;
 
+  // Narrow range penalty — intraday range vs prior day range
+  let narrowRangePenalty = 0;
+  if (signal.direction !== 'neutral' && htf.bars.length >= 3 && signal.priorDayLevels.pdh > 0) {
+    const priorDayRange = signal.priorDayLevels.pdh - signal.priorDayLevels.pdl;
+    if (priorDayRange > 0) {
+      let dayHigh = -Infinity, dayLow = Infinity;
+      for (const bar of htf.bars) { if (bar.high > dayHigh) dayHigh = bar.high; if (bar.low < dayLow) dayLow = bar.low; }
+      const rangeRatio = (dayHigh - dayLow) / priorDayRange;
+      if (rangeRatio < 0.40) narrowRangePenalty = -0.12;
+      else if (rangeRatio < 0.55) narrowRangePenalty = -0.08;
+      else if (rangeRatio < 0.70) narrowRangePenalty = -0.04;
+    }
+  }
+
   // Reversal override adjustments (same as analysis-agent.ts)
   if (signal.reversalOverride) {
     if (moveExhaustionPenalty < 0) moveExhaustionPenalty = 0;
@@ -522,21 +538,31 @@ function computeConfidence(signal: SignalPayload, option: OptionEvaluation): Con
     if (vwapBonus === 0) vwapBonus = 0.06;
   }
 
-  let total = Math.max(0, Math.min(1, base + diSpreadBonus + adxBonus + diCrossBonus + alignmentBonus + tdAdjustment + obvBonus + vwapBonus + oiVolumeBonus + pricePositionAdjustment + adxMaturityPenalty + trendPhaseBonus + momentumAccelBonus + structureBonus + orbBonus + recentPriceActionBonus + trContractionPenalty + lowVolPenalty + moveExhaustionPenalty + consolidationPenalty + nearLevelPenalty + thetaDecayPenalty));
+  // DI Spread cap for aged trends: in a mature trend the DI spread reflects sustained
+  // momentum, not fresh signal. Cap to prevent inflated confidence on stale setups.
+  if (adxMaturityPenalty <= -0.04) diSpreadBonus = Math.min(diSpreadBonus, 0.06);
+
+  let total = Math.max(0, Math.min(1, base + diSpreadBonus + adxBonus + diCrossBonus + alignmentBonus + tdAdjustment + obvBonus + vwapBonus + oiVolumeBonus + pricePositionAdjustment + adxMaturityPenalty + trendPhaseBonus + momentumAccelBonus + structureBonus + orbBonus + recentPriceActionBonus + trContractionPenalty + lowVolPenalty + moveExhaustionPenalty + consolidationPenalty + nearLevelPenalty + thetaDecayPenalty + narrowRangePenalty));
 
   // Hard gates
   if (trContractionPenalty < 0 && recentPriceActionBonus <= 0) total = Math.min(total, 0.60);
-  if (adxMaturityPenalty <= -0.15 && signal.alignment !== 'all_aligned') {
+  if (adxMaturityPenalty <= -0.15 && !(signal.alignment === 'all_aligned' && htf.dmi.adx >= 20)) {
     total = Math.min(total, recentPriceActionBonus > 0 ? 0.64 : 0.55);
   }
   if (recentPriceActionBonus <= -0.15) total = Math.min(total, 0.60);
   if (moveExhaustionPenalty <= -0.06 && consolidationPenalty < 0) total = Math.min(total, 0.58);
   if (moveExhaustionPenalty <= -0.15) total = Math.min(total, 0.60);
   if (adxMaturityPenalty <= -0.08 && moveExhaustionPenalty <= -0.06) total = Math.min(total, 0.62);
-  { const rp = htf.priceStructure.rangePosition; const strongActiveTrend = htf.dmi.adx > 25 && htf.dmi.adxSlope > 0; const extremeGateApplies = !strongActiveTrend && htf.dmi.adx >= 15; const atExtreme = (signal.direction === 'bullish' && rp >= 0.85) || (signal.direction === 'bearish' && rp <= 0.15); if (atExtreme && extremeGateApplies && signal.alignment !== 'all_aligned') total = Math.min(total, 0.62); const nearExtreme = (signal.direction === 'bullish' && rp >= 0.75) || (signal.direction === 'bearish' && rp <= 0.25); if (nearExtreme && htf.dmi.diSpreadSlope < -3 && htf.dmi.adx >= 15) total = Math.min(total, 0.64); }
+  // Very severe ADX maturity (post-halving still >= 7%): trend ran 20+ bars above ADX 25.
+  // Even with all_aligned halving, this much aging means the easy money is gone.
+  if (adxMaturityPenalty <= -0.07) total = Math.min(total, 0.64);
+  // Aged trend stalling without price confirmation — high reversal probability.
+  if (adxMaturityPenalty <= -0.06 && consolidationPenalty <= -0.04 && recentPriceActionBonus <= 0) total = Math.min(total, 0.64);
+  { const rp = htf.priceStructure.rangePosition; const strongActiveTrend = htf.dmi.adx > 25 && htf.dmi.adxSlope > 0; const extremeGateApplies = !strongActiveTrend && htf.dmi.adx >= 15; const atExtreme = (signal.direction === 'bullish' && rp >= 0.85) || (signal.direction === 'bearish' && rp <= 0.15); if (atExtreme && extremeGateApplies && !(signal.alignment === 'all_aligned' && htf.dmi.adx >= 20)) total = Math.min(total, 0.62); const nearExtreme = (signal.direction === 'bullish' && rp >= 0.75) || (signal.direction === 'bearish' && rp <= 0.25); if (nearExtreme && htf.dmi.diSpreadSlope < -3 && htf.dmi.adx >= 15) total = Math.min(total, 0.64); }
+  if (narrowRangePenalty <= -0.08 && pricePositionAdjustment <= -0.04) total = Math.min(total, 0.60);
   if (thetaDecayPenalty <= -0.10) total = Math.min(total, 0.55);
 
-  return { base, diSpreadBonus, adxBonus, diCrossBonus, alignmentBonus, tdAdjustment, obvBonus, vwapBonus, oiVolumeBonus, pricePositionAdjustment, adxMaturityPenalty, trendPhaseBonus, momentumAccelBonus, structureBonus, orbBonus, recentPriceActionBonus, trContractionPenalty, lowVolPenalty, moveExhaustionPenalty, consolidationPenalty, nearLevelPenalty, thetaDecayPenalty, total };
+  return { base, diSpreadBonus, adxBonus, diCrossBonus, alignmentBonus, tdAdjustment, obvBonus, vwapBonus, oiVolumeBonus, pricePositionAdjustment, adxMaturityPenalty, trendPhaseBonus, momentumAccelBonus, structureBonus, orbBonus, recentPriceActionBonus, trContractionPenalty, lowVolPenalty, moveExhaustionPenalty, consolidationPenalty, nearLevelPenalty, thetaDecayPenalty, narrowRangePenalty, total };
 }
 
 // ── Mock option evaluation (no historical option data available) ──────────────
@@ -576,6 +602,9 @@ interface EntryRecord {
   priceAt30m: number | null;
   outcome: 'GOOD' | 'BAD' | 'MARGINAL';
   breakdown: ConfidenceBreakdown;
+  // Confirmation gate simulation
+  gateResult: 'PASSED' | 'STAGE1_OBSERVE' | 'WEAKENING_BLOCK' | 'STALE_BLOCK' | 'HIGH_CONV_OVERRIDE' | 'PHASE_CHANGE_OVERRIDE';
+  stage1Conf?: number;  // confidence at stage-1 (if applicable)
 }
 
 function utcToET(utcTime: string): string {
@@ -628,6 +657,11 @@ async function main() {
   // ── Step 2: Walk through market hours in 1-min intervals ──────────────────
   const entries: EntryRecord[] = [];
   const allTicks: { time: string; timeET: string; price: number; direction: SignalDirection; alignment: AlignmentType; confidence: number; meetsThreshold: boolean }[] = [];
+
+  // ── Confirmation gate state ────────────────────────────────────────────────
+  // Simulates the 2-stage confirmation gate from decision-orchestrator.ts
+  let confirmStage1: { direction: SignalDirection; confidence: number; time: string } | null = null;
+  let lastEntryTs = 0; // track when last confirmed entry happened (for dedup)
 
   // Generate 1-min timestamps from market open to close
   const openTime = new Date(`${TARGET_DATE}T${MARKET_OPEN_UTC}:00Z`);
@@ -715,9 +749,86 @@ async function main() {
     tickCount++;
     allTicks.push({ time: timeStr, timeET, price: currentPrice, direction, alignment, confidence: cb.total, meetsThreshold });
 
+    // ── Confirmation gate simulation ──────────────────────────────────────────
+    // Reset confirmation state when direction changes or signal drops below threshold
+    if (!meetsThreshold || direction === 'neutral' || (confirmStage1 && confirmStage1.direction !== direction)) {
+      if (!meetsThreshold || direction === 'neutral') confirmStage1 = null;
+      // Direction changed: reset and start fresh stage-1 if meets threshold
+      if (confirmStage1 && confirmStage1.direction !== direction && meetsThreshold && direction !== 'neutral') {
+        confirmStage1 = null; // will be set below as stage-1
+      }
+    }
+
     if (meetsThreshold && direction !== 'neutral') {
-      // Calculate forward price moves for outcome analysis
-      const futureBars = targetDateBars.filter(b => new Date(b.timestamp).getTime() > currentTs);
+      // Determine gate result
+      const htfTf = tfIndicators[2] ?? tfIndicators[0];
+      const highConvOverride = cb.total >= 0.92 && alignment === 'all_aligned';
+
+      // Phase-change override: HTF growth cross in signal direction + rising ADX + non-mixed
+      const growthCross = direction === 'bullish' ? htfTf?.dmi.growthCrossUp : htfTf?.dmi.growthCrossDown;
+      const phaseChangeStructural = !!htfTf && cb.total >= 0.60 && alignment !== 'mixed' && growthCross;
+      // Simplified timing checks for phase-change
+      let phaseChangeTimingOk = true;
+      if (phaseChangeStructural && htfTf) {
+        const rp = htfTf.priceStructure.rangePosition;
+        if (direction === 'bullish' && rp > 0.85) phaseChangeTimingOk = false;
+        if (direction === 'bearish' && rp < 0.15) phaseChangeTimingOk = false;
+        if (htfTf.dmi.adx > 50) phaseChangeTimingOk = false;
+        // VWAP alignment
+        const ltfTf = tfIndicators[0];
+        if (ltfTf) {
+          const vwapPct = ltfTf.vwap.priceVsVwap;
+          if (direction === 'bullish' && vwapPct < -0.30) phaseChangeTimingOk = false;
+          if (direction === 'bearish' && vwapPct > 0.30) phaseChangeTimingOk = false;
+        }
+        // ORB alignment
+        if (signal.orb.orbFormed) {
+          const orbDir = signal.orb.breakoutDirection;
+          if (direction === 'bullish' && orbDir === 'bearish') phaseChangeTimingOk = false;
+          if (direction === 'bearish' && orbDir === 'bullish') phaseChangeTimingOk = false;
+        }
+      }
+      const phaseChangeOverride = phaseChangeStructural && phaseChangeTimingOk;
+
+      let gateResult: EntryRecord['gateResult'];
+      let stage1ConfValue: number | undefined;
+
+      if (highConvOverride) {
+        gateResult = 'HIGH_CONV_OVERRIDE';
+        confirmStage1 = null; // reset after entry
+      } else if (!confirmStage1) {
+        // No prior stage-1 → this is Stage-1 OBSERVE
+        if (phaseChangeOverride) {
+          gateResult = 'PHASE_CHANGE_OVERRIDE';
+          confirmStage1 = null;
+        } else {
+          gateResult = 'STAGE1_OBSERVE';
+          confirmStage1 = { direction, confidence: cb.total, time: timeStr };
+        }
+      } else {
+        // Stage-2: we have a prior stage-1 in the same direction
+        stage1ConfValue = confirmStage1.confidence;
+        const confDelta = Math.abs(cb.total - confirmStage1.confidence);
+        const staleThreshold = Math.min(0.03, Math.max(0.01, (1 - confirmStage1.confidence) * 0.15));
+
+        if (cb.total < confirmStage1.confidence) {
+          gateResult = 'WEAKENING_BLOCK';
+          // Keep stage-1 alive — next tick can still try stage-2
+        } else if (confDelta < staleThreshold) {
+          gateResult = 'STALE_BLOCK';
+          // Keep stage-1 alive
+        } else {
+          gateResult = 'PASSED';
+          confirmStage1 = null; // reset after confirmed entry
+          lastEntryTs = currentTs;
+        }
+      }
+
+      // Calculate forward price moves for outcome analysis (2-hour window — realistic hold time)
+      const futureBars = targetDateBars.filter(b => {
+        const bt = new Date(b.timestamp).getTime();
+        return bt > currentTs && bt <= currentTs + 120 * 60_000;
+      });
       let maxFavorable = 0;
       let maxAdverse = 0;
 
@@ -757,6 +868,7 @@ async function main() {
         time: timeStr, timeET, direction, alignment, confidence: cb.total,
         price: currentPrice, strengthScore, maxFavorable, maxAdverse,
         priceAt5m, priceAt10m, priceAt15m, priceAt30m, outcome, breakdown: cb,
+        gateResult, stage1Conf: stage1ConfValue,
       });
     }
 
@@ -774,13 +886,21 @@ async function main() {
   console.log(`${'='.repeat(80)}\n`);
 
   // Deduplicate consecutive entries (same direction within 5 min = same signal)
+  // Within each 5-min window, prefer confirmed entries over blocked ones.
+  const isConfirmed = (e: EntryRecord) => e.gateResult === 'PASSED' || e.gateResult === 'HIGH_CONV_OVERRIDE' || e.gateResult === 'PHASE_CHANGE_OVERRIDE';
   const dedupedEntries: EntryRecord[] = [];
   for (const entry of entries) {
     const prev = dedupedEntries[dedupedEntries.length - 1];
     if (prev && prev.direction === entry.direction) {
       const prevTs = new Date(prev.time).getTime();
       const currTs = new Date(entry.time).getTime();
-      if (currTs - prevTs < 5 * 60_000) continue; // skip if same direction within 5 min
+      if (currTs - prevTs < 5 * 60_000) {
+        // Within same window: upgrade if current is confirmed but prev was blocked
+        if (isConfirmed(entry) && !isConfirmed(prev)) {
+          dedupedEntries[dedupedEntries.length - 1] = entry;
+        }
+        continue;
+      }
     }
     dedupedEntries.push(entry);
   }
@@ -791,10 +911,18 @@ async function main() {
   for (let i = 0; i < dedupedEntries.length; i++) {
     const e = dedupedEntries[i]!;
     const tag = e.outcome === 'BAD' ? '❌ BAD' : e.outcome === 'GOOD' ? '✅ GOOD' : '⚠️  MARGINAL';
-    console.log(`  Entry #${i + 1}: ${tag}`);
+    const gateTag = e.gateResult === 'PASSED' ? '🟢 CONFIRMED'
+      : e.gateResult === 'HIGH_CONV_OVERRIDE' ? '⚡ HIGH-CONV OVERRIDE'
+      : e.gateResult === 'PHASE_CHANGE_OVERRIDE' ? '⚡ PHASE-CHANGE OVERRIDE'
+      : e.gateResult === 'STAGE1_OBSERVE' ? '🔵 STAGE-1 (would wait)'
+      : e.gateResult === 'WEAKENING_BLOCK' ? '🔴 WEAKENING BLOCK'
+      : e.gateResult === 'STALE_BLOCK' ? '🟡 STALE BLOCK'
+      : '?';
+    const wouldEnter = e.gateResult === 'PASSED' || e.gateResult === 'HIGH_CONV_OVERRIDE' || e.gateResult === 'PHASE_CHANGE_OVERRIDE';
+    console.log(`  Entry #${i + 1}: ${tag} | Gate: ${gateTag}${wouldEnter ? '' : ' ← BLOCKED'}`);
     console.log(`    Time:       ${e.timeET} ET (${e.time.slice(11, 19)} UTC)`);
     console.log(`    Direction:  ${e.direction.toUpperCase()} | Alignment: ${e.alignment} | Strength: ${e.strengthScore}`);
-    console.log(`    Price:      $${e.price.toFixed(2)} | Confidence: ${(e.confidence * 100).toFixed(1)}%`);
+    console.log(`    Price:      $${e.price.toFixed(2)} | Confidence: ${(e.confidence * 100).toFixed(1)}%${e.stage1Conf !== undefined ? ` (Stage-1 was ${(e.stage1Conf * 100).toFixed(1)}%)` : ''}`);
     console.log(`    Forward:    max favorable=$${e.maxFavorable.toFixed(2)}, max adverse=$${e.maxAdverse.toFixed(2)}`);
     if (e.priceAt5m !== null) {
       const m5 = e.direction === 'bullish' ? e.priceAt5m - e.price : e.price - e.priceAt5m;
@@ -832,6 +960,7 @@ async function main() {
       { name: 'Exhaustion', val: cb.moveExhaustionPenalty },
       { name: 'Consolidation', val: cb.consolidationPenalty },
       { name: 'Near Level', val: cb.nearLevelPenalty },
+      { name: 'Narrow Range', val: cb.narrowRangePenalty },
     ].filter(f => Math.abs(f.val) >= 0.01);
     const factorStr = factors.map(f => `${f.name}=${f.val >= 0 ? '+' : ''}${f.val.toFixed(3)}`).join(', ');
     console.log(`    Factors:    base=0.380, ${factorStr}`);
@@ -843,6 +972,14 @@ async function main() {
   const badCount = dedupedEntries.filter(e => e.outcome === 'BAD').length;
   const marginalCount = dedupedEntries.filter(e => e.outcome === 'MARGINAL').length;
 
+  // Gate statistics
+  const confirmedEntries = dedupedEntries.filter(e => e.gateResult === 'PASSED' || e.gateResult === 'HIGH_CONV_OVERRIDE' || e.gateResult === 'PHASE_CHANGE_OVERRIDE');
+  const blockedEntries = dedupedEntries.filter(e => e.gateResult === 'STAGE1_OBSERVE' || e.gateResult === 'WEAKENING_BLOCK' || e.gateResult === 'STALE_BLOCK');
+  const confirmedGood = confirmedEntries.filter(e => e.outcome === 'GOOD').length;
+  const confirmedBad = confirmedEntries.filter(e => e.outcome === 'BAD').length;
+  const blockedGood = blockedEntries.filter(e => e.outcome === 'GOOD').length;
+  const blockedBad = blockedEntries.filter(e => e.outcome === 'BAD').length;
+
   console.log(`${'─'.repeat(80)}`);
   console.log(`  SUMMARY`);
   console.log(`  Total unique entries: ${dedupedEntries.length}`);
@@ -850,6 +987,18 @@ async function main() {
   console.log(`  ⚠️  Marginal: ${marginalCount}`);
   console.log(`  ❌ Bad:      ${badCount}`);
   console.log(`  Win rate:    ${dedupedEntries.length > 0 ? ((goodCount / dedupedEntries.length) * 100).toFixed(0) : 0}% good, ${dedupedEntries.length > 0 ? ((badCount / dedupedEntries.length) * 100).toFixed(0) : 0}% bad`);
+
+  console.log(`\n  ── Confirmation Gate Analysis ──`);
+  console.log(`  🟢 Would enter (confirmed/override): ${confirmedEntries.length} (${confirmedGood} good, ${confirmedBad} bad)`);
+  console.log(`  🚫 Would block:                      ${blockedEntries.length} (${blockedGood} good missed, ${blockedBad} bad avoided)`);
+  for (const blocked of blockedEntries) {
+    const outcomeIcon = blocked.outcome === 'GOOD' ? '⚠️  MISSED' : blocked.outcome === 'BAD' ? '✅ AVOIDED' : '── MARGINAL';
+    console.log(`     ${blocked.timeET} ET ${blocked.direction} ${blocked.gateResult} → ${outcomeIcon} (conf=${(blocked.confidence * 100).toFixed(1)}%${blocked.stage1Conf !== undefined ? `, stage1=${(blocked.stage1Conf * 100).toFixed(1)}%` : ''})`);
+  }
+  if (confirmedEntries.length > 0) {
+    const confirmedWinRate = confirmedGood / confirmedEntries.length * 100;
+    console.log(`  Gate-filtered win rate: ${confirmedWinRate.toFixed(0)}% (vs ${dedupedEntries.length > 0 ? ((goodCount / dedupedEntries.length) * 100).toFixed(0) : 0}% ungated)`);
+  }
 
   // Show ticks above threshold that were NOT entries (direction neutral)
   const neutralAboveThreshold = allTicks.filter(t => t.meetsThreshold && t.direction === 'neutral');

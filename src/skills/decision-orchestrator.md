@@ -135,12 +135,30 @@ The `confidence_breakdown` includes `tr_contraction_penalty` (−0.08 to 0) whic
 - When `tr_contraction_penalty < 0` AND `recent_price_action_bonus <= 0`, confidence is hard-capped at 0.60 (below entry threshold) — this is enforced by the system. A brief price pop on shrinking bars is a dead cat bounce, not a re-acceleration.
 - Expanding TR (no contraction penalty) combined with confirming price action is the strongest instant momentum signal
 
+## All-Aligned Halving — ADX >= 20 Required
+Multiple penalties are halved when `alignment = "all_aligned"` to reflect genuine multi-timeframe trends. However, this halving benefit now requires **HTF ADX >= 20** — all_aligned with weak ADX (< 20) does not earn penalty reduction. This applies to: price position adjustment, consolidation penalty, near-level penalty, move exhaustion penalty, ADX maturity penalty, trend phase penalty, and the range-extreme hard gate exemption.
+- When ADX < 20, "all_aligned" may just mean all timeframes are drifting in the same direction without real trend strength — penalties apply in full.
+- DI spread bonus is capped at 0.06 when ADX maturity penalty <= -0.04 (aged trend — spread reflects sustained momentum, not fresh signal).
+
+## ADX Maturity Hard Gates
+- `adx_maturity_penalty <= -0.07` (severe aging, post-halving): confidence hard-capped at 0.64. Trend ran 20+ bars above ADX 25 — easy money is gone, reversal risk is high.
+- `adx_maturity_penalty <= -0.06` AND `consolidation_penalty <= -0.04` AND `recent_price_action_bonus <= 0`: confidence hard-capped at 0.64. Aged trend stalling without price confirmation — running out of steam with no new conviction.
+
 ## Low Volatility Awareness
 The `confidence_breakdown` includes `low_vol_penalty` (−0.10 to 0) which penalizes entries in range-bound, trendless markets.
 - `low_vol_penalty = -0.10`: HTF ADX < 15 — no real trend, directionless chop. Options theta will eat premium while price goes nowhere. Note in risk_notes: "No trending conditions — low ADX theta trap risk"
 - `low_vol_penalty = -0.05`: HTF ADX 15-20 — weak/emerging trend, marginal conditions
 - `low_vol_penalty = 0`: ADX >= 20 or fresh DI cross present — normal/strong trend
+- Fresh DI cross waiver is conditional: full waive only when ADX slope >= 0 (genuine new trend); when ADX slope < 0, the cross happened but momentum is fading — penalty is halved, not removed
 - Low volatility combined with marginal confidence (0.65-0.70) is a strong reason for caution
+
+## Narrow Range Awareness
+The `confidence_breakdown` includes `narrow_range_penalty` (−0.12 to 0) which detects range-bound/choppy days where the intraday range so far is small relative to the prior day's range.
+- `narrow_range_penalty = -0.12`: today's range < 40% of prior day — extremely tight, directionless chop. DMI/ADX alignment in a $2-3 range has no follow-through. Note in risk_notes: "Narrow range day — intraday range extremely compressed vs prior day"
+- `narrow_range_penalty = -0.08`: today's range < 55% of prior day — tight range, limited follow-through potential
+- `narrow_range_penalty = -0.04`: today's range < 70% of prior day — below-average range, cautious
+- `narrow_range_penalty = 0`: today's range is >= 70% of prior day — normal conditions
+- When `narrow_range_penalty <= -0.08` AND `price_position_adjustment <= -0.04` (near range extreme on a tight day), confidence is hard-capped at 0.60 — price is at the edge of a tiny box and mean-reversion is almost certain.
 
 ## ATR Awareness
 Each timeframe includes `atr_pct` (ATR as % of last close).

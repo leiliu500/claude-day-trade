@@ -152,7 +152,7 @@ function computeConfidence(signal: SignalPayload, option: OptionEvaluation): Con
   const tfs = signal.timeframes;
   const [ltf, mtf, htf] = tfs;
   if (!ltf || !mtf || !htf) {
-    return { base: 0.38, diSpreadBonus: 0, adxBonus: 0, diCrossBonus: 0, alignmentBonus: 0, tdAdjustment: 0, obvBonus: 0, vwapBonus: 0, oiVolumeBonus: 0, pricePositionAdjustment: 0, adxMaturityPenalty: 0, trendPhaseBonus: 0, momentumAccelBonus: 0, structureBonus: 0, orbBonus: 0, recentPriceActionBonus: 0, trContractionPenalty: 0, lowVolPenalty: 0, moveExhaustionPenalty: 0, consolidationPenalty: 0, nearLevelPenalty: 0, thetaDecayPenalty: 0, total: 0.38 };
+    return { base: 0.38, diSpreadBonus: 0, adxBonus: 0, diCrossBonus: 0, alignmentBonus: 0, tdAdjustment: 0, obvBonus: 0, vwapBonus: 0, oiVolumeBonus: 0, pricePositionAdjustment: 0, adxMaturityPenalty: 0, trendPhaseBonus: 0, momentumAccelBonus: 0, structureBonus: 0, orbBonus: 0, recentPriceActionBonus: 0, trContractionPenalty: 0, lowVolPenalty: 0, moveExhaustionPenalty: 0, consolidationPenalty: 0, nearLevelPenalty: 0, thetaDecayPenalty: 0, narrowRangePenalty: 0, total: 0.38 };
   }
 
   const base = 0.38;
@@ -309,7 +309,9 @@ function computeConfidence(signal: SignalPayload, option: OptionEvaluation): Con
     if (htf.dmi.adx < 15) lowVolPenalty = -0.10;
     else if (htf.dmi.adx < 20) lowVolPenalty = -0.05;
     if (lowVolPenalty < 0) {
-      if (htfFreshCrossAligned) lowVolPenalty = 0;
+      // Fresh cross waiver: fully waive only when ADX is rising (genuine new trend).
+      // When ADX slope < 0, the cross happened but momentum is fading — halve instead.
+      if (htfFreshCrossAligned) lowVolPenalty = htf.dmi.adxSlope >= 0 ? 0 : lowVolPenalty * 0.50;
       else if (htfRecentCross) lowVolPenalty *= 0.50;
     }
   }
@@ -344,7 +346,20 @@ function computeConfidence(signal: SignalPayload, option: OptionEvaluation): Con
     }
   }
   const thetaDecayPenalty = 0;
-  let total = Math.max(0, Math.min(1, base + diSpreadBonus + adxBonus + diCrossBonus + alignmentBonus + tdAdjustment + obvBonus + vwapBonus + oiVolumeBonus + pricePositionAdjustment + adxMaturityPenalty + trendPhaseBonus + momentumAccelBonus + structureBonus + orbBonus + recentPriceActionBonus + trContractionPenalty + lowVolPenalty + moveExhaustionPenalty + consolidationPenalty + nearLevelPenalty + thetaDecayPenalty));
+  // Narrow range penalty — intraday range vs prior day range
+  let narrowRangePenalty = 0;
+  if (signal.direction !== 'neutral' && htf.bars.length >= 3 && signal.priorDayLevels.pdh > 0) {
+    const priorDayRange = signal.priorDayLevels.pdh - signal.priorDayLevels.pdl;
+    if (priorDayRange > 0) {
+      let dayHigh = -Infinity, dayLow = Infinity;
+      for (const bar of htf.bars) { if (bar.high > dayHigh) dayHigh = bar.high; if (bar.low < dayLow) dayLow = bar.low; }
+      const rangeRatio = (dayHigh - dayLow) / priorDayRange;
+      if (rangeRatio < 0.40) narrowRangePenalty = -0.12;
+      else if (rangeRatio < 0.55) narrowRangePenalty = -0.08;
+      else if (rangeRatio < 0.70) narrowRangePenalty = -0.04;
+    }
+  }
+  let total = Math.max(0, Math.min(1, base + diSpreadBonus + adxBonus + diCrossBonus + alignmentBonus + tdAdjustment + obvBonus + vwapBonus + oiVolumeBonus + pricePositionAdjustment + adxMaturityPenalty + trendPhaseBonus + momentumAccelBonus + structureBonus + orbBonus + recentPriceActionBonus + trContractionPenalty + lowVolPenalty + moveExhaustionPenalty + consolidationPenalty + nearLevelPenalty + thetaDecayPenalty + narrowRangePenalty));
   // Hard gates
   if (trContractionPenalty < 0 && recentPriceActionBonus <= 0) total = Math.min(total, 0.60);
   if (adxMaturityPenalty <= -0.15) total = Math.min(total, recentPriceActionBonus > 0 ? 0.64 : 0.55);
@@ -352,6 +367,7 @@ function computeConfidence(signal: SignalPayload, option: OptionEvaluation): Con
   if (moveExhaustionPenalty <= -0.06 && consolidationPenalty < 0) total = Math.min(total, 0.58);
   if (moveExhaustionPenalty <= -0.15) total = Math.min(total, 0.60);
   if (adxMaturityPenalty <= -0.08 && moveExhaustionPenalty <= -0.06) total = Math.min(total, 0.62);
+  if (narrowRangePenalty <= -0.08 && pricePositionAdjustment <= -0.04) total = Math.min(total, 0.60);
   {
     const rp = htf.priceStructure.rangePosition;
     const strongActiveTrend = htf.dmi.adx > 25 && htf.dmi.adxSlope > 0;
@@ -361,7 +377,7 @@ function computeConfidence(signal: SignalPayload, option: OptionEvaluation): Con
     const nearExtreme = (signal.direction === 'bullish' && rp >= 0.75) || (signal.direction === 'bearish' && rp <= 0.25);
     if (nearExtreme && htf.dmi.diSpreadSlope < -3 && htf.dmi.adx >= 15) total = Math.min(total, 0.64);
   }
-  return { base, diSpreadBonus, adxBonus, diCrossBonus, alignmentBonus, tdAdjustment, obvBonus, vwapBonus, oiVolumeBonus, pricePositionAdjustment, adxMaturityPenalty, trendPhaseBonus, momentumAccelBonus, structureBonus, orbBonus, recentPriceActionBonus, trContractionPenalty, lowVolPenalty, moveExhaustionPenalty, consolidationPenalty, nearLevelPenalty, thetaDecayPenalty, total };
+  return { base, diSpreadBonus, adxBonus, diCrossBonus, alignmentBonus, tdAdjustment, obvBonus, vwapBonus, oiVolumeBonus, pricePositionAdjustment, adxMaturityPenalty, trendPhaseBonus, momentumAccelBonus, structureBonus, orbBonus, recentPriceActionBonus, trContractionPenalty, lowVolPenalty, moveExhaustionPenalty, consolidationPenalty, nearLevelPenalty, thetaDecayPenalty, narrowRangePenalty, total };
 }
 
 function mockOptionEval(signal: SignalPayload): OptionEvaluation {
@@ -686,6 +702,7 @@ async function main() {
     console.log(`  consolidation:  ${fmt(cb.consolidationPenalty)}`);
     console.log(`  nearLevel:      ${fmt(cb.nearLevelPenalty)}  ${flagNeg(cb.nearLevelPenalty, -0.03, 'NEAR S/R')}`);
     console.log(`  thetaDecay:     ${fmt(cb.thetaDecayPenalty)}`);
+    console.log(`  narrowRange:    ${fmt(cb.narrowRangePenalty)}  ${flagNeg(cb.narrowRangePenalty, -0.04, 'TIGHT RANGE')}`);
 
     // 3. DMI per timeframe
     console.log(`\n  ── DMI STATE ──`);
@@ -784,6 +801,9 @@ async function main() {
     // Check: near support/resistance
     if (cb.nearLevelPenalty < 0) {
       issues.push(`Near S/R level (penalty ${(cb.nearLevelPenalty*100).toFixed(0)}%) — price may bounce/reject at this level`);
+    }
+    if (cb.narrowRangePenalty < 0) {
+      issues.push(`Narrow intraday range (penalty ${(cb.narrowRangePenalty*100).toFixed(0)}%) — choppy/range-bound day, low follow-through`);
     }
     // Check: what SINGLE factor, if removed, would have blocked this entry?
     const removable = [
@@ -960,6 +980,7 @@ function getTopFactors(cb: ConfidenceBreakdown): string {
     { name: 'moveExh', value: cb.moveExhaustionPenalty },
     { name: 'consol', value: cb.consolidationPenalty },
     { name: 'nearLvl', value: cb.nearLevelPenalty },
+    { name: 'narrowRng', value: cb.narrowRangePenalty },
   ];
   // Sort by absolute value, show top 3
   factors.sort((a, b) => Math.abs(b.value) - Math.abs(a.value));

@@ -21,6 +21,7 @@ export interface ConfidenceBreakdown {
   consolidationPenalty: number;    // -0.10..0 — penalty when recent bars show sideways chop (high overlap, no trend)
   nearLevelPenalty: number;        // -0.10..0 — penalty for buying puts near support or calls near resistance
   thetaDecayPenalty: number;       // -0.10..0 — penalty for 0DTE entries late in the day when theta accelerates
+  narrowRangePenalty: number;      // -0.12..0 — penalty when intraday range is small relative to ATR (choppy/range-bound day)
   total: number;                   // clamped 0..1
 }
 

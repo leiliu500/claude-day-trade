@@ -15,7 +15,7 @@ function computeConfidence(signal: SignalPayload, option: OptionEvaluation): Con
   const tfs = signal.timeframes;
   const [ltf, mtf, htf] = tfs;
   if (!ltf || !mtf || !htf) {
-    return { base: 0.38, diSpreadBonus: 0, adxBonus: 0, diCrossBonus: 0, alignmentBonus: 0, tdAdjustment: 0, obvBonus: 0, vwapBonus: 0, oiVolumeBonus: 0, pricePositionAdjustment: 0, adxMaturityPenalty: 0, trendPhaseBonus: 0, momentumAccelBonus: 0, structureBonus: 0, orbBonus: 0, recentPriceActionBonus: 0, trContractionPenalty: 0, lowVolPenalty: 0, moveExhaustionPenalty: 0, consolidationPenalty: 0, nearLevelPenalty: 0, thetaDecayPenalty: 0, total: 0.38 };
+    return { base: 0.38, diSpreadBonus: 0, adxBonus: 0, diCrossBonus: 0, alignmentBonus: 0, tdAdjustment: 0, obvBonus: 0, vwapBonus: 0, oiVolumeBonus: 0, pricePositionAdjustment: 0, adxMaturityPenalty: 0, trendPhaseBonus: 0, momentumAccelBonus: 0, structureBonus: 0, orbBonus: 0, recentPriceActionBonus: 0, trContractionPenalty: 0, lowVolPenalty: 0, moveExhaustionPenalty: 0, consolidationPenalty: 0, nearLevelPenalty: 0, thetaDecayPenalty: 0, narrowRangePenalty: 0, total: 0.38 };
   }
 
   // Base: direction-neutral starting point
@@ -221,7 +221,7 @@ function computeConfidence(signal: SignalPayload, option: OptionEvaluation): Con
   }
   // Halve ADX maturity penalty when all timeframes align + DI spread still widening.
   // All-aligned with expanding directional momentum = genuine continuation, not late chase.
-  if (adxMaturityPenalty < 0 && signal.alignment === 'all_aligned') {
+  if (adxMaturityPenalty < 0 && signal.alignment === 'all_aligned' && htf.dmi.adx >= 20) {
     const dirSpread = signal.direction === 'bullish'
       ? htf.dmi.plusDI - htf.dmi.minusDI
       : htf.dmi.minusDI - htf.dmi.plusDI;
@@ -267,7 +267,7 @@ function computeConfidence(signal: SignalPayload, option: OptionEvaluation): Con
     const htfDirSpread = signal.direction === 'bullish'
       ? htf.dmi.plusDI - htf.dmi.minusDI
       : htf.dmi.minusDI - htf.dmi.plusDI;
-    if (trendPhaseBonus < 0 && signal.alignment === 'all_aligned' && htfDirSpread > 0 && htf.dmi.diSpreadSlope > 0) {
+    if (trendPhaseBonus < 0 && signal.alignment === 'all_aligned' && htf.dmi.adx >= 20 && htfDirSpread > 0 && htf.dmi.diSpreadSlope > 0) {
       trendPhaseBonus *= 0.5;
     }
   }
@@ -331,7 +331,7 @@ function computeConfidence(signal: SignalPayload, option: OptionEvaluation): Con
     const extremePenaltyApplies = !strongActiveTrend && htf.dmi.adx >= 15;
 
     // Softer extreme penalty when all_aligned — genuine trend pushes price to range edge.
-    const extremePenalty = signal.alignment === 'all_aligned' ? -0.06 : -0.12;
+    const extremePenalty = (signal.alignment === 'all_aligned' && htf.dmi.adx >= 20) ? -0.06 : -0.12;
     if (signal.direction === 'bullish' && htfRangePosition > 0.5) {
       if (htfRangePosition >= 0.85 && extremePenaltyApplies) {
         pricePositionAdjustment = extremePenalty;
@@ -347,7 +347,7 @@ function computeConfidence(signal: SignalPayload, option: OptionEvaluation): Con
     }
     // Halve scaled price-position penalty when all_aligned — genuine trend pushes
     // through range, not a reversal setup.
-    if (pricePositionAdjustment < 0 && pricePositionAdjustment > -0.06 && signal.alignment === 'all_aligned') {
+    if (pricePositionAdjustment < 0 && pricePositionAdjustment > -0.06 && signal.alignment === 'all_aligned' && htf.dmi.adx >= 20) {
       pricePositionAdjustment *= 0.5;
     }
   }
@@ -548,8 +548,10 @@ function computeConfidence(signal: SignalPayload, option: OptionEvaluation): Con
     // Loser #5 (ADX=13, recentCross) had full waive but cross didn't follow through.
     // Mar 19 winner (ADX=11, fresh cross) correctly got full waive.
     if (lowVolPenalty < 0) {
+      // Fresh cross waiver: fully waive only when ADX is rising (genuine new trend).
+      // When ADX slope < 0, the cross happened but momentum is fading — halve instead.
       if (htfFreshCrossAligned) {
-        lowVolPenalty = 0; // fresh cross: full waive
+        lowVolPenalty = htf.dmi.adxSlope >= 0 ? 0 : lowVolPenalty * 0.50;
       } else if (htfRecentCross) {
         lowVolPenalty *= 0.50; // recent cross: half waive
       }
@@ -597,7 +599,7 @@ function computeConfidence(signal: SignalPayload, option: OptionEvaluation): Con
         // — that's what "chasing" looks like, not fresh momentum.
         // However, when ALL timeframes align + momentum still accelerating AND the
         // exhaustion is moderate (not severe 2.5+ ATR), the trend may be continuing.
-        if (moveExhaustionPenalty > -0.15 && moveExhaustionPenalty < 0 && signal.alignment === 'all_aligned' && momentumAccelBonus > 0) {
+        if (moveExhaustionPenalty > -0.15 && moveExhaustionPenalty < 0 && signal.alignment === 'all_aligned' && htf.dmi.adx >= 20 && momentumAccelBonus > 0) {
           moveExhaustionPenalty *= 0.5;
         }
       }
@@ -608,7 +610,7 @@ function computeConfidence(signal: SignalPayload, option: OptionEvaluation): Con
   // hasn't crossed 20 yet. Skip when move exhaustion is active — weak ADX + extended
   // move = don't ease up. Mar 20 SPY 13:36 ET: lowVol + exhaustion both halved → 65.6%
   // bad entry at day's low that bounced $0.67.
-  if (lowVolPenalty < 0 && signal.alignment === 'all_aligned' && htf.dmi.adxSlope > 0 && moveExhaustionPenalty === 0) {
+  if (lowVolPenalty < 0 && signal.alignment === 'all_aligned' && htf.dmi.adx >= 15 && htf.dmi.adxSlope > 0 && moveExhaustionPenalty === 0) {
     lowVolPenalty *= 0.50;
   }
 
@@ -643,7 +645,7 @@ function computeConfidence(signal: SignalPayload, option: OptionEvaluation): Con
       }
     }
     // Halve consolidation when all_aligned — "pause that refreshes" in a genuine trend.
-    if (consolidationPenalty < 0 && signal.alignment === 'all_aligned') {
+    if (consolidationPenalty < 0 && signal.alignment === 'all_aligned' && htf.dmi.adx >= 20) {
       consolidationPenalty *= 0.5;
     }
   }
@@ -690,7 +692,7 @@ function computeConfidence(signal: SignalPayload, option: OptionEvaluation): Con
     // NOTE: Price action confirmation does NOT reduce near-level penalty.
     // Confirming bars near support/resistance are the tail end before a bounce.
     // However, all-aligned trends break through levels — reduce by 50%.
-    if (nearLevelPenalty < 0 && signal.alignment === 'all_aligned') {
+    if (nearLevelPenalty < 0 && signal.alignment === 'all_aligned' && htf.dmi.adx >= 20) {
       nearLevelPenalty *= 0.5;
     }
     // When swing low/high was set very recently (within last 2 bars), price is actively
@@ -755,6 +757,36 @@ function computeConfidence(signal: SignalPayload, option: OptionEvaluation): Con
     }
   }
 
+  // Narrow range penalty — detects range-bound/choppy days where the intraday range so far
+  // is small relative to the prior day's range. On narrow-range days, directional signals are
+  // unreliable: DMI/ADX can show alignment in a $2-3 range that has no follow-through.
+  // Uses prior day high/low (pdh/pdl) as the baseline for a "normal" day's range.
+  //   Today's range < 40% of prior day: -0.12 (extremely tight — directionless chop)
+  //   Today's range < 55% of prior day: -0.08 (tight range — limited follow-through)
+  //   Today's range < 70% of prior day: -0.04 (below-average range — cautious)
+  // Clamped -0.12..0
+  let narrowRangePenalty = 0;
+  if (signal.direction !== 'neutral' && htf.bars.length >= 3 && signal.priorDayLevels.pdh > 0) {
+    const priorDayRange = signal.priorDayLevels.pdh - signal.priorDayLevels.pdl;
+    if (priorDayRange > 0) {
+      let dayHigh = -Infinity;
+      let dayLow = Infinity;
+      for (const bar of htf.bars) {
+        if (bar.high > dayHigh) dayHigh = bar.high;
+        if (bar.low < dayLow) dayLow = bar.low;
+      }
+      const todayRange = dayHigh - dayLow;
+      const rangeRatio = todayRange / priorDayRange;
+      if (rangeRatio < 0.40) {
+        narrowRangePenalty = -0.12;
+      } else if (rangeRatio < 0.55) {
+        narrowRangePenalty = -0.08;
+      } else if (rangeRatio < 0.70) {
+        narrowRangePenalty = -0.04;
+      }
+    }
+  }
+
   // Reversal override adjustments: suppress penalties that are artifacts of the old direction.
   // In a reversal, exhaustion/nearLevel/fading momentum/DI spread/low ADX all reflect the
   // OLD trend completing, not the new direction being weak.
@@ -769,7 +801,11 @@ function computeConfidence(signal: SignalPayload, option: OptionEvaluation): Con
     if (vwapBonus === 0) vwapBonus = 0.06;       // restore VWAP bonus killed by fading diSpreadSlope
   }
 
-  let total = Math.max(0, Math.min(1, base + diSpreadBonus + adxBonus + diCrossBonus + alignmentBonus + tdAdjustment + obvBonus + vwapBonus + oiVolumeBonus + pricePositionAdjustment + adxMaturityPenalty + trendPhaseBonus + momentumAccelBonus + structureBonus + orbBonus + recentPriceActionBonus + trContractionPenalty + lowVolPenalty + moveExhaustionPenalty + consolidationPenalty + nearLevelPenalty + thetaDecayPenalty));
+  // DI Spread cap for aged trends: in a mature trend the DI spread reflects sustained
+  // momentum, not fresh signal. Cap to prevent inflated confidence on stale setups.
+  if (adxMaturityPenalty <= -0.04) diSpreadBonus = Math.min(diSpreadBonus, 0.06);
+
+  let total = Math.max(0, Math.min(1, base + diSpreadBonus + adxBonus + diCrossBonus + alignmentBonus + tdAdjustment + obvBonus + vwapBonus + oiVolumeBonus + pricePositionAdjustment + adxMaturityPenalty + trendPhaseBonus + momentumAccelBonus + structureBonus + orbBonus + recentPriceActionBonus + trContractionPenalty + lowVolPenalty + moveExhaustionPenalty + consolidationPenalty + nearLevelPenalty + thetaDecayPenalty + narrowRangePenalty));
 
   // Hard gate: TR contraction (instant momentum fade) without price confirmation
   // is a dying trend — cap confidence below entry threshold (0.65).
@@ -824,6 +860,20 @@ function computeConfidence(signal: SignalPayload, option: OptionEvaluation): Con
     total = Math.min(total, 0.62);
   }
 
+  // Hard gate: very severe ADX maturity (post-halving still >= 7%).  Trend ran 20+ bars
+  // above ADX 25 — even with the all_aligned halving benefit, this much aging means the
+  // easy money is gone and reversal risk is high.
+  if (adxMaturityPenalty <= -0.07) {
+    total = Math.min(total, 0.64);
+  }
+
+  // Hard gate: aged trend stalling without price confirmation.  Maturity 10+ bars above
+  // ADX 25 + consolidation + no recent confirming bars = the trend is running out of
+  // steam with no new directional conviction.
+  if (adxMaturityPenalty <= -0.06 && consolidationPenalty <= -0.04 && recentPriceActionBonus <= 0) {
+    total = Math.min(total, 0.64);
+  }
+
   // Hard gate: range position extreme — entering at the edge of the HTF range.
   // Buying calls at >85% range position or puts at <15% is chasing the last move.
   // Loser #2 (93%), #4 (81% + nearLevel), #6 (9%) all failed from range extremes.
@@ -834,7 +884,7 @@ function computeConfidence(signal: SignalPayload, option: OptionEvaluation): Con
     const extremeGateApplies = !strongActiveTrend && htf.dmi.adx >= 15;
     const atExtreme = (signal.direction === 'bullish' && rp >= 0.85) || (signal.direction === 'bearish' && rp <= 0.15);
     // Also exempt all_aligned — genuine trend across all timeframes pushes price to range edge.
-    if (atExtreme && extremeGateApplies && signal.alignment !== 'all_aligned') {
+    if (atExtreme && extremeGateApplies && !(signal.alignment === 'all_aligned' && htf.dmi.adx >= 20)) {
       total = Math.min(total, 0.62);
     }
     // Softer gate: near extreme + DI spread narrowing = fading momentum at boundary
@@ -844,13 +894,20 @@ function computeConfidence(signal: SignalPayload, option: OptionEvaluation): Con
     }
   }
 
+  // Hard gate: narrow range + approaching range extreme.  On a tight-range day,
+  // being near the ceiling (bullish) or floor (bearish) means price is at the edge
+  // of a tiny box — mean-reversion is almost certain.  Cap below entry threshold.
+  if (narrowRangePenalty <= -0.08 && pricePositionAdjustment <= -0.04) {
+    total = Math.min(total, 0.60);
+  }
+
   // Hard gate: 0DTE with extreme theta (≤ 30 min to close).
   // Even with strong signals, the theta burn is too aggressive for new entries.
   if (thetaDecayPenalty <= -0.10) {
     total = Math.min(total, 0.55);
   }
 
-  return { base, diSpreadBonus, adxBonus, diCrossBonus, alignmentBonus, tdAdjustment, obvBonus, vwapBonus, oiVolumeBonus, pricePositionAdjustment, adxMaturityPenalty, trendPhaseBonus, momentumAccelBonus, structureBonus, orbBonus, recentPriceActionBonus, trContractionPenalty, lowVolPenalty, moveExhaustionPenalty, consolidationPenalty, nearLevelPenalty, thetaDecayPenalty, total };
+  return { base, diSpreadBonus, adxBonus, diCrossBonus, alignmentBonus, tdAdjustment, obvBonus, vwapBonus, oiVolumeBonus, pricePositionAdjustment, adxMaturityPenalty, trendPhaseBonus, momentumAccelBonus, structureBonus, orbBonus, recentPriceActionBonus, trContractionPenalty, lowVolPenalty, moveExhaustionPenalty, consolidationPenalty, nearLevelPenalty, thetaDecayPenalty, narrowRangePenalty, total };
 }
 
 /**
@@ -894,6 +951,7 @@ async function generateExplanation(
       consolidation_penalty: cb.consolidationPenalty.toFixed(3),
       near_level_penalty: cb.nearLevelPenalty.toFixed(3),
       theta_decay_penalty: cb.thetaDecayPenalty.toFixed(3),
+      narrow_range_penalty: cb.narrowRangePenalty.toFixed(3),
       note: htfPs?.priceHalf === 'lower'
         ? 'Price in lower half of range — puts preferred, calls are higher risk'
         : 'Price in upper half of range — calls preferred, puts are higher risk',

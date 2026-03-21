@@ -1002,6 +1002,7 @@ function renderAnalysisCard(sig) {
       ${renderConfidenceBar('Consolid',    cb.consolidationPenalty ?? 0, 0.10, 'conf-bar-bonus')}
       ${renderConfidenceBar('Near Level',  cb.nearLevelPenalty   ?? 0, 0.10, 'conf-bar-bonus')}
       ${renderConfidenceBar('Theta',       cb.thetaDecayPenalty  ?? 0, 0.10, 'conf-bar-bonus')}
+      ${renderConfidenceBar('Narrow Rng',  cb.narrowRangePenalty ?? 0, 0.12, 'conf-bar-bonus')}
       <div class="conf-total-row">
         <span>Total</span>
         <span class="${thresh ? 'bullish' : 'bearish'}" style="font-weight:700">${confPct}%${thresh ? ' ✅' : ' (below threshold)'}</span>
