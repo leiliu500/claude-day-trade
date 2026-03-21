@@ -206,6 +206,8 @@ function computeConfidence(signal: SignalPayload, option: OptionEvaluation): Con
     const htfGrowth = signal.direction === 'bullish' ? htf.dmi.growthCrossUp : htf.dmi.growthCrossDown;
     if (htfGrowth) diCrossBonus += 0.04;
     if (diCrossBonus > 0 && htf.dmi.adx < 20 && htf.dmi.adxSlope <= 0) { diCrossBonus *= 0.50; }
+    // Pattern 5: DI Cross without structure confirmation is unreliable — cap at +0.05
+    if (diCrossBonus > 0.05 && htf.dmi.adx < 25) diCrossBonus = 0.05;
     diCrossBonus = Math.max(-0.06, Math.min(0.10, diCrossBonus));
   }
 
@@ -277,7 +279,11 @@ function computeConfidence(signal: SignalPayload, option: OptionEvaluation): Con
   else if (!htfFreshCross && htf.dmi.adxBarsAbove25 >= 15) adxMaturityPenalty = -0.12;
   else if (!htfFreshCross && htf.dmi.adxBarsAbove25 >= 10) adxMaturityPenalty = -0.08;
   else if (!htfFreshCross && htf.dmi.adxBarsAbove25 >= 5) adxMaturityPenalty = -0.04;
-  if (adxMaturityPenalty < 0 && signal.alignment === 'all_aligned' && htf.dmi.adx >= 20) {
+  // Pattern 2: High ADX (>= 40) with maturity AND fading momentum = exhaustion trap.
+  // Only amplify when ADX slope is negative (trend decelerating) — active trends still valid.
+  if (adxMaturityPenalty < 0 && htf.dmi.adx >= 40 && htf.dmi.adxSlope < 0) {
+    adxMaturityPenalty *= 1.5;  // e.g. -0.04 → -0.06, -0.08 → -0.12
+  } else if (adxMaturityPenalty < 0 && signal.alignment === 'all_aligned' && htf.dmi.adx >= 20) {
     const dirSpread = signal.direction === 'bullish'
       ? htf.dmi.plusDI - htf.dmi.minusDI : htf.dmi.minusDI - htf.dmi.plusDI;
     if (dirSpread > 0 && htf.dmi.diSpreadSlope > 0) adxMaturityPenalty *= 0.5;
@@ -500,8 +506,9 @@ function computeConfidence(signal: SignalPayload, option: OptionEvaluation): Con
       else if (distToResist > 0 && distToResist <= 0.30) nearLevelPenalty = -0.06;
       else if (distToResist > 0 && distToResist <= 0.50) nearLevelPenalty = -0.03;
     }
-    // PA does NOT reduce near-level penalty
-    if (nearLevelPenalty < 0 && signal.alignment === 'all_aligned' && htf.dmi.adx >= 20) {
+    // Pattern 4: Near-level penalty is a reliable warning — keep full penalty.
+    // Only halve for very strong active trends (ADX > 30 and rising).
+    if (nearLevelPenalty < 0 && signal.alignment === 'all_aligned' && htf.dmi.adx > 30 && htf.dmi.adxSlope > 0) {
       nearLevelPenalty *= 0.5;
     }
     if (nearLevelPenalty < 0) {
@@ -550,6 +557,15 @@ function computeConfidence(signal: SignalPayload, option: OptionEvaluation): Con
   let total = Math.max(0, Math.min(1, base + diSpreadBonus + adxBonus + diCrossBonus + alignmentBonus + tdAdjustment + obvBonus + vwapBonus + oiVolumeBonus + pricePositionAdjustment + adxMaturityPenalty + trendPhaseBonus + momentumAccelBonus + structureBonus + orbBonus + recentPriceActionBonus + trContractionPenalty + lowVolPenalty + moveExhaustionPenalty + consolidationPenalty + nearLevelPenalty + thetaDecayPenalty + narrowRangePenalty));
 
   // Hard gates
+  // Pattern 3: No structure support (Structure ≤ 0) — cap confidence.
+  // Every winner had Structure=+0.060; losers often had 0 or negative.
+  if (structureBonus <= 0) total = Math.min(total, 0.68);
+  if (structureBonus < 0) total = Math.min(total, 0.62);
+  // Pattern 1: Low ADX strength — weak trend, unreliable signal.
+  // ADX < 15: no exemption, trend too weak for any entry.
+  // ADX 15-20: fresh cross with confirming PA can still enter, but capped.
+  if (htf.dmi.adx < 15) total = Math.min(total, 0.55);
+  else if (htf.dmi.adx < 20) total = Math.min(total, 0.64);
   if (trContractionPenalty < 0 && recentPriceActionBonus <= 0) total = Math.min(total, 0.60);
   if (adxMaturityPenalty <= -0.15 && !(signal.alignment === 'all_aligned' && htf.dmi.adx >= 20)) {
     total = Math.min(total, recentPriceActionBonus > 0 ? 0.64 : 0.55);
@@ -910,8 +926,12 @@ async function main() {
         const highConvOverride = cb.total >= 0.92 && alignment === 'all_aligned';
 
         // Phase-change override: HTF growth cross in signal direction + rising ADX + non-mixed
+        // Tightened: require conf >= 0.65, ADX >= 20, positive price action, no near-level penalty
         const growthCross = direction === 'bullish' ? htfTf?.dmi.growthCrossUp : htfTf?.dmi.growthCrossDown;
-        const phaseChangeStructural = !!htfTf && cb.total >= 0.60 && alignment !== 'mixed' && growthCross;
+        const phaseChangeStructural = !!htfTf && cb.total >= 0.65 && alignment !== 'mixed' && growthCross
+          && htfTf.dmi.adx >= 20
+          && cb.recentPriceActionBonus >= 0
+          && cb.nearLevelPenalty > -0.03;
         // Simplified timing checks for phase-change
         let phaseChangeTimingOk = true;
         if (phaseChangeStructural && htfTf) {

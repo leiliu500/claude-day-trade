@@ -1155,25 +1155,27 @@ export class OrderAgent {
     // Never confirmed: position never went positive within first 3 stream ticks (~30s) and already -1.5%.
     // We keep the 3-tick minimum to allow fill-bar noise to settle — exiting at tick 2 can
     // catch a deeper dip before a partial bounce (Trade #1: tick 2 was -2.4% but exit was -2.1%).
-    if (this.peakPnlPct < 0.3 && pnlPct <= -1.5 && this.tickCount >= 3 && this.tickCount <= 8) {
+    // Relaxed thresholds: backtest showed tight cuts (-1.5%) exit during normal chop
+    // before the trade develops. Give entries more room to survive initial volatility.
+    if (this.peakPnlPct < 0.3 && pnlPct <= -3 && this.tickCount >= 3 && this.tickCount <= 8) {
       await this._executeExit(`NEVER_CONFIRMED [stream]: peak=+${this.peakPnlPct.toFixed(1)}%, now=${pnlPct.toFixed(1)}% — price never went positive, cutting early`);
       return;
     }
 
-    // Immediate adverse: price has fallen every tick since fill and already -3%
-    if (this.peakPnlPct < 0.5 && pnlPct <= -3 && this.streamConsecutiveDeclines >= 3 && this.tickCount >= 3) {
+    // Immediate adverse: price has fallen every tick since fill and already -5%
+    if (this.peakPnlPct < 0.5 && pnlPct <= -5 && this.streamConsecutiveDeclines >= 3 && this.tickCount >= 3) {
       await this._executeExit(`IMMEDIATE_ADVERSE [stream]: peak=+${this.peakPnlPct.toFixed(1)}%, now=${pnlPct.toFixed(1)}%, ${this.streamConsecutiveDeclines} consecutive drops — entry immediately wrong`);
       return;
     }
 
-    // Bad entry cut: never confirmed (peak < +1%) after 40s and losing -1.5%+ (tightened from -2%/60s)
-    if (this.peakPnlPct < 1.0 && pnlPct <= -1.5 && this.tickCount >= 4) {
+    // Bad entry cut: never confirmed (peak < +1%) after 50s and losing -3%+
+    if (this.peakPnlPct < 1.0 && pnlPct <= -3 && this.tickCount >= 5) {
       await this._executeExit(`BAD_ENTRY_CUT [stream]: peak=+${this.peakPnlPct.toFixed(1)}%, now=${pnlPct.toFixed(1)}% — thesis never confirmed after ${Math.round(this.tickCount * 10 / 60)}+ min`);
       return;
     }
 
-    // Early bleed: never profitable and already -3% (tightened from -4%/4 ticks)
-    if (this.peakPnlPct < 1.0 && pnlPct <= -3 && this.tickCount >= 3) {
+    // Early bleed: never profitable and already -5%
+    if (this.peakPnlPct < 1.0 && pnlPct <= -5 && this.tickCount >= 4) {
       await this._executeExit(`EARLY_BLEED [stream]: peak=+${this.peakPnlPct.toFixed(1)}%, now=${pnlPct.toFixed(1)}% — never profitable`);
       return;
     }
@@ -1465,8 +1467,9 @@ export class OrderAgent {
 
     // ── Bad entry fast-cut rules (minimize loss on entries that were immediately wrong) ──
 
-    // Never confirmed: position never went positive within first 3 ticks (~30s) and already -1.5%
-    if (this.peakPnlPct < 0.3 && pnlPctNow <= -1.5 && this.tickCount >= 3 && this.tickCount <= 8) {
+    // Relaxed thresholds: backtest showed tight cuts (-1.5%) exit during normal chop
+    // before the trade develops. Give entries more room to survive initial volatility.
+    if (this.peakPnlPct < 0.3 && pnlPctNow <= -3 && this.tickCount >= 3 && this.tickCount <= 8) {
       await this._executeExit(
         `NEVER_CONFIRMED: peak=+${this.peakPnlPct.toFixed(1)}%, now=${pnlPctNow.toFixed(1)}%` +
         ` — price never went positive, cutting early`,
@@ -1474,9 +1477,8 @@ export class OrderAgent {
       return;
     }
 
-    // Immediate adverse: price has fallen every tick since fill and already -3%
-    // Catches entries where price moved against us from the moment we filled.
-    if (this.peakPnlPct < 0.5 && pnlPctNow <= -3 && this.consecutiveDeclines >= 3 && this.tickCount >= 3) {
+    // Immediate adverse: price has fallen every tick since fill and already -5%
+    if (this.peakPnlPct < 0.5 && pnlPctNow <= -5 && this.consecutiveDeclines >= 3 && this.tickCount >= 3) {
       await this._executeExit(
         `IMMEDIATE_ADVERSE: peak=+${this.peakPnlPct.toFixed(1)}%, now=${pnlPctNow.toFixed(1)}%` +
         ` — ${this.consecutiveDeclines} consecutive drops, entry immediately wrong`,
@@ -1484,8 +1486,8 @@ export class OrderAgent {
       return;
     }
 
-    // Bad entry cut: never confirmed (peak < +1%) after 40s and losing -1.5%+ (tightened from -2%/60s).
-    if (this.peakPnlPct < 1.0 && pnlPctNow <= -1.5 && this.tickCount >= 4) {
+    // Bad entry cut: never confirmed (peak < +1%) after 50s and losing -3%+
+    if (this.peakPnlPct < 1.0 && pnlPctNow <= -3 && this.tickCount >= 5) {
       await this._executeExit(
         `BAD_ENTRY_CUT: peak=+${this.peakPnlPct.toFixed(1)}%, now=${pnlPctNow.toFixed(1)}%` +
         ` — thesis never confirmed after ${Math.round(this.tickCount * 10 / 60)} min, cutting early`,
@@ -1493,8 +1495,8 @@ export class OrderAgent {
       return;
     }
 
-    // Early bleed: position NEVER profitable and already -3% (tightened from -4%/4 ticks).
-    if (this.peakPnlPct < 1.0 && pnlPctNow <= -3 && this.tickCount >= 3) {
+    // Early bleed: position NEVER profitable and already -5%
+    if (this.peakPnlPct < 1.0 && pnlPctNow <= -5 && this.tickCount >= 4) {
       await this._executeExit(
         `EARLY_BLEED: peak=+${this.peakPnlPct.toFixed(1)}%, now=${pnlPctNow.toFixed(1)}%` +
         ` — never profitable after ${this.tickCount} ticks, cutting losses`,

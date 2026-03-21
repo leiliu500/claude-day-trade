@@ -365,10 +365,15 @@ export class DecisionOrchestrator {
       //     fighting VWAP/ORB direction, or entering with decelerating momentum.
       const htfTf = signal.timeframes[2] ?? signal.timeframes[0];
       const ltfTf = signal.timeframes[0];
+      // Tightened: require conf >= 0.65, ADX >= 20, positive price action, no near-level penalty.
+      // Backtest showed phase-change entries with low ADX/negative PA/near-level are traps.
       const phaseChangeStructuralOk = !!htfTf &&
-        analysis.confidence >= 0.60 &&
+        analysis.confidence >= 0.65 &&
         signal.alignment !== 'mixed' &&
-        (signal.direction === 'bullish' ? htfTf.dmi.growthCrossUp : htfTf.dmi.growthCrossDown);
+        (signal.direction === 'bullish' ? htfTf.dmi.growthCrossUp : htfTf.dmi.growthCrossDown) &&
+        htfTf.dmi.adx >= 20 &&
+        analysis.confidenceBreakdown.recentPriceActionBonus >= 0 &&
+        analysis.confidenceBreakdown.nearLevelPenalty > -0.03;
       // Timing quality gate: block entries with poor timing even if structural signal is valid.
       // Data analysis (2026-03-12): phase-change entries lose when they re-enter the same fading
       // setup repeatedly, or when ADX is near exhaustion. The winning trade catches the initial

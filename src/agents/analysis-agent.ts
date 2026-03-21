@@ -62,6 +62,8 @@ function computeConfidence(signal: SignalPayload, option: OptionEvaluation): Con
     if (diCrossBonus > 0 && htf.dmi.adx < 20 && htf.dmi.adxSlope <= 0) {
       diCrossBonus *= 0.50; // half credit for crosses in low-ADX with declining momentum
     }
+    // DI Cross without established trend is unreliable — cap at +0.05
+    if (diCrossBonus > 0.05 && htf.dmi.adx < 25) diCrossBonus = 0.05;
     diCrossBonus = Math.max(-0.06, Math.min(0.10, diCrossBonus));
   }
 
@@ -221,7 +223,10 @@ function computeConfidence(signal: SignalPayload, option: OptionEvaluation): Con
   }
   // Halve ADX maturity penalty when all timeframes align + DI spread still widening.
   // All-aligned with expanding directional momentum = genuine continuation, not late chase.
-  if (adxMaturityPenalty < 0 && signal.alignment === 'all_aligned' && htf.dmi.adx >= 20) {
+  // High ADX (>= 40) with fading momentum = exhaustion trap — amplify maturity penalty.
+  if (adxMaturityPenalty < 0 && htf.dmi.adx >= 40 && htf.dmi.adxSlope < 0) {
+    adxMaturityPenalty *= 1.5;
+  } else if (adxMaturityPenalty < 0 && signal.alignment === 'all_aligned' && htf.dmi.adx >= 20) {
     const dirSpread = signal.direction === 'bullish'
       ? htf.dmi.plusDI - htf.dmi.minusDI
       : htf.dmi.minusDI - htf.dmi.plusDI;
@@ -691,8 +696,9 @@ function computeConfidence(signal: SignalPayload, option: OptionEvaluation): Con
     }
     // NOTE: Price action confirmation does NOT reduce near-level penalty.
     // Confirming bars near support/resistance are the tail end before a bounce.
-    // However, all-aligned trends break through levels — reduce by 50%.
-    if (nearLevelPenalty < 0 && signal.alignment === 'all_aligned' && htf.dmi.adx >= 20) {
+    // Only halve for very strong active trends (ADX > 30 and rising) — these genuinely
+    // break through levels. Weaker trends bounce off support/resistance.
+    if (nearLevelPenalty < 0 && signal.alignment === 'all_aligned' && htf.dmi.adx > 30 && htf.dmi.adxSlope > 0) {
       nearLevelPenalty *= 0.5;
     }
     // When swing low/high was set very recently (within last 2 bars), price is actively
@@ -806,6 +812,16 @@ function computeConfidence(signal: SignalPayload, option: OptionEvaluation): Con
   if (adxMaturityPenalty <= -0.04) diSpreadBonus = Math.min(diSpreadBonus, 0.06);
 
   let total = Math.max(0, Math.min(1, base + diSpreadBonus + adxBonus + diCrossBonus + alignmentBonus + tdAdjustment + obvBonus + vwapBonus + oiVolumeBonus + pricePositionAdjustment + adxMaturityPenalty + trendPhaseBonus + momentumAccelBonus + structureBonus + orbBonus + recentPriceActionBonus + trContractionPenalty + lowVolPenalty + moveExhaustionPenalty + consolidationPenalty + nearLevelPenalty + thetaDecayPenalty + narrowRangePenalty));
+
+  // Hard gate: no structure support — every backtest winner had Structure >= +0.06.
+  // Losers often had 0 or negative structure (wrong side of prior-day levels).
+  if (structureBonus <= 0) total = Math.min(total, 0.68);
+  if (structureBonus < 0) total = Math.min(total, 0.62);
+
+  // Hard gate: low ADX strength — weak trend, unreliable signal.
+  // ADX < 15: no established trend to ride. ADX 15-20: marginal, cap below threshold.
+  if (htf.dmi.adx < 15) total = Math.min(total, 0.55);
+  else if (htf.dmi.adx < 20) total = Math.min(total, 0.64);
 
   // Hard gate: TR contraction (instant momentum fade) without price confirmation
   // is a dying trend — cap confidence below entry threshold (0.65).
