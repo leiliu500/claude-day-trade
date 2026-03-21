@@ -25,14 +25,17 @@ import type { OHLCVBar, Timeframe, AlpacaBarsResponse } from '../types/market.js
 import type { TimeframeIndicators } from '../types/indicators.js';
 import type { SignalPayload, AlignmentType, SignalDirection } from '../types/signal.js';
 import type { OptionEvaluation, OptionCandidate } from '../types/options.js';
-import type { ConfidenceBreakdown } from '../types/analysis.js';
+import type { ConfidenceBreakdown, AnalysisResult } from '../types/analysis.js';
+import type { PositionContext, DecisionResult, DecisionType } from '../types/decision.js';
 import { normalizeAlpacaBars } from '../types/market.js';
 import { v4 as uuidv4 } from 'uuid';
+import { DecisionOrchestrator } from '../agents/decision-orchestrator.js';
 
 // ── Config ────────────────────────────────────────────────────────────────────
 
-const TARGET_DATE = process.argv[2] || '2026-03-18';
-const TICKER = process.argv[3] || 'SPY';
+const USE_AI = process.argv.includes('--ai');
+const TARGET_DATE = process.argv.filter(a => !a.startsWith('--'))[2] || '2026-03-18';
+const TICKER = process.argv.filter(a => !a.startsWith('--'))[3] || 'SPY';
 const PROFILE = 'S' as const; // Scalp: 1m, 3m, 5m
 const MIN_CONFIDENCE = config.MIN_CONFIDENCE; // 0.65
 
@@ -605,6 +608,11 @@ interface EntryRecord {
   // Confirmation gate simulation
   gateResult: 'PASSED' | 'STAGE1_OBSERVE' | 'WEAKENING_BLOCK' | 'STALE_BLOCK' | 'HIGH_CONV_OVERRIDE' | 'PHASE_CHANGE_OVERRIDE';
   stage1Conf?: number;  // confidence at stage-1 (if applicable)
+  // AI orchestrator fields (populated when --ai flag is used)
+  aiDecision?: DecisionType;
+  aiShouldExecute?: boolean;
+  aiReasoning?: string;
+  aiConfirmationCount?: number;
 }
 
 function utcToET(utcTime: string): string {
@@ -618,7 +626,7 @@ function utcToET(utcTime: string): string {
 
 async function main() {
   console.log(`\n${'='.repeat(80)}`);
-  console.log(`  BACKTEST: ${TICKER} on ${TARGET_DATE} (Profile: ${PROFILE}, Threshold: ${MIN_CONFIDENCE})`);
+  console.log(`  BACKTEST: ${TICKER} on ${TARGET_DATE} (Profile: ${PROFILE}, Threshold: ${MIN_CONFIDENCE}${USE_AI ? ', AI ORCHESTRATOR' : ', deterministic'})`);
   console.log(`  Walking market hours ${MARKET_OPEN_UTC}–${MARKET_CLOSE_UTC} UTC in 1-min intervals`);
   console.log(`${'='.repeat(80)}\n`);
 
@@ -662,6 +670,11 @@ async function main() {
   // Simulates the 2-stage confirmation gate from decision-orchestrator.ts
   let confirmStage1: { direction: SignalDirection; confidence: number; time: string } | null = null;
   let lastEntryTs = 0; // track when last confirmed entry happened (for dedup)
+
+  // ── AI orchestrator state (when --ai flag is used) ────────────────────────
+  const orchestrator = USE_AI ? new DecisionOrchestrator() : null;
+  // Track recent decisions for PositionContext.recentDecisions (newest first)
+  const backtestRecentDecisions: PositionContext['recentDecisions'] = [];
 
   // Generate 1-min timestamps from market open to close
   const openTime = new Date(`${TARGET_DATE}T${MARKET_OPEN_UTC}:00Z`);
@@ -749,96 +762,21 @@ async function main() {
     tickCount++;
     allTicks.push({ time: timeStr, timeET, price: currentPrice, direction, alignment, confidence: cb.total, meetsThreshold });
 
-    // ── Confirmation gate simulation ──────────────────────────────────────────
-    // Reset confirmation state when direction changes or signal drops below threshold
-    if (!meetsThreshold || direction === 'neutral' || (confirmStage1 && confirmStage1.direction !== direction)) {
-      if (!meetsThreshold || direction === 'neutral') confirmStage1 = null;
-      // Direction changed: reset and start fresh stage-1 if meets threshold
-      if (confirmStage1 && confirmStage1.direction !== direction && meetsThreshold && direction !== 'neutral') {
-        confirmStage1 = null; // will be set below as stage-1
-      }
-    }
+    // ── Entry decision ──────────────────────────────────────────────────────────
 
-    if (meetsThreshold && direction !== 'neutral') {
-      // Determine gate result
-      const htfTf = tfIndicators[2] ?? tfIndicators[0];
-      const highConvOverride = cb.total >= 0.92 && alignment === 'all_aligned';
-
-      // Phase-change override: HTF growth cross in signal direction + rising ADX + non-mixed
-      const growthCross = direction === 'bullish' ? htfTf?.dmi.growthCrossUp : htfTf?.dmi.growthCrossDown;
-      const phaseChangeStructural = !!htfTf && cb.total >= 0.60 && alignment !== 'mixed' && growthCross;
-      // Simplified timing checks for phase-change
-      let phaseChangeTimingOk = true;
-      if (phaseChangeStructural && htfTf) {
-        const rp = htfTf.priceStructure.rangePosition;
-        if (direction === 'bullish' && rp > 0.85) phaseChangeTimingOk = false;
-        if (direction === 'bearish' && rp < 0.15) phaseChangeTimingOk = false;
-        if (htfTf.dmi.adx > 50) phaseChangeTimingOk = false;
-        // VWAP alignment
-        const ltfTf = tfIndicators[0];
-        if (ltfTf) {
-          const vwapPct = ltfTf.vwap.priceVsVwap;
-          if (direction === 'bullish' && vwapPct < -0.30) phaseChangeTimingOk = false;
-          if (direction === 'bearish' && vwapPct > 0.30) phaseChangeTimingOk = false;
-        }
-        // ORB alignment
-        if (signal.orb.orbFormed) {
-          const orbDir = signal.orb.breakoutDirection;
-          if (direction === 'bullish' && orbDir === 'bearish') phaseChangeTimingOk = false;
-          if (direction === 'bearish' && orbDir === 'bullish') phaseChangeTimingOk = false;
-        }
-      }
-      const phaseChangeOverride = phaseChangeStructural && phaseChangeTimingOk;
-
-      let gateResult: EntryRecord['gateResult'];
-      let stage1ConfValue: number | undefined;
-
-      if (highConvOverride) {
-        gateResult = 'HIGH_CONV_OVERRIDE';
-        confirmStage1 = null; // reset after entry
-      } else if (!confirmStage1) {
-        // No prior stage-1 → this is Stage-1 OBSERVE
-        if (phaseChangeOverride) {
-          gateResult = 'PHASE_CHANGE_OVERRIDE';
-          confirmStage1 = null;
-        } else {
-          gateResult = 'STAGE1_OBSERVE';
-          confirmStage1 = { direction, confidence: cb.total, time: timeStr };
-        }
-      } else {
-        // Stage-2: we have a prior stage-1 in the same direction
-        stage1ConfValue = confirmStage1.confidence;
-        const confDelta = Math.abs(cb.total - confirmStage1.confidence);
-        const staleThreshold = Math.min(0.03, Math.max(0.01, (1 - confirmStage1.confidence) * 0.15));
-
-        if (cb.total < confirmStage1.confidence) {
-          gateResult = 'WEAKENING_BLOCK';
-          // Keep stage-1 alive — next tick can still try stage-2
-        } else if (confDelta < staleThreshold) {
-          gateResult = 'STALE_BLOCK';
-          // Keep stage-1 alive
-        } else {
-          gateResult = 'PASSED';
-          confirmStage1 = null; // reset after confirmed entry
-          lastEntryTs = currentTs;
-        }
-      }
-
-      // Calculate forward price moves for outcome analysis (2-hour window — realistic hold time)
+    // Forward price analysis helpers (shared by both deterministic and AI paths)
+    const computeForwardMoves = () => {
       const futureBars = targetDateBars.filter(b => {
         const bt = new Date(b.timestamp).getTime();
         return bt > currentTs && bt <= currentTs + 120 * 60_000;
       });
-      let maxFavorable = 0;
-      let maxAdverse = 0;
-
+      let maxFavorable = 0, maxAdverse = 0;
       for (const fb of futureBars) {
         const move = direction === 'bullish' ? fb.high - currentPrice : currentPrice - fb.low;
         const adverse = direction === 'bullish' ? currentPrice - fb.low : fb.high - currentPrice;
         if (move > maxFavorable) maxFavorable = move;
         if (adverse > maxAdverse) maxAdverse = adverse;
       }
-
       const findPriceAt = (mins: number): number | null => {
         const targetTime = currentTs + mins * 60_000;
         const bar = targetDateBars.find(b => {
@@ -847,29 +785,183 @@ async function main() {
         });
         return bar?.close ?? null;
       };
-
       const priceAt5m = findPriceAt(5);
-      const priceAt10m = findPriceAt(10);
-      const priceAt15m = findPriceAt(15);
-      const priceAt30m = findPriceAt(30);
-
-      // Classify outcome: BAD if max adverse > max favorable, or if price moves against within 5-10 min
-      const atrPct = atr / currentPrice;
       let outcome: 'GOOD' | 'BAD' | 'MARGINAL' = 'MARGINAL';
       if (maxFavorable > atr * 1.5 && maxFavorable > maxAdverse * 1.5) outcome = 'GOOD';
       else if (maxAdverse > atr * 1.0 && maxAdverse > maxFavorable) outcome = 'BAD';
-      // Check 5-min follow-through
       if (priceAt5m !== null) {
         const move5m = direction === 'bullish' ? priceAt5m - currentPrice : currentPrice - priceAt5m;
         if (move5m < -atr * 0.5) outcome = 'BAD';
       }
+      return {
+        maxFavorable, maxAdverse, outcome,
+        priceAt5m, priceAt10m: findPriceAt(10), priceAt15m: findPriceAt(15), priceAt30m: findPriceAt(30),
+      };
+    };
 
-      entries.push({
-        time: timeStr, timeET, direction, alignment, confidence: cb.total,
-        price: currentPrice, strengthScore, maxFavorable, maxAdverse,
-        priceAt5m, priceAt10m, priceAt15m, priceAt30m, outcome, breakdown: cb,
-        gateResult, stage1Conf: stage1ConfValue,
-      });
+    if (USE_AI && orchestrator) {
+      // ── AI Orchestrator path ──────────────────────────────────────────────
+      // Call the real DecisionOrchestrator for every tick that meets threshold
+      // (same condition as live: meetsEntryThreshold && timeGateOk)
+      if (meetsThreshold && direction !== 'neutral') {
+        const analysis: AnalysisResult = {
+          signalId: signal.id,
+          confidence: cb.total,
+          confidenceBreakdown: cb,
+          meetsEntryThreshold: meetsThreshold,
+          aiExplanation: '',
+          keyFactors: [],
+          risks: [],
+          desiredRight: direction === 'bearish' ? 'put' : 'call',
+          createdAt: timeStr,
+        };
+
+        const context: PositionContext = {
+          openPositions: [],
+          brokerPositions: [],
+          brokerOpenOrders: [],
+          recentDecisions: backtestRecentDecisions.slice(0, 10),
+          confirmationStreaks: [],
+          recentEvaluations: [],
+          accountEquity: 100_000,
+          accountBuyingPower: 100_000,
+          dailyRealizedPnl: 0,
+        };
+
+        const decision: DecisionResult = await orchestrator.run({
+          signal, option: optionEval, analysis, context, timeGateOk: true,
+        });
+
+        // Track decision for future context
+        backtestRecentDecisions.unshift({
+          decisionType: decision.decisionType,
+          ticker: decision.ticker,
+          direction: decision.direction ?? null,
+          confirmationCount: decision.confirmationCount,
+          orchestrationConfidence: decision.orchestrationConfidence,
+          createdAt: decision.createdAt,
+          reasoning: decision.reasoning,
+        });
+        // Keep only last 20 decisions
+        if (backtestRecentDecisions.length > 20) backtestRecentDecisions.length = 20;
+
+        // Map AI decision to gate result for compatibility with existing reporting
+        let gateResult: EntryRecord['gateResult'];
+        if (decision.decisionType === 'NEW_ENTRY' && decision.shouldExecute) {
+          if (decision.reasoning.includes('[PHASE-CHANGE OVERRIDE]')) {
+            gateResult = 'PHASE_CHANGE_OVERRIDE';
+          } else if (cb.total >= 0.92 && alignment === 'all_aligned') {
+            gateResult = 'HIGH_CONV_OVERRIDE';
+          } else {
+            gateResult = 'PASSED';
+          }
+          lastEntryTs = currentTs;
+        } else if (decision.reasoning.includes('[STAGE-1 OBSERVE]')) {
+          gateResult = 'STAGE1_OBSERVE';
+        } else if (decision.reasoning.includes('[WEAKENING-SIGNAL BLOCK]')) {
+          gateResult = 'WEAKENING_BLOCK';
+        } else if (decision.reasoning.includes('[STALE-SIGNAL BLOCK]')) {
+          gateResult = 'STALE_BLOCK';
+        } else {
+          gateResult = 'STAGE1_OBSERVE'; // AI chose WAIT or other non-entry
+        }
+
+        const fwd = computeForwardMoves();
+
+        entries.push({
+          time: timeStr, timeET, direction, alignment, confidence: cb.total,
+          price: currentPrice, strengthScore, ...fwd, breakdown: cb,
+          gateResult,
+          aiDecision: decision.decisionType,
+          aiShouldExecute: decision.shouldExecute,
+          aiReasoning: decision.reasoning,
+          aiConfirmationCount: decision.confirmationCount,
+        });
+      }
+    } else {
+      // ── Deterministic confirmation gate simulation ─────────────────────────
+      // Reset confirmation state when direction changes or signal drops below threshold
+      if (!meetsThreshold || direction === 'neutral' || (confirmStage1 && confirmStage1.direction !== direction)) {
+        if (!meetsThreshold || direction === 'neutral') confirmStage1 = null;
+        // Direction changed: reset and start fresh stage-1 if meets threshold
+        if (confirmStage1 && confirmStage1.direction !== direction && meetsThreshold && direction !== 'neutral') {
+          confirmStage1 = null; // will be set below as stage-1
+        }
+      }
+
+      if (meetsThreshold && direction !== 'neutral') {
+        // Determine gate result
+        const htfTf = tfIndicators[2] ?? tfIndicators[0];
+        const highConvOverride = cb.total >= 0.92 && alignment === 'all_aligned';
+
+        // Phase-change override: HTF growth cross in signal direction + rising ADX + non-mixed
+        const growthCross = direction === 'bullish' ? htfTf?.dmi.growthCrossUp : htfTf?.dmi.growthCrossDown;
+        const phaseChangeStructural = !!htfTf && cb.total >= 0.60 && alignment !== 'mixed' && growthCross;
+        // Simplified timing checks for phase-change
+        let phaseChangeTimingOk = true;
+        if (phaseChangeStructural && htfTf) {
+          const rp = htfTf.priceStructure.rangePosition;
+          if (direction === 'bullish' && rp > 0.85) phaseChangeTimingOk = false;
+          if (direction === 'bearish' && rp < 0.15) phaseChangeTimingOk = false;
+          if (htfTf.dmi.adx > 50) phaseChangeTimingOk = false;
+          // VWAP alignment
+          const ltfTf = tfIndicators[0];
+          if (ltfTf) {
+            const vwapPct = ltfTf.vwap.priceVsVwap;
+            if (direction === 'bullish' && vwapPct < -0.30) phaseChangeTimingOk = false;
+            if (direction === 'bearish' && vwapPct > 0.30) phaseChangeTimingOk = false;
+          }
+          // ORB alignment
+          if (signal.orb.orbFormed) {
+            const orbDir = signal.orb.breakoutDirection;
+            if (direction === 'bullish' && orbDir === 'bearish') phaseChangeTimingOk = false;
+            if (direction === 'bearish' && orbDir === 'bullish') phaseChangeTimingOk = false;
+          }
+        }
+        const phaseChangeOverride = phaseChangeStructural && phaseChangeTimingOk;
+
+        let gateResult: EntryRecord['gateResult'];
+        let stage1ConfValue: number | undefined;
+
+        if (highConvOverride) {
+          gateResult = 'HIGH_CONV_OVERRIDE';
+          confirmStage1 = null; // reset after entry
+        } else if (!confirmStage1) {
+          // No prior stage-1 → this is Stage-1 OBSERVE
+          if (phaseChangeOverride) {
+            gateResult = 'PHASE_CHANGE_OVERRIDE';
+            confirmStage1 = null;
+          } else {
+            gateResult = 'STAGE1_OBSERVE';
+            confirmStage1 = { direction, confidence: cb.total, time: timeStr };
+          }
+        } else {
+          // Stage-2: we have a prior stage-1 in the same direction
+          stage1ConfValue = confirmStage1.confidence;
+          const confDelta = Math.abs(cb.total - confirmStage1.confidence);
+          const staleThreshold = Math.min(0.03, Math.max(0.01, (1 - confirmStage1.confidence) * 0.15));
+
+          if (cb.total < confirmStage1.confidence) {
+            gateResult = 'WEAKENING_BLOCK';
+            // Keep stage-1 alive — next tick can still try stage-2
+          } else if (confDelta < staleThreshold) {
+            gateResult = 'STALE_BLOCK';
+            // Keep stage-1 alive
+          } else {
+            gateResult = 'PASSED';
+            confirmStage1 = null; // reset after confirmed entry
+            lastEntryTs = currentTs;
+          }
+        }
+
+        const fwd = computeForwardMoves();
+
+        entries.push({
+          time: timeStr, timeET, direction, alignment, confidence: cb.total,
+          price: currentPrice, strengthScore, ...fwd, breakdown: cb,
+          gateResult, stage1Conf: stage1ConfValue,
+        });
+      }
     }
 
     // Progress indicator every 30 ticks
@@ -964,6 +1056,12 @@ async function main() {
     ].filter(f => Math.abs(f.val) >= 0.01);
     const factorStr = factors.map(f => `${f.name}=${f.val >= 0 ? '+' : ''}${f.val.toFixed(3)}`).join(', ');
     console.log(`    Factors:    base=0.380, ${factorStr}`);
+    if (e.aiDecision) {
+      console.log(`    AI Decision: ${e.aiDecision} (execute=${e.aiShouldExecute}, count=${e.aiConfirmationCount})`);
+      // Truncate reasoning to first 200 chars for readability
+      const reason = e.aiReasoning ?? '';
+      console.log(`    AI Reason:  ${reason.length > 200 ? reason.slice(0, 200) + '...' : reason}`);
+    }
     console.log('');
   }
 
