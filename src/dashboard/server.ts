@@ -73,11 +73,11 @@ export function startDashboard(port: number): void {
         filterParams.push(timeTo);
         timeToFilter = `AND (created_at AT TIME ZONE 'America/New_York')::time <= $${filterParams.length}::time`;
       }
-      const whereClause = `WHERE trade_date >= CURRENT_DATE - INTERVAL '7 days' ${tickerFilter} ${timeFromFilter} ${timeToFilter}`;
+      const whereClause = `WHERE trade_date = (CURRENT_TIMESTAMP AT TIME ZONE 'America/New_York')::date ${tickerFilter} ${timeFromFilter} ${timeToFilter}`;
       const limitN = filterParams.length + 1;
       const offsetN = filterParams.length + 2;
 
-      const [{ rows }, { rows: countRows }, { rows: todayRows }] = await Promise.all([
+      const [{ rows }, { rows: countRows }] = await Promise.all([
         pool.query(
           `SELECT id, ticker, profile, direction, alignment, confidence,
                   confidence_meets_threshold, selected_right, selected_symbol,
@@ -93,11 +93,8 @@ export function startDashboard(port: number): void {
           `SELECT COUNT(*)::int AS total FROM trading.signal_snapshots ${whereClause}`,
           filterParams
         ),
-        pool.query(
-          `SELECT COUNT(*)::int AS total FROM trading.signal_snapshots WHERE trade_date = (CURRENT_TIMESTAMP AT TIME ZONE 'America/New_York')::date`
-        ),
       ]);
-      res.json({ signals: rows, total: countRows[0]?.total ?? 0, total_today: todayRows[0]?.total ?? 0, page, limit });
+      res.json({ signals: rows, total: countRows[0]?.total ?? 0, total_today: countRows[0]?.total ?? 0, page, limit });
     } catch (err) {
       res.status(500).json({ error: (err as Error).message });
     }
@@ -128,7 +125,7 @@ export function startDashboard(port: number): void {
       if (timeFrom) { filterParams.push(timeFrom); timeFromFilter = `AND (created_at AT TIME ZONE 'America/New_York')::time >= $${filterParams.length}::time`; }
       if (timeTo)   { filterParams.push(timeTo);   timeToFilter   = `AND (created_at AT TIME ZONE 'America/New_York')::time <= $${filterParams.length}::time`; }
       if (decision) { filterParams.push(decision); decisionFilter = `AND decision_type = $${filterParams.length}`; }
-      const whereClause = `WHERE trade_date >= CURRENT_DATE - INTERVAL '7 days' ${tickerFilter} ${timeFromFilter} ${timeToFilter} ${decisionFilter}`;
+      const whereClause = `WHERE trade_date = (CURRENT_TIMESTAMP AT TIME ZONE 'America/New_York')::date ${tickerFilter} ${timeFromFilter} ${timeToFilter} ${decisionFilter}`;
       const limitN = filterParams.length + 1;
       const offsetN = filterParams.length + 2;
 
@@ -278,13 +275,13 @@ export function startDashboard(port: number): void {
           `SELECT id, run_at, trigger_type, status, skipped_reason,
                   ticker_runs, total_duration_ms, created_at
            FROM trading.scheduler_runs
-           WHERE run_at >= NOW() - INTERVAL '7 days'
+           WHERE run_at >= (CURRENT_TIMESTAMP AT TIME ZONE 'America/New_York')::date
            ORDER BY run_at DESC
            LIMIT $1 OFFSET $2`,
           [limit, offset]
         ),
         pool.query(
-          `SELECT COUNT(*)::int AS total FROM trading.scheduler_runs WHERE run_at >= NOW() - INTERVAL '7 days'`
+          `SELECT COUNT(*)::int AS total FROM trading.scheduler_runs WHERE run_at >= (CURRENT_TIMESTAMP AT TIME ZONE 'America/New_York')::date`
         ),
       ]);
       res.json({ runs: rows, total: countRows[0]?.total ?? 0, page, limit });
@@ -747,7 +744,7 @@ export function startDashboard(port: number): void {
       if (ticker)   { filterParams.push(ticker);   tickerFilter   = `AND ticker = $${filterParams.length}`; }
       if (timeFrom) { filterParams.push(timeFrom); timeFromFilter = `AND (created_at AT TIME ZONE 'America/New_York')::time >= $${filterParams.length}::time`; }
       if (timeTo)   { filterParams.push(timeTo);   timeToFilter   = `AND (created_at AT TIME ZONE 'America/New_York')::time <= $${filterParams.length}::time`; }
-      const whereClause = `WHERE trade_date >= CURRENT_DATE - INTERVAL '7 days' ${tickerFilter} ${timeFromFilter} ${timeToFilter}`;
+      const whereClause = `WHERE trade_date = (CURRENT_TIMESTAMP AT TIME ZONE 'America/New_York')::date ${tickerFilter} ${timeFromFilter} ${timeToFilter}`;
       const limitN = filterParams.length + 1;
       const offsetN = filterParams.length + 2;
 

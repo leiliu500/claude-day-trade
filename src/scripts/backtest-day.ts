@@ -30,6 +30,8 @@ import type { PositionContext, DecisionResult, DecisionType } from '../types/dec
 import { normalizeAlpacaBars } from '../types/market.js';
 import { v4 as uuidv4 } from 'uuid';
 import { DecisionOrchestrator } from '../agents/decision-orchestrator.js';
+import { simulateOrderAgent } from '../lib/order-agent-sim.js';
+import type { SimResult } from '../lib/order-agent-sim.js';
 
 // ── Config ────────────────────────────────────────────────────────────────────
 
@@ -604,6 +606,8 @@ interface EntryRecord {
   priceAt15m: number | null;
   priceAt30m: number | null;
   outcome: 'GOOD' | 'BAD' | 'MARGINAL';
+  // Simulated order-agent result
+  sim: SimResult;
   breakdown: ConfidenceBreakdown;
   // Confirmation gate simulation
   gateResult: 'PASSED' | 'STAGE1_OBSERVE' | 'WEAKENING_BLOCK' | 'STALE_BLOCK' | 'HIGH_CONV_OVERRIDE' | 'PHASE_CHANGE_OVERRIDE';
@@ -770,6 +774,11 @@ async function main() {
         const bt = new Date(b.timestamp).getTime();
         return bt > currentTs && bt <= currentTs + 120 * 60_000;
       });
+      // All remaining bars until market close (for order-agent sim)
+      const allFutureBars = targetDateBars.filter(b => {
+        const bt = new Date(b.timestamp).getTime();
+        return bt > currentTs;
+      });
       let maxFavorable = 0, maxAdverse = 0;
       for (const fb of futureBars) {
         const move = direction === 'bullish' ? fb.high - currentPrice : currentPrice - fb.low;
@@ -785,17 +794,17 @@ async function main() {
         });
         return bar?.close ?? null;
       };
-      const priceAt5m = findPriceAt(5);
+      // Simulate order-agent trailing stop on remaining bars
+      const sim = simulateOrderAgent(currentPrice, direction, atr, allFutureBars);
+      // Outcome based on simulated P&L
       let outcome: 'GOOD' | 'BAD' | 'MARGINAL' = 'MARGINAL';
-      if (maxFavorable > atr * 1.5 && maxFavorable > maxAdverse * 1.5) outcome = 'GOOD';
-      else if (maxAdverse > atr * 1.0 && maxAdverse > maxFavorable) outcome = 'BAD';
-      if (priceAt5m !== null) {
-        const move5m = direction === 'bullish' ? priceAt5m - currentPrice : currentPrice - priceAt5m;
-        if (move5m < -atr * 0.5) outcome = 'BAD';
-      }
+      if (sim.pnlPct >= 5) outcome = 'GOOD';
+      else if (sim.pnlPct <= -5) outcome = 'BAD';
+      else if (sim.pnlPct > 0) outcome = 'GOOD';
+      else if (sim.pnlPct < -2) outcome = 'BAD';
       return {
-        maxFavorable, maxAdverse, outcome,
-        priceAt5m, priceAt10m: findPriceAt(10), priceAt15m: findPriceAt(15), priceAt30m: findPriceAt(30),
+        maxFavorable, maxAdverse, outcome, sim,
+        priceAt5m: findPriceAt(5), priceAt10m: findPriceAt(10), priceAt15m: findPriceAt(15), priceAt30m: findPriceAt(30),
       };
     };
 
@@ -1015,6 +1024,13 @@ async function main() {
     console.log(`    Time:       ${e.timeET} ET (${e.time.slice(11, 19)} UTC)`);
     console.log(`    Direction:  ${e.direction.toUpperCase()} | Alignment: ${e.alignment} | Strength: ${e.strengthScore}`);
     console.log(`    Price:      $${e.price.toFixed(2)} | Confidence: ${(e.confidence * 100).toFixed(1)}%${e.stage1Conf !== undefined ? ` (Stage-1 was ${(e.stage1Conf * 100).toFixed(1)}%)` : ''}`);
+    // Simulated order-agent result
+    const simIcon = e.sim.pnlPct >= 0 ? '📈' : '📉';
+    const simExitTag = e.sim.exitReason === 'TP' ? '🎯 TP'
+      : e.sim.exitReason === 'STOP' ? '🛑 STOP'
+      : e.sim.exitReason === 'CLOSE' ? '🔔 CLOSE'
+      : e.sim.exitReason;
+    console.log(`    Sim Trade:  ${simIcon} P&L ${e.sim.pnlPct >= 0 ? '+' : ''}${e.sim.pnlPct.toFixed(1)}% | Exit: ${simExitTag} after ${e.sim.holdMinutes}m | Peak: +${e.sim.peakPnlPct.toFixed(1)}% | Drawdown: -${e.sim.maxDrawdownPct.toFixed(1)}%`);
     console.log(`    Forward:    max favorable=$${e.maxFavorable.toFixed(2)}, max adverse=$${e.maxAdverse.toFixed(2)}`);
     if (e.priceAt5m !== null) {
       const m5 = e.direction === 'bullish' ? e.priceAt5m - e.price : e.price - e.priceAt5m;
@@ -1085,6 +1101,32 @@ async function main() {
   console.log(`  ⚠️  Marginal: ${marginalCount}`);
   console.log(`  ❌ Bad:      ${badCount}`);
   console.log(`  Win rate:    ${dedupedEntries.length > 0 ? ((goodCount / dedupedEntries.length) * 100).toFixed(0) : 0}% good, ${dedupedEntries.length > 0 ? ((badCount / dedupedEntries.length) * 100).toFixed(0) : 0}% bad`);
+
+  // ── Simulated Trade Performance ──
+  console.log(`\n  ── Simulated Order-Agent Performance ──`);
+  const allSims = dedupedEntries.map(e => e.sim);
+  const simWins = allSims.filter(s => s.pnlPct > 0).length;
+  const simLosses = allSims.filter(s => s.pnlPct <= 0).length;
+  const avgPnl = allSims.reduce((sum, s) => sum + s.pnlPct, 0) / (allSims.length || 1);
+  const totalPnl = allSims.reduce((sum, s) => sum + s.pnlPct, 0);
+  const avgHold = allSims.reduce((sum, s) => sum + s.holdMinutes, 0) / (allSims.length || 1);
+  const avgPeak = allSims.reduce((sum, s) => sum + s.peakPnlPct, 0) / (allSims.length || 1);
+  const tpExits = allSims.filter(s => s.exitReason === 'TP').length;
+  const stopExits = allSims.filter(s => s.exitReason === 'STOP').length;
+  const closeExits = allSims.filter(s => s.exitReason === 'CLOSE').length;
+  console.log(`  Sim win rate:   ${simWins}W / ${simLosses}L (${allSims.length > 0 ? ((simWins / allSims.length) * 100).toFixed(0) : 0}%)`);
+  console.log(`  Avg P&L:        ${avgPnl >= 0 ? '+' : ''}${avgPnl.toFixed(1)}% | Total: ${totalPnl >= 0 ? '+' : ''}${totalPnl.toFixed(1)}%`);
+  console.log(`  Avg hold time:  ${avgHold.toFixed(0)}m | Avg peak: +${avgPeak.toFixed(1)}%`);
+  console.log(`  Exits:          🎯 TP: ${tpExits} | 🛑 STOP: ${stopExits} | 🔔 CLOSE: ${closeExits}`);
+
+  // Gate-filtered sim performance
+  const confirmedSims = confirmedEntries.map(e => e.sim);
+  if (confirmedSims.length > 0) {
+    const cSimWins = confirmedSims.filter(s => s.pnlPct > 0).length;
+    const cAvgPnl = confirmedSims.reduce((sum, s) => sum + s.pnlPct, 0) / confirmedSims.length;
+    const cTotalPnl = confirmedSims.reduce((sum, s) => sum + s.pnlPct, 0);
+    console.log(`  Gate-filtered:  ${cSimWins}W / ${confirmedSims.length - cSimWins}L (${((cSimWins / confirmedSims.length) * 100).toFixed(0)}%) | Avg: ${cAvgPnl >= 0 ? '+' : ''}${cAvgPnl.toFixed(1)}% | Total: ${cTotalPnl >= 0 ? '+' : ''}${cTotalPnl.toFixed(1)}%`);
+  }
 
   console.log(`\n  ── Confirmation Gate Analysis ──`);
   console.log(`  🟢 Would enter (confirmed/override): ${confirmedEntries.length} (${confirmedGood} good, ${confirmedBad} bad)`);
