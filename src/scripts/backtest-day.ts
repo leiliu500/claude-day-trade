@@ -39,7 +39,7 @@ const USE_AI = process.argv.includes('--ai');
 const TARGET_DATE = process.argv.filter(a => !a.startsWith('--'))[2] || '2026-03-18';
 const TICKER = process.argv.filter(a => !a.startsWith('--'))[3] || 'SPY';
 const PROFILE = 'S' as const; // Scalp: 1m, 3m, 5m
-const MIN_CONFIDENCE = config.MIN_CONFIDENCE; // 0.65
+const MIN_CONFIDENCE = parseFloat(process.env.BT_THRESHOLD ?? '') || config.MIN_CONFIDENCE; // 0.65 default
 
 // Market hours in UTC (ET + 4 during EDT, ET + 5 during EST)
 // March 18 2026 is EDT → 9:30 ET = 13:30 UTC, 16:00 ET = 20:00 UTC
@@ -1155,7 +1155,21 @@ async function main() {
         : blocked.gateResult === 'WEAKENING_BLOCK' ? 'WEAKENING'
         : blocked.gateResult === 'STALE_BLOCK' ? 'STALE' : blocked.gateResult;
       const simPnl = blocked.sim.pnlPct;
+      const bcb = blocked.breakdown;
+      const bFactors = [
+        { name: 'DI Spread', val: bcb.diSpreadBonus }, { name: 'ADX', val: bcb.adxBonus },
+        { name: 'DI Cross', val: bcb.diCrossBonus }, { name: 'Alignment', val: bcb.alignmentBonus },
+        { name: 'VWAP', val: bcb.vwapBonus }, { name: 'OBV', val: bcb.obvBonus },
+        { name: 'Structure', val: bcb.structureBonus }, { name: 'ORB', val: bcb.orbBonus },
+        { name: 'PA', val: bcb.recentPriceActionBonus }, { name: 'Trend', val: bcb.trendPhaseBonus },
+        { name: 'Mom', val: bcb.momentumAccelBonus }, { name: 'Maturity', val: bcb.adxMaturityPenalty },
+        { name: 'Exhaust', val: bcb.moveExhaustionPenalty }, { name: 'Consol', val: bcb.consolidationPenalty },
+        { name: 'NearLvl', val: bcb.nearLevelPenalty }, { name: 'LowVol', val: bcb.lowVolPenalty },
+        { name: 'NarrowRng', val: bcb.narrowRangePenalty },
+      ].filter(f => Math.abs(f.val) >= 0.01);
+      const bFactorStr = bFactors.map(f => `${f.name}=${f.val >= 0 ? '+' : ''}${f.val.toFixed(3)}`).join(', ');
       console.log(`     ${blocked.timeET} ET ${blocked.direction} ${blockTag} → ${outcomeIcon} (conf=${(blocked.confidence * 100).toFixed(1)}%, sim=${simPnl >= 0 ? '+' : ''}${simPnl.toFixed(1)}%)`);
+      console.log(`       Factors: base=0.380, ${bFactorStr}`);
     }
   }
 
