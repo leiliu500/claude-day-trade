@@ -606,6 +606,7 @@ interface EntryRecord {
   priceAt15m: number | null;
   priceAt30m: number | null;
   outcome: 'GOOD' | 'BAD' | 'MARGINAL';
+  atr: number;
   // Simulated order-agent result
   sim: SimResult;
   breakdown: ConfidenceBreakdown;
@@ -794,8 +795,13 @@ async function main() {
         });
         return bar?.close ?? null;
       };
+      // Recent 1m bars before entry for volatility measurement
+      const recentBars = targetDateBars.filter(b => {
+        const bt = new Date(b.timestamp).getTime();
+        return bt <= currentTs && bt > currentTs - 10 * 60_000;
+      });
       // Simulate order-agent trailing stop on remaining bars
-      const sim = simulateOrderAgent(currentPrice, direction, atr, allFutureBars);
+      const sim = simulateOrderAgent(currentPrice, direction, atr, allFutureBars, { recentBars });
       // Outcome based on simulated P&L
       let outcome: 'GOOD' | 'BAD' | 'MARGINAL' = 'MARGINAL';
       if (sim.pnlPct >= 5) outcome = 'GOOD';
@@ -879,7 +885,7 @@ async function main() {
 
         entries.push({
           time: timeStr, timeET, direction, alignment, confidence: cb.total,
-          price: currentPrice, strengthScore, ...fwd, breakdown: cb,
+          price: currentPrice, strengthScore, atr, ...fwd, breakdown: cb,
           gateResult,
           aiDecision: decision.decisionType,
           aiShouldExecute: decision.shouldExecute,
@@ -967,7 +973,7 @@ async function main() {
 
         entries.push({
           time: timeStr, timeET, direction, alignment, confidence: cb.total,
-          price: currentPrice, strengthScore, ...fwd, breakdown: cb,
+          price: currentPrice, strengthScore, atr, ...fwd, breakdown: cb,
           gateResult, stage1Conf: stage1ConfValue,
         });
       }
@@ -1006,30 +1012,29 @@ async function main() {
     dedupedEntries.push(entry);
   }
 
-  console.log(`  Unique entry signals (deduped within 5-min windows): ${dedupedEntries.length}\n`);
+  // Gate statistics
+  const confirmedEntries = dedupedEntries.filter(e => isConfirmed(e));
+  const blockedEntries = dedupedEntries.filter(e => !isConfirmed(e));
 
-  // Print each entry
-  for (let i = 0; i < dedupedEntries.length; i++) {
-    const e = dedupedEntries[i]!;
+  // ── Confirmed Entries (what would actually trade) ──
+  console.log(`  Confirmed entries: ${confirmedEntries.length} (of ${dedupedEntries.length} signals)\n`);
+
+  for (let i = 0; i < confirmedEntries.length; i++) {
+    const e = confirmedEntries[i]!;
     const tag = e.outcome === 'BAD' ? '❌ BAD' : e.outcome === 'GOOD' ? '✅ GOOD' : '⚠️  MARGINAL';
     const gateTag = e.gateResult === 'PASSED' ? '🟢 CONFIRMED'
       : e.gateResult === 'HIGH_CONV_OVERRIDE' ? '⚡ HIGH-CONV OVERRIDE'
-      : e.gateResult === 'PHASE_CHANGE_OVERRIDE' ? '⚡ PHASE-CHANGE OVERRIDE'
-      : e.gateResult === 'STAGE1_OBSERVE' ? '🔵 STAGE-1 (would wait)'
-      : e.gateResult === 'WEAKENING_BLOCK' ? '🔴 WEAKENING BLOCK'
-      : e.gateResult === 'STALE_BLOCK' ? '🟡 STALE BLOCK'
-      : '?';
-    const wouldEnter = e.gateResult === 'PASSED' || e.gateResult === 'HIGH_CONV_OVERRIDE' || e.gateResult === 'PHASE_CHANGE_OVERRIDE';
-    console.log(`  Entry #${i + 1}: ${tag} | Gate: ${gateTag}${wouldEnter ? '' : ' ← BLOCKED'}`);
-    console.log(`    Time:       ${e.timeET} ET (${e.time.slice(11, 19)} UTC)`);
-    console.log(`    Direction:  ${e.direction.toUpperCase()} | Alignment: ${e.alignment} | Strength: ${e.strengthScore}`);
-    console.log(`    Price:      $${e.price.toFixed(2)} | Confidence: ${(e.confidence * 100).toFixed(1)}%${e.stage1Conf !== undefined ? ` (Stage-1 was ${(e.stage1Conf * 100).toFixed(1)}%)` : ''}`);
-    // Simulated order-agent result
+      : '⚡ PHASE-CHANGE OVERRIDE';
     const simIcon = e.sim.pnlPct >= 0 ? '📈' : '📉';
     const simExitTag = e.sim.exitReason === 'TP' ? '🎯 TP'
       : e.sim.exitReason === 'STOP' ? '🛑 STOP'
       : e.sim.exitReason === 'CLOSE' ? '🔔 CLOSE'
       : e.sim.exitReason;
+    console.log(`  Entry #${i + 1}: ${tag} | ${gateTag}`);
+    console.log(`    Time:       ${e.timeET} ET (${e.time.slice(11, 19)} UTC)`);
+    console.log(`    Direction:  ${e.direction.toUpperCase()} | Alignment: ${e.alignment} | Strength: ${e.strengthScore}`);
+    console.log(`    Price:      $${e.price.toFixed(2)} | Confidence: ${(e.confidence * 100).toFixed(1)}%${e.stage1Conf !== undefined ? ` (Stage-1 was ${(e.stage1Conf * 100).toFixed(1)}%)` : ''}`);
+    console.log(`    ATR: $${e.atr.toFixed(3)}`);
     console.log(`    Sim Trade:  ${simIcon} P&L ${e.sim.pnlPct >= 0 ? '+' : ''}${e.sim.pnlPct.toFixed(1)}% | Exit: ${simExitTag} after ${e.sim.holdMinutes}m | Peak: +${e.sim.peakPnlPct.toFixed(1)}% | Drawdown: -${e.sim.maxDrawdownPct.toFixed(1)}%`);
     console.log(`    Forward:    max favorable=$${e.maxFavorable.toFixed(2)}, max adverse=$${e.maxAdverse.toFixed(2)}`);
     if (e.priceAt5m !== null) {
@@ -1074,76 +1079,48 @@ async function main() {
     console.log(`    Factors:    base=0.380, ${factorStr}`);
     if (e.aiDecision) {
       console.log(`    AI Decision: ${e.aiDecision} (execute=${e.aiShouldExecute}, count=${e.aiConfirmationCount})`);
-      // Truncate reasoning to first 200 chars for readability
       const reason = e.aiReasoning ?? '';
       console.log(`    AI Reason:  ${reason.length > 200 ? reason.slice(0, 200) + '...' : reason}`);
     }
     console.log('');
   }
 
-  // Summary
-  const goodCount = dedupedEntries.filter(e => e.outcome === 'GOOD').length;
-  const badCount = dedupedEntries.filter(e => e.outcome === 'BAD').length;
-  const marginalCount = dedupedEntries.filter(e => e.outcome === 'MARGINAL').length;
-
-  // Gate statistics
-  const confirmedEntries = dedupedEntries.filter(e => e.gateResult === 'PASSED' || e.gateResult === 'HIGH_CONV_OVERRIDE' || e.gateResult === 'PHASE_CHANGE_OVERRIDE');
-  const blockedEntries = dedupedEntries.filter(e => e.gateResult === 'STAGE1_OBSERVE' || e.gateResult === 'WEAKENING_BLOCK' || e.gateResult === 'STALE_BLOCK');
+  // ── Sim Performance Summary ──
+  const confirmedSims = confirmedEntries.map(e => e.sim);
+  const simWins = confirmedSims.filter(s => s.pnlPct > 0).length;
+  const simLosses = confirmedSims.filter(s => s.pnlPct <= 0).length;
+  const avgPnl = confirmedSims.reduce((sum, s) => sum + s.pnlPct, 0) / (confirmedSims.length || 1);
+  const totalPnl = confirmedSims.reduce((sum, s) => sum + s.pnlPct, 0);
+  const avgHold = confirmedSims.reduce((sum, s) => sum + s.holdMinutes, 0) / (confirmedSims.length || 1);
+  const avgPeak = confirmedSims.reduce((sum, s) => sum + s.peakPnlPct, 0) / (confirmedSims.length || 1);
+  const tpExits = confirmedSims.filter(s => s.exitReason === 'TP').length;
+  const stopExits = confirmedSims.filter(s => s.exitReason === 'STOP').length;
+  const closeExits = confirmedSims.filter(s => s.exitReason === 'CLOSE').length;
   const confirmedGood = confirmedEntries.filter(e => e.outcome === 'GOOD').length;
   const confirmedBad = confirmedEntries.filter(e => e.outcome === 'BAD').length;
-  const blockedGood = blockedEntries.filter(e => e.outcome === 'GOOD').length;
-  const blockedBad = blockedEntries.filter(e => e.outcome === 'BAD').length;
 
   console.log(`${'─'.repeat(80)}`);
-  console.log(`  SUMMARY`);
-  console.log(`  Total unique entries: ${dedupedEntries.length}`);
-  console.log(`  ✅ Good:     ${goodCount}`);
-  console.log(`  ⚠️  Marginal: ${marginalCount}`);
-  console.log(`  ❌ Bad:      ${badCount}`);
-  console.log(`  Win rate:    ${dedupedEntries.length > 0 ? ((goodCount / dedupedEntries.length) * 100).toFixed(0) : 0}% good, ${dedupedEntries.length > 0 ? ((badCount / dedupedEntries.length) * 100).toFixed(0) : 0}% bad`);
+  console.log(`  SUMMARY (confirmed entries only)`);
+  console.log(`  Entries:     ${confirmedEntries.length} confirmed | ${blockedEntries.length} blocked`);
+  console.log(`  Sim P&L:     ${simWins}W / ${simLosses}L (${confirmedSims.length > 0 ? ((simWins / confirmedSims.length) * 100).toFixed(0) : 0}%) | Avg: ${avgPnl >= 0 ? '+' : ''}${avgPnl.toFixed(1)}% | Total: ${totalPnl >= 0 ? '+' : ''}${totalPnl.toFixed(1)}%`);
+  console.log(`  Avg hold:    ${avgHold.toFixed(0)}m | Avg peak: +${avgPeak.toFixed(1)}%`);
+  console.log(`  Exits:       🎯 TP: ${tpExits} | 🛑 STOP: ${stopExits} | 🔔 CLOSE: ${closeExits}`);
+  console.log(`  Outcome:     ✅ ${confirmedGood} good | ❌ ${confirmedBad} bad | ⚠️  ${confirmedEntries.length - confirmedGood - confirmedBad} marginal`);
 
-  // ── Simulated Trade Performance ──
-  console.log(`\n  ── Simulated Order-Agent Performance ──`);
-  const allSims = dedupedEntries.map(e => e.sim);
-  const simWins = allSims.filter(s => s.pnlPct > 0).length;
-  const simLosses = allSims.filter(s => s.pnlPct <= 0).length;
-  const avgPnl = allSims.reduce((sum, s) => sum + s.pnlPct, 0) / (allSims.length || 1);
-  const totalPnl = allSims.reduce((sum, s) => sum + s.pnlPct, 0);
-  const avgHold = allSims.reduce((sum, s) => sum + s.holdMinutes, 0) / (allSims.length || 1);
-  const avgPeak = allSims.reduce((sum, s) => sum + s.peakPnlPct, 0) / (allSims.length || 1);
-  const tpExits = allSims.filter(s => s.exitReason === 'TP').length;
-  const stopExits = allSims.filter(s => s.exitReason === 'STOP').length;
-  const closeExits = allSims.filter(s => s.exitReason === 'CLOSE').length;
-  console.log(`  Sim win rate:   ${simWins}W / ${simLosses}L (${allSims.length > 0 ? ((simWins / allSims.length) * 100).toFixed(0) : 0}%)`);
-  console.log(`  Avg P&L:        ${avgPnl >= 0 ? '+' : ''}${avgPnl.toFixed(1)}% | Total: ${totalPnl >= 0 ? '+' : ''}${totalPnl.toFixed(1)}%`);
-  console.log(`  Avg hold time:  ${avgHold.toFixed(0)}m | Avg peak: +${avgPeak.toFixed(1)}%`);
-  console.log(`  Exits:          🎯 TP: ${tpExits} | 🛑 STOP: ${stopExits} | 🔔 CLOSE: ${closeExits}`);
-
-  // Gate-filtered sim performance
-  const confirmedSims = confirmedEntries.map(e => e.sim);
-  if (confirmedSims.length > 0) {
-    const cSimWins = confirmedSims.filter(s => s.pnlPct > 0).length;
-    const cAvgPnl = confirmedSims.reduce((sum, s) => sum + s.pnlPct, 0) / confirmedSims.length;
-    const cTotalPnl = confirmedSims.reduce((sum, s) => sum + s.pnlPct, 0);
-    console.log(`  Gate-filtered:  ${cSimWins}W / ${confirmedSims.length - cSimWins}L (${((cSimWins / confirmedSims.length) * 100).toFixed(0)}%) | Avg: ${cAvgPnl >= 0 ? '+' : ''}${cAvgPnl.toFixed(1)}% | Total: ${cTotalPnl >= 0 ? '+' : ''}${cTotalPnl.toFixed(1)}%`);
-  }
-
-  console.log(`\n  ── Confirmation Gate Analysis ──`);
-  console.log(`  🟢 Would enter (confirmed/override): ${confirmedEntries.length} (${confirmedGood} good, ${confirmedBad} bad)`);
-  console.log(`  🚫 Would block:                      ${blockedEntries.length} (${blockedGood} good missed, ${blockedBad} bad avoided)`);
-  for (const blocked of blockedEntries) {
-    const outcomeIcon = blocked.outcome === 'GOOD' ? '⚠️  MISSED' : blocked.outcome === 'BAD' ? '✅ AVOIDED' : '── MARGINAL';
-    console.log(`     ${blocked.timeET} ET ${blocked.direction} ${blocked.gateResult} → ${outcomeIcon} (conf=${(blocked.confidence * 100).toFixed(1)}%${blocked.stage1Conf !== undefined ? `, stage1=${(blocked.stage1Conf * 100).toFixed(1)}%` : ''})`);
-  }
-  if (confirmedEntries.length > 0) {
-    const confirmedWinRate = confirmedGood / confirmedEntries.length * 100;
-    console.log(`  Gate-filtered win rate: ${confirmedWinRate.toFixed(0)}% (vs ${dedupedEntries.length > 0 ? ((goodCount / dedupedEntries.length) * 100).toFixed(0) : 0}% ungated)`);
-  }
-
-  // Show ticks above threshold that were NOT entries (direction neutral)
-  const neutralAboveThreshold = allTicks.filter(t => t.meetsThreshold && t.direction === 'neutral');
-  if (neutralAboveThreshold.length > 0) {
-    console.log(`\n  ⚪ ${neutralAboveThreshold.length} ticks above threshold but NEUTRAL direction (correctly skipped)`);
+  // ── Blocked signals (brief) ──
+  if (blockedEntries.length > 0) {
+    const blockedGood = blockedEntries.filter(e => e.outcome === 'GOOD').length;
+    const blockedBad = blockedEntries.filter(e => e.outcome === 'BAD').length;
+    console.log(`\n  ── Blocked Signals ──`);
+    console.log(`  ${blockedEntries.length} blocked (${blockedGood} good missed, ${blockedBad} bad avoided)`);
+    for (const blocked of blockedEntries) {
+      const outcomeIcon = blocked.outcome === 'GOOD' ? '⚠️  MISSED' : blocked.outcome === 'BAD' ? '✅ AVOIDED' : '── MARGINAL';
+      const blockTag = blocked.gateResult === 'STAGE1_OBSERVE' ? 'STAGE-1'
+        : blocked.gateResult === 'WEAKENING_BLOCK' ? 'WEAKENING'
+        : blocked.gateResult === 'STALE_BLOCK' ? 'STALE' : blocked.gateResult;
+      const simPnl = blocked.sim.pnlPct;
+      console.log(`     ${blocked.timeET} ET ${blocked.direction} ${blockTag} → ${outcomeIcon} (conf=${(blocked.confidence * 100).toFixed(1)}%, sim=${simPnl >= 0 ? '+' : ''}${simPnl.toFixed(1)}%)`);
+    }
   }
 
   // Show direction distribution
@@ -1156,17 +1133,18 @@ async function main() {
   const aboveThreshold = allTicks.filter(t => t.meetsThreshold).length;
   console.log(`  Above threshold (${(MIN_CONFIDENCE * 100).toFixed(0)}%): ${aboveThreshold}/${tickCount} ticks (${(aboveThreshold / tickCount * 100).toFixed(1)}%)`);
 
-  // Show price chart with entry markers
-  console.log(`\n  Price timeline with entries:`);
+  // Show price chart with confirmed entry markers only
+  console.log(`\n  Price timeline with confirmed entries:`);
   const step = Math.max(1, Math.floor(allTicks.length / 60)); // ~60 data points
   for (let i = 0; i < allTicks.length; i += step) {
     const tick = allTicks[i]!;
-    const entryHere = dedupedEntries.find(e => {
+    const entryHere = confirmedEntries.find(e => {
       const eDiff = Math.abs(new Date(e.time).getTime() - new Date(tick.time).getTime());
       return eDiff < step * 60_000;
     });
     const marker = entryHere
-      ? (entryHere.outcome === 'BAD' ? ' ❌' : entryHere.outcome === 'GOOD' ? ' ✅' : ' ⚠️')
+      ? (entryHere.sim.pnlPct > 0 ? ` 📈${entryHere.sim.pnlPct >= 0 ? '+' : ''}${entryHere.sim.pnlPct.toFixed(1)}%`
+        : ` 📉${entryHere.sim.pnlPct.toFixed(1)}%`)
       : '';
     const dir = tick.direction === 'bullish' ? '▲' : tick.direction === 'bearish' ? '▼' : '─';
     const confBar = '█'.repeat(Math.round(tick.confidence * 20));
@@ -1175,10 +1153,12 @@ async function main() {
 
   console.log(`\n${'='.repeat(80)}\n`);
 
-  if (badCount > 0) {
-    console.log(`  ⚠️  ${badCount} BAD ENTRY(S) DETECTED — review confidence factors above for tuning opportunities.\n`);
+  if (confirmedBad > 0) {
+    console.log(`  ⚠️  ${confirmedBad} BAD CONFIRMED ENTRY(S) — review confidence factors above for tuning opportunities.\n`);
+  } else if (confirmedEntries.length > 0) {
+    console.log(`  ✅ All confirmed entries were good on ${TARGET_DATE}.\n`);
   } else {
-    console.log(`  ✅ No bad entries detected on ${TARGET_DATE}.\n`);
+    console.log(`  ── No confirmed entries on ${TARGET_DATE}.\n`);
   }
 }
 

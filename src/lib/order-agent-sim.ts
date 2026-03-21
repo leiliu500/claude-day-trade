@@ -39,9 +39,10 @@ export interface SimResult {
 }
 
 export interface SimConfig {
-  stopMult?: number;    // default 0.8
+  stopMult?: number;    // default 1.0
   tpMult?: number;      // default 1.6
   delta?: number;       // option delta, default 0.50
+  recentBars?: OHLCVBar[];  // recent 1m bars before entry for volatility measurement
 }
 
 // ── Helpers ────────────────────────────────────────────────────────────────────
@@ -88,17 +89,27 @@ export function simulateOrderAgent(
   cfg: SimConfig = {},
 ): SimResult {
   const delta = cfg.delta ?? 0.50;
-  const stopMult = cfg.stopMult ?? 0.8;
+  const stopMult = cfg.stopMult ?? 1.0;
   const tpMult = cfg.tpMult ?? 1.6;
 
   // Convert underlying to option premium units (same as option-agent)
   const optionAtr = atr * delta;
-  const entryPremium = Math.max(optionAtr * 3, 1.0);
 
-  // Initial stop: min(ATR-based, trailing floor at 87%)
-  const atrStop = entryPremium - stopMult * optionAtr;
-  const trailingFloorInit = entryPremium * 0.87;
-  let currentStop = Math.max(0.01, Math.min(atrStop, trailingFloorInit));
+  // Measure recent 1m volatility: use max bar range from last 10 bars.
+  // This captures intra-minute spikes that the 5m ATR misses in choppy conditions.
+  let recentVolatility = optionAtr;
+  if (cfg.recentBars && cfg.recentBars.length >= 3) {
+    const recent = cfg.recentBars.slice(-10);
+    const maxRange = Math.max(...recent.map(b => (b.high - b.low) * delta));
+    recentVolatility = Math.max(optionAtr, maxRange);
+  }
+
+  // Premium floor: at least 3x the larger of ATR or recent volatility
+  const entryPremium = Math.max(recentVolatility * 3, optionAtr * 3, 1.0);
+
+  // Initial stop: ATR-based, using the volatility-adjusted premium
+  const atrStop = entryPremium - stopMult * recentVolatility;
+  let currentStop = Math.max(0.01, atrStop);
   const tpTarget = entryPremium + tpMult * optionAtr;
 
   let highestPrice = entryPremium;
@@ -133,10 +144,15 @@ export function simulateOrderAgent(
     const bestPremium = entryPremium + bestUnderlying * delta;
     const worstPremium = entryPremium + worstUnderlying * delta;
 
-    // ── Rule 1: Initial hard stop (intra-bar, first 3 bars only) ──
-    if (i < 3 && worstPremium <= currentStop && peakPnlPct_ < 3) {
-      maxDrawdownPct_ = Math.max(maxDrawdownPct_, ((highestPrice - worstPremium) / highestPrice) * 100);
-      return mkResult(i, 'STOP', currentStop);
+    // ── Rule 1: Initial hard stop (first 3 bars) ──
+    // Bar 0 (entry bar): use close only — intra-bar noise on entry is expected.
+    // Bars 1-2: use intra-bar worst to catch genuine breakdowns.
+    if (i < 3 && peakPnlPct_ < 3) {
+      const checkPrice = i === 0 ? currentPremium : worstPremium;
+      if (checkPrice <= currentStop) {
+        maxDrawdownPct_ = Math.max(maxDrawdownPct_, ((highestPrice - Math.min(worstPremium, currentPremium)) / highestPrice) * 100);
+        return mkResult(i, 'STOP', currentStop);
+      }
     }
 
     // Track consecutive declines
@@ -176,20 +192,20 @@ export function simulateOrderAgent(
     }
 
     // ── Rule 8: Bad entry fast-cuts ──
-    // Never confirmed: peak < 0.3%, current ≤ -1.5%, bars 3-8
-    if (peakPnlPct_ < 0.3 && currentPnl <= -1.5 && i >= 3 && i <= 8) {
+    // Never confirmed: peak < 0.3%, current ≤ -3%, bars 3-8
+    if (peakPnlPct_ < 0.3 && currentPnl <= -3 && i >= 3 && i <= 8) {
       return mkResult(i, 'BAD_ENTRY', currentPremium);
     }
-    // Immediate adverse: peak < 0.5%, current ≤ -3%, 3+ consecutive declines, 3+ bars
-    if (peakPnlPct_ < 0.5 && currentPnl <= -3 && consecutiveDeclines >= 3 && i >= 3) {
+    // Immediate adverse: peak < 0.5%, current ≤ -5%, 3+ consecutive declines, 3+ bars
+    if (peakPnlPct_ < 0.5 && currentPnl <= -5 && consecutiveDeclines >= 3 && i >= 3) {
       return mkResult(i, 'BAD_ENTRY', currentPremium);
     }
-    // Bad entry cut: peak < 1%, current ≤ -1.5%, 4+ bars
-    if (peakPnlPct_ < 1 && currentPnl <= -1.5 && i >= 4) {
+    // Bad entry cut: peak < 1%, current ≤ -3%, 5+ bars
+    if (peakPnlPct_ < 1 && currentPnl <= -3 && i >= 5) {
       return mkResult(i, 'BAD_ENTRY', currentPremium);
     }
-    // Early bleed: peak < 1%, current ≤ -3%, 3+ bars
-    if (peakPnlPct_ < 1 && currentPnl <= -3 && i >= 3) {
+    // Early bleed: peak < 1%, current ≤ -5%, 4+ bars
+    if (peakPnlPct_ < 1 && currentPnl <= -5 && i >= 4) {
       return mkResult(i, 'BAD_ENTRY', currentPremium);
     }
 
@@ -229,11 +245,16 @@ export function simulateOrderAgent(
     }
 
     // ── Rules 3 & 4: Trailing stop + profit floors ──
+    // Grace period: don't tighten the trailing stop in the first 4 bars unless
+    // we already have meaningful profit (peak >= 5%). This prevents the 0.87
+    // trailing factor from choking entries during initial chop.
     const tf = trailFactor(peakPnlPct_);
     const rawTrailingStop = highestPrice * tf;
     const pf = profitFloor(peakPnlPct_, entryPremium);
     const trailingStop = Math.max(rawTrailingStop, pf);
-    if (trailingStop > currentStop) currentStop = trailingStop;
+    if (trailingStop > currentStop && (i >= 4 || peakPnlPct_ >= 5)) {
+      currentStop = trailingStop;
+    }
 
     // Trailing stop hit (close price)
     if (currentPremium <= currentStop) {
