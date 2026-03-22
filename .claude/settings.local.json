@@ -120,7 +120,8 @@
       "Bash(for d:*)",
       "Bash(do echo:*)",
       "Bash(grep -r \"backtest\" /home/ec2-user/claude-day-trade/*.md)",
-      "Bash(do npx:*)"
+      "Bash(do npx:*)",
+      "Bash(for date:*)"
     ],
     "additionalDirectories": [
       "/home/ec2-user/.claude/projects/-home-ec2-user-claude-day-trade"

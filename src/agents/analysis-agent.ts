@@ -1102,6 +1102,10 @@ function computeRangeConfidence(signal: SignalPayload): ConfidenceBreakdown {
   if (htf.dmi.adxSlope > 5) total = Math.min(total, 0.55);
   if (rangeWidthPct < 0.20) total = Math.min(total, 0.45);
   if (recentPriceActionBonus < 0) total = Math.min(total, 0.58);
+  // ADX slope rising (>2) = trend emerging, don't fade it
+  if (trendPhaseBonus <= -0.05) total = Math.min(total, 0.55);
+  // Opposing ORB + weak reversal candle = breakout against the range trade
+  if (orbBonus <= -0.06 && recentPriceActionBonus <= 0.03) total = Math.min(total, 0.58);
 
   return { base, diSpreadBonus, adxBonus, diCrossBonus, alignmentBonus, tdAdjustment, obvBonus, vwapBonus, oiVolumeBonus, pricePositionAdjustment, adxMaturityPenalty, trendPhaseBonus, momentumAccelBonus, structureBonus, orbBonus, recentPriceActionBonus, trContractionPenalty, lowVolPenalty, moveExhaustionPenalty, consolidationPenalty, nearLevelPenalty, thetaDecayPenalty, narrowRangePenalty, total };
 }

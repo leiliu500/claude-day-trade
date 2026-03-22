@@ -497,14 +497,16 @@ export class DecisionOrchestrator {
       // Range-mode bypass: range entries skip the trend confirmation gate.
       // Quality is controlled by the range confidence model + cooldown/limits below.
       // Gate conditions: 45-min wait after market open, 20-min cooldown between range entries,
-      // max 3 range entries per day.
+      // max 2 range entries per day, stricter confidence threshold (0.66).
       let rangeBypass = false;
       if (signal.signalMode === 'range' && priorCount < 1) {
+        const RANGE_MIN_CONF = 0.66; // stricter than global 0.65 — cuts marginal range setups
         const now = new Date();
         const todayOpen = new Date(now);
         todayOpen.setUTCHours(13, 30, 0, 0); // 09:30 ET = 13:30 UTC (EDT)
         const minutesSinceOpen = (now.getTime() - todayOpen.getTime()) / 60_000;
         const pastWaitPeriod = minutesSinceOpen >= 45;
+        const meetsRangeThreshold = analysis.confidence >= RANGE_MIN_CONF;
 
         // Count recent range entries today for cooldown + daily limit
         const todayStr = now.toISOString().slice(0, 10);
@@ -513,15 +515,16 @@ export class DecisionOrchestrator {
           d.reasoning?.includes('[RANGE') &&
           d.createdAt.startsWith(todayStr)
         );
-        const underLimit = rangeEntriesToday.length < 3;
+        const underLimit = rangeEntriesToday.length < 2;
         const lastRangeEntry = rangeEntriesToday[0]; // newest first
         const cooldownOk = !lastRangeEntry ||
           (now.getTime() - new Date(lastRangeEntry.createdAt).getTime()) >= 20 * 60_000;
 
-        rangeBypass = pastWaitPeriod && underLimit && cooldownOk;
+        rangeBypass = meetsRangeThreshold && pastWaitPeriod && underLimit && cooldownOk;
         if (!rangeBypass) {
-          const reason = !pastWaitPeriod ? 'waiting 45min after open' :
-            !underLimit ? 'max 3 range entries/day reached' : '20min cooldown active';
+          const reason = !meetsRangeThreshold ? `conf ${analysis.confidence.toFixed(2)} < 0.66 range threshold` :
+            !pastWaitPeriod ? 'waiting 45min after open' :
+            !underLimit ? 'max 2 range entries/day reached' : '20min cooldown active';
           console.log(`[DecisionOrchestrator] Range bypass blocked: ${reason}`);
         }
       }
@@ -529,7 +532,7 @@ export class DecisionOrchestrator {
       // Breakout-mode bypass: breakout entries skip the trend confirmation gate.
       // Quality is controlled by the breakout confidence model + cooldown/limits below.
       // Gate conditions: 45-min wait after market open, 30-min cooldown between breakout entries,
-      // max 2 breakout entries per day.
+      // max 2 breakout entries per day, 15:30 ET cutoff, non-mixed alignment.
       let breakoutBypass = false;
       if (signal.signalMode === 'breakout' && priorCount < 1) {
         const now = new Date();
@@ -537,6 +540,10 @@ export class DecisionOrchestrator {
         todayOpen.setUTCHours(13, 30, 0, 0);
         const minutesSinceOpen = (now.getTime() - todayOpen.getTime()) / 60_000;
         const pastWaitPeriod = minutesSinceOpen >= 45;
+        // Late-day breakouts fail more often (momentum fades into close)
+        const notTooLate = minutesSinceOpen < 360; // 15:30 ET = open + 6h
+        // Mixed alignment breakouts lack directional conviction
+        const alignmentOk = signal.alignment !== 'mixed';
 
         const todayStr = now.toISOString().slice(0, 10);
         const breakoutEntriesToday = context.recentDecisions.filter(d =>
@@ -549,9 +556,11 @@ export class DecisionOrchestrator {
         const cooldownOk = !lastBreakoutEntry ||
           (now.getTime() - new Date(lastBreakoutEntry.createdAt).getTime()) >= 30 * 60_000;
 
-        breakoutBypass = pastWaitPeriod && underLimit && cooldownOk;
+        breakoutBypass = pastWaitPeriod && underLimit && cooldownOk && notTooLate && alignmentOk;
         if (!breakoutBypass) {
           const reason = !pastWaitPeriod ? 'waiting 45min after open' :
+            !notTooLate ? 'past 15:30 ET breakout cutoff' :
+            !alignmentOk ? 'mixed alignment — no directional conviction' :
             !underLimit ? 'max 2 breakout entries/day reached' : '30min cooldown active';
           console.log(`[DecisionOrchestrator] Breakout bypass blocked: ${reason}`);
         }

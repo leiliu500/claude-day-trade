@@ -772,6 +772,10 @@ function computeRangeConfidence(
   if (rangeWidthPct < 0.20) total = Math.min(total, 0.45);
   // Price actively moving against entry direction = breakout, not reversal
   if (recentPriceActionBonus < 0) total = Math.min(total, 0.58);
+  // ADX slope rising (>2) = trend emerging, don't fade it
+  if (trendPhaseBonus <= -0.05) total = Math.min(total, 0.55);
+  // Opposing ORB + weak reversal candle = breakout against the range trade
+  if (orbBonus <= -0.06 && recentPriceActionBonus <= 0.03) total = Math.min(total, 0.58);
 
   return { base, diSpreadBonus, adxBonus, diCrossBonus, alignmentBonus, tdAdjustment, obvBonus, vwapBonus, oiVolumeBonus, pricePositionAdjustment, adxMaturityPenalty, trendPhaseBonus, momentumAccelBonus, structureBonus, orbBonus, recentPriceActionBonus, trContractionPenalty, lowVolPenalty, moveExhaustionPenalty, consolidationPenalty, nearLevelPenalty, thetaDecayPenalty, narrowRangePenalty, total };
 }
@@ -1012,7 +1016,7 @@ async function main() {
   let lastRangeEntryTs = 0;
   let rangeEntryCount = 0;
   const RANGE_COOLDOWN_MIN = 20;   // min minutes between range entries
-  const MAX_RANGE_ENTRIES = 3;      // max range entries per day
+  const MAX_RANGE_ENTRIES = 2;      // max range entries per day (3rd entries were 3W/4L)
   const RANGE_WAIT_MIN = 45;       // don't range trade in first 45 min (let day establish)
 
   // ── Breakout mode state ────────────────────────────────────────────────────
@@ -1349,10 +1353,11 @@ async function main() {
       if (meetsThreshold && direction !== 'neutral') {
         // Range entries bypass the trend confirmation gate — quality is in the range confidence model
         if (signalMode === 'range') {
+          const RANGE_MIN_CONF = 0.66; // stricter than global 0.65 — cuts marginal range setups
           const cooldownOk = (currentTs - lastRangeEntryTs) >= RANGE_COOLDOWN_MIN * 60_000;
           const underLimit = rangeEntryCount < MAX_RANGE_ENTRIES;
           const pastWaitPeriod = currentTs >= rangeEarliestTs;
-          if (cooldownOk && underLimit && pastWaitPeriod) {
+          if (cb.total >= RANGE_MIN_CONF && cooldownOk && underLimit && pastWaitPeriod) {
             const fwd = computeForwardMoves();
             entries.push({
               time: timeStr, timeET, direction, alignment, confidence: cb.total,
@@ -1367,7 +1372,12 @@ async function main() {
           const cooldownOk = (currentTs - lastBreakoutEntryTs) >= BREAKOUT_COOLDOWN_MIN * 60_000;
           const underLimit = breakoutEntryCount < MAX_BREAKOUT_ENTRIES;
           const pastWaitPeriod = currentTs >= breakoutEarliestTs;
-          if (cooldownOk && underLimit && pastWaitPeriod) {
+          // Late-day breakouts fail more often (momentum fades into close)
+          const breakoutCutoffTs = openTime.getTime() + 360 * 60_000; // 15:30 ET = open + 6h
+          const notTooLate = currentTs < breakoutCutoffTs;
+          // Mixed alignment breakouts lack directional conviction
+          const alignmentOk = alignment !== 'mixed';
+          if (cooldownOk && underLimit && pastWaitPeriod && notTooLate && alignmentOk) {
             const fwd = computeForwardMoves();
             entries.push({
               time: timeStr, timeET, direction, alignment, confidence: cb.total,
