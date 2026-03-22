@@ -117,6 +117,10 @@ export class DecisionOrchestrator {
         range_support: signal.rangeSupport,
         range_resistance: signal.rangeResistance,
       } : {}),
+      ...(signal.signalMode === 'breakout' ? {
+        breakout_level: signal.breakoutLevel,
+        breakout_beyond: signal.breakoutBeyond,
+      } : {}),
       triggered_by: signal.triggeredBy,
 
       // Analysis
@@ -522,7 +526,38 @@ export class DecisionOrchestrator {
         }
       }
 
-      if (!overrideOk && !phaseChangeOk && !strongSignalBypass && !rangeBypass && priorCount < 1) {
+      // Breakout-mode bypass: breakout entries skip the trend confirmation gate.
+      // Quality is controlled by the breakout confidence model + cooldown/limits below.
+      // Gate conditions: 45-min wait after market open, 30-min cooldown between breakout entries,
+      // max 2 breakout entries per day.
+      let breakoutBypass = false;
+      if (signal.signalMode === 'breakout' && priorCount < 1) {
+        const now = new Date();
+        const todayOpen = new Date(now);
+        todayOpen.setUTCHours(13, 30, 0, 0);
+        const minutesSinceOpen = (now.getTime() - todayOpen.getTime()) / 60_000;
+        const pastWaitPeriod = minutesSinceOpen >= 45;
+
+        const todayStr = now.toISOString().slice(0, 10);
+        const breakoutEntriesToday = context.recentDecisions.filter(d =>
+          d.decisionType === 'NEW_ENTRY' &&
+          d.reasoning?.includes('[BREAKOUT') &&
+          d.createdAt.startsWith(todayStr)
+        );
+        const underLimit = breakoutEntriesToday.length < 2;
+        const lastBreakoutEntry = breakoutEntriesToday[0];
+        const cooldownOk = !lastBreakoutEntry ||
+          (now.getTime() - new Date(lastBreakoutEntry.createdAt).getTime()) >= 30 * 60_000;
+
+        breakoutBypass = pastWaitPeriod && underLimit && cooldownOk;
+        if (!breakoutBypass) {
+          const reason = !pastWaitPeriod ? 'waiting 45min after open' :
+            !underLimit ? 'max 2 breakout entries/day reached' : '30min cooldown active';
+          console.log(`[DecisionOrchestrator] Breakout bypass blocked: ${reason}`);
+        }
+      }
+
+      if (!overrideOk && !phaseChangeOk && !strongSignalBypass && !rangeBypass && !breakoutBypass && priorCount < 1) {
         rawOutput.decision_type = 'WAIT';
         rawOutput.should_execute = false;
         const timingNote = (phaseChangeStructuralOk && !phaseChangeTimingOk)
@@ -538,6 +573,10 @@ export class DecisionOrchestrator {
         const side = signal.direction === 'bullish' ? 'CALL' : 'PUT';
         rawOutput.reasoning = `[RANGE BYPASS] Mean-reversion ${side} at range ${signal.direction === 'bullish' ? 'support' : 'resistance'} (conf=${(analysis.confidence * 100).toFixed(1)}%, ADX=${htfTf?.dmi.adx.toFixed(1)}). ${rawOutput.reasoning}`;
         console.log(`[DecisionOrchestrator] NEW_ENTRY range bypass — ${side} (confidence=${analysis.confidence.toFixed(2)}, support=${signal.rangeSupport?.toFixed(2)}, resistance=${signal.rangeResistance?.toFixed(2)})`);
+      } else if (breakoutBypass) {
+        const side = signal.direction === 'bullish' ? 'CALL' : 'PUT';
+        rawOutput.reasoning = `[BREAKOUT BYPASS] Squeeze breakout ${side} beyond ${signal.breakoutLevel?.toFixed(2)} (conf=${(analysis.confidence * 100).toFixed(1)}%, ADX=${htfTf?.dmi.adx.toFixed(1)}, slope=${htfTf?.dmi.adxSlope.toFixed(1)}). ${rawOutput.reasoning}`;
+        console.log(`[DecisionOrchestrator] NEW_ENTRY breakout bypass — ${side} (confidence=${analysis.confidence.toFixed(2)}, breakoutLevel=${signal.breakoutLevel?.toFixed(2)}, beyond=${signal.breakoutBeyond?.toFixed(3)}%)`);
       } else if (strongSignalBypass) {
         const side = signal.direction === 'bullish' ? 'CALL' : 'PUT';
         rawOutput.reasoning = `[STRONG-SIGNAL BYPASS] Confidence ${(analysis.confidence * 100).toFixed(1)}% + all_aligned → immediate ${side} entry (no 2-stage wait). ${rawOutput.reasoning}`;

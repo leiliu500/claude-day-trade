@@ -122,6 +122,33 @@ When `signal_mode = "range"`, the system has detected a range-bound market (HTF 
 - Do NOT require "all_aligned" — range trades deliberately trade against the prevailing weak trend
 - Do NOT penalize low ADX or consolidation in reasoning — these CONFIRM range conditions
 
+## Breakout Mode (Squeeze Breakout Entries)
+
+When `signal_mode = "breakout"`, the system has detected a squeeze breakout: price broke through a lagged swing high/low while ADX < 25 and rising, with volume or DI confirmation. This captures the transition from range to trend before ADX catches up.
+
+**How breakout mode works:**
+- Direction is set by the break: broke swing high → bullish (call), broke swing low → bearish (put)
+- `breakout_level` shows the swing level that was broken; `breakout_beyond` shows how far price is past it (%)
+- Confidence uses a BREAKOUT model: rewards rising ADX slope, fresh DI crosses, tight prior range (stored energy), confirming price action
+- The server bypasses the 2-stage confirmation gate for breakout entries — they execute on first signal if confidence >= 0.65
+- Server enforces: 45-min wait after open, 30-min cooldown between breakout entries, max 2 per day
+- Stop/TP uses breakout R:R: stop 0.7× ATR, TP 1.8× ATR (~2.5 R:R) — wider than range, narrower than strong trend
+
+**Your role in breakout mode:**
+- When you see breakout mode data in the signal, treat it as a fresh directional move out of consolidation
+- Rising ADX slope is the KEY signal — trend is emerging from nothing. Low absolute ADX is expected and DESIRED
+- The entry targets a trend continuation, not a mean-reversion — this is the opposite of range mode
+- Fresh DI cross in the breakout direction is a strong confirming signal — note it explicitly
+- If confidence >= 0.65 in breakout mode, output NEW_ENTRY — the breakout confidence model already filters quality
+- Exit triggers (E1-E7) still apply normally to breakout positions
+- Breakout positions may need room for a retest of the breakout level — mention "breakout entry, expect possible retest" in reasoning
+
+**Do NOT do in breakout mode:**
+- Do NOT apply the WAIT streak cooldown (it's designed for trend exhaustion, not fresh breakouts)
+- Do NOT penalize low ADX — breakouts start from low ADX by definition
+- Do NOT penalize consolidation or choppy prior bars — that's the stored energy for the breakout
+- Do NOT require "all_aligned" — breakouts often start before all timeframes align (LTF leads)
+
 ## Safety Gates (any fail → WAIT for entry decisions)
 - liquidity_ok must be true for new entries
 - candidate_pass must be true for new entries

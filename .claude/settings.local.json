@@ -119,7 +119,8 @@
       "Bash(grep -E \"\\\\.sql$\")",
       "Bash(for d:*)",
       "Bash(do echo:*)",
-      "Bash(grep -r \"backtest\" /home/ec2-user/claude-day-trade/*.md)"
+      "Bash(grep -r \"backtest\" /home/ec2-user/claude-day-trade/*.md)",
+      "Bash(do npx:*)"
     ],
     "additionalDirectories": [
       "/home/ec2-user/.claude/projects/-home-ec2-user-claude-day-trade"

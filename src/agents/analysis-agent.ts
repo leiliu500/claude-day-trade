@@ -16,6 +16,10 @@ function computeConfidence(signal: SignalPayload, option: OptionEvaluation): Con
   if (signal.signalMode === 'range') {
     return computeRangeConfidence(signal);
   }
+  // Breakout mode: squeeze breakout from consolidation
+  if (signal.signalMode === 'breakout') {
+    return computeBreakoutConfidence(signal);
+  }
 
   const tfs = signal.timeframes;
   const [ltf, mtf, htf] = tfs;
@@ -1098,6 +1102,143 @@ function computeRangeConfidence(signal: SignalPayload): ConfidenceBreakdown {
   if (htf.dmi.adxSlope > 5) total = Math.min(total, 0.55);
   if (rangeWidthPct < 0.20) total = Math.min(total, 0.45);
   if (recentPriceActionBonus < 0) total = Math.min(total, 0.58);
+
+  return { base, diSpreadBonus, adxBonus, diCrossBonus, alignmentBonus, tdAdjustment, obvBonus, vwapBonus, oiVolumeBonus, pricePositionAdjustment, adxMaturityPenalty, trendPhaseBonus, momentumAccelBonus, structureBonus, orbBonus, recentPriceActionBonus, trContractionPenalty, lowVolPenalty, moveExhaustionPenalty, consolidationPenalty, nearLevelPenalty, thetaDecayPenalty, narrowRangePenalty, total };
+}
+
+/**
+ * Compute breakout (squeeze breakout) confidence score.
+ * Rewards: fresh level break, rising ADX from low base, volume confirmation,
+ * tight prior range (stored energy), confirming price action.
+ * Penalizes: false breakouts (wick back), too far beyond level (chasing),
+ * ADX already high (not a squeeze), opposing ORB.
+ */
+function computeBreakoutConfidence(signal: SignalPayload): ConfidenceBreakdown {
+  const tfs = signal.timeframes;
+  const [ltf, mtf, htf] = tfs;
+  const empty: ConfidenceBreakdown = { base: 0.38, diSpreadBonus: 0, adxBonus: 0, diCrossBonus: 0, alignmentBonus: 0, tdAdjustment: 0, obvBonus: 0, vwapBonus: 0, oiVolumeBonus: 0, pricePositionAdjustment: 0, adxMaturityPenalty: 0, trendPhaseBonus: 0, momentumAccelBonus: 0, structureBonus: 0, orbBonus: 0, recentPriceActionBonus: 0, trContractionPenalty: 0, lowVolPenalty: 0, moveExhaustionPenalty: 0, consolidationPenalty: 0, nearLevelPenalty: 0, thetaDecayPenalty: 0, narrowRangePenalty: 0, total: 0.38 };
+  if (!ltf || !mtf || !htf || !signal.breakoutLevel) return empty;
+
+  const base = 0.38;
+  const price = signal.currentPrice;
+  const beyondPct = signal.breakoutBeyond ?? 0;
+
+  // ── ADX slope bonus: rising ADX from low base = new trend forming ──
+  // This is THE key breakout signal — ADX was dormant and is now waking up.
+  let adxBonus = 0;
+  if (htf.dmi.adxSlope > 3) adxBonus = 0.08;
+  else if (htf.dmi.adxSlope > 1.5) adxBonus = 0.05;
+  else if (htf.dmi.adxSlope > 0) adxBonus = 0.02;
+
+  // ── DI cross bonus: fresh cross in breakout direction = timing confirmation ──
+  let diCrossBonus = 0;
+  const htfAligned = signal.direction === 'bullish' ? htf.dmi.crossedUp : htf.dmi.crossedDown;
+  const mtfAligned = signal.direction === 'bullish' ? mtf.dmi.crossedUp : mtf.dmi.crossedDown;
+  if (htfAligned) diCrossBonus += 0.06;
+  if (mtfAligned) diCrossBonus += 0.03;
+  diCrossBonus = Math.min(0.09, diCrossBonus);
+
+  // ── DI spread bonus: DI spread confirming breakout direction ──
+  let diSpreadBonus = 0;
+  const avgDISpread = tfs.reduce((sum, tf) => {
+    const spread = signal.direction === 'bullish'
+      ? tf.dmi.plusDI - tf.dmi.minusDI
+      : tf.dmi.minusDI - tf.dmi.plusDI;
+    return sum + spread;
+  }, 0) / tfs.length;
+  diSpreadBonus = Math.max(-0.05, Math.min(0.08, (avgDISpread / 30) * 0.08));
+
+  // ── OBV confirmation: volume supporting the breakout ──
+  let obvBonus = 0;
+  if (htf.obv.trend === signal.direction) obvBonus += 0.04;
+  if (mtf.obv.trend === signal.direction) obvBonus += 0.02;
+  obvBonus = Math.min(0.06, obvBonus);
+
+  // ── Breakout freshness: closer to level = fresher breakout ──
+  // pricePositionAdjustment: reward fresh breakouts, penalize chasing
+  let pricePositionAdjustment = 0;
+  if (beyondPct <= 0.10) pricePositionAdjustment = 0.08;      // just barely broke through
+  else if (beyondPct <= 0.20) pricePositionAdjustment = 0.04;  // still fresh
+  else if (beyondPct <= 0.30) pricePositionAdjustment = 0.00;  // acceptable
+  else pricePositionAdjustment = -0.06;                         // getting far, chasing
+
+  // ── Prior range tightness: tighter range = more stored energy ──
+  // Use narrowRangePenalty field (repurposed as bonus for breakout)
+  let narrowRangePenalty = 0;
+  if (signal.priorDayLevels.pdh > 0) {
+    const ps = htf.priceStructure;
+    const swingRange = ps.swingHigh - ps.swingLow;
+    const swingRangePct = price > 0 ? (swingRange / price) * 100 : 0;
+    // Tighter prior range = more stored energy = better breakout
+    if (swingRangePct < 0.30) narrowRangePenalty = 0.06;
+    else if (swingRangePct < 0.50) narrowRangePenalty = 0.03;
+  }
+
+  // ── Recent price action: bars confirming breakout direction ──
+  let recentPriceActionBonus = 0;
+  if (ltf.bars.length >= 4) {
+    const recentBars = ltf.bars.slice(-3);
+    const isBullish = signal.direction === 'bullish';
+    const confirmingBars = recentBars.filter(b => isBullish ? b.close > b.open : b.close < b.open).length;
+    const netMove = recentBars[recentBars.length - 1]!.close - recentBars[0]!.open;
+    const netConfirms = isBullish ? netMove > 0 : netMove < 0;
+    if (confirmingBars >= 3 && netConfirms) recentPriceActionBonus = 0.08;
+    else if (confirmingBars >= 2 && netConfirms) recentPriceActionBonus = 0.04;
+    else if (!netConfirms) recentPriceActionBonus = -0.06;  // price action opposing breakout
+  }
+
+  // ── Alignment bonus ──
+  const alignmentBonusMap: Record<string, number> = { all_aligned: 0.06, htf_mtf_aligned: 0.03, mtf_ltf_aligned: 0.02, mixed: 0 };
+  const alignmentBonus = alignmentBonusMap[signal.alignment] ?? 0;
+
+  // ── VWAP alignment: breakout in VWAP direction = confirmation ──
+  let vwapBonus = 0;
+  const pvv = htf.vwap.priceVsVwap;
+  if (signal.direction === 'bullish' && pvv > 0) vwapBonus = 0.03;
+  else if (signal.direction === 'bearish' && pvv < 0) vwapBonus = 0.03;
+  else if (signal.direction === 'bullish' && pvv < -0.3) vwapBonus = -0.04;
+  else if (signal.direction === 'bearish' && pvv > 0.3) vwapBonus = -0.04;
+
+  // ── ORB alignment ──
+  let orbBonus = 0;
+  if (signal.orb.orbFormed && signal.orb.breakoutDirection !== 'none') {
+    if (signal.orb.breakoutDirection === signal.direction) orbBonus = 0.04;
+    else orbBonus = -0.06;
+  }
+
+  // ── Structure bonus: breaking above PDH (bullish) or below PDL (bearish) ──
+  let structureBonus = 0;
+  if (signal.priorDayLevels.pdh > 0) {
+    const { abovePDH, belowPDL } = signal.priorDayLevels;
+    if (signal.direction === 'bullish' && abovePDH) structureBonus = 0.06;
+    else if (signal.direction === 'bearish' && belowPDL) structureBonus = 0.06;
+    // Breaking opposite way is not inherently bad for breakout (just no bonus)
+  }
+
+  // ── PENALTIES ──
+  // ADX already high = this isn't a squeeze, it's a continuation
+  let trendPhaseBonus = 0;
+  if (htf.dmi.adx >= 25) trendPhaseBonus = -0.08;  // not a squeeze
+  else if (htf.dmi.adx >= 22) trendPhaseBonus = -0.04;
+
+  // Unused fields
+  const tdAdjustment = 0;
+  const oiVolumeBonus = 0;
+  const adxMaturityPenalty = 0;
+  const momentumAccelBonus = 0;
+  const trContractionPenalty = 0;
+  const lowVolPenalty = 0;
+  const moveExhaustionPenalty = 0;
+  const consolidationPenalty = 0;
+  const nearLevelPenalty = 0;
+  const thetaDecayPenalty = 0;
+
+  let total = Math.max(0, Math.min(1, base + diSpreadBonus + adxBonus + diCrossBonus + alignmentBonus + tdAdjustment + obvBonus + vwapBonus + oiVolumeBonus + pricePositionAdjustment + adxMaturityPenalty + trendPhaseBonus + momentumAccelBonus + structureBonus + orbBonus + recentPriceActionBonus + trContractionPenalty + lowVolPenalty + moveExhaustionPenalty + consolidationPenalty + nearLevelPenalty + thetaDecayPenalty + narrowRangePenalty));
+
+  // Hard gates
+  if (htf.dmi.adx >= 25) total = Math.min(total, 0.60);  // not a squeeze, use trend mode
+  if (recentPriceActionBonus <= -0.06) total = Math.min(total, 0.58);  // price opposing breakout
+  if (beyondPct > 0.35) total = Math.min(total, 0.58);  // too far, chasing
 
   return { base, diSpreadBonus, adxBonus, diCrossBonus, alignmentBonus, tdAdjustment, obvBonus, vwapBonus, oiVolumeBonus, pricePositionAdjustment, adxMaturityPenalty, trendPhaseBonus, momentumAccelBonus, structureBonus, orbBonus, recentPriceActionBonus, trContractionPenalty, lowVolPenalty, moveExhaustionPenalty, consolidationPenalty, nearLevelPenalty, thetaDecayPenalty, narrowRangePenalty, total };
 }

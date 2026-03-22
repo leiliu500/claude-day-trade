@@ -191,7 +191,7 @@ export class SignalAgent {
 
     // ── Range detection ──────────────────────────────────────────────────────
     // Detect range-bound regime: low ADX, no fresh DI cross, price at range extreme
-    let signalMode: 'trend' | 'range' = 'trend';
+    let signalMode: 'trend' | 'range' | 'breakout' = 'trend';
     let rangeSupport: number | undefined;
     let rangeResistance: number | undefined;
     const htfTfForRange = tfIndicators[2]!;
@@ -214,6 +214,49 @@ export class SignalAgent {
         rangeResistance = htfSwingHigh;
         // Override direction based on range position
         direction = atResistance ? 'bearish' : 'bullish';
+      }
+    }
+
+    // ── Breakout detection ────────────────────────────────────────────────────
+    // Detect squeeze breakout: ADX was low but rising, price just broke swing high/low,
+    // with volume confirmation.  Catches the transition from range to trend before ADX
+    // reaches 22+ and the phase-change override can fire.
+    let breakoutLevel: number | undefined;
+    let breakoutBeyond: number | undefined;
+    if (signalMode === 'trend' && htfAdxForRange < 25 && htfTfForRange.dmi.adxSlope > 0) {
+      // Use lagged swing levels (exclude last 3 bars) so the breakout level is a fixed
+      // target, not one that moves with price.
+      const htfBarsForBO = htfTfForRange.bars.slice(-20, -3);
+      let boSwingHigh = -Infinity, boSwingLow = Infinity;
+      for (const b of htfBarsForBO) {
+        if (b.high > boSwingHigh) boSwingHigh = b.high;
+        if (b.low < boSwingLow) boSwingLow = b.low;
+      }
+      const boSwingRange = boSwingHigh - boSwingLow;
+      const brokeHigh = currentPrice > boSwingHigh && boSwingRange > 0;
+      const brokeLow = currentPrice < boSwingLow && boSwingRange > 0;
+      if (brokeHigh || brokeLow) {
+        const beyondPct = brokeHigh
+          ? ((currentPrice - boSwingHigh) / currentPrice) * 100
+          : ((boSwingLow - currentPrice) / currentPrice) * 100;
+        // Only trigger if price is genuinely beyond the level (> 0.02% to filter noise)
+        // but not too far (< 0.40% — that's chasing, not a fresh breakout)
+        if (beyondPct > 0.02 && beyondPct < 0.40) {
+          // Confirmation: OBV trending in breakout direction, or fresh DI cross, or rising DI spread.
+          // OBV alone is too strict — breakout momentum often leads OBV.
+          const htfObv = tfIndicators[2]!.obv;
+          const obvConfirms = brokeHigh
+            ? htfObv.trend === 'bullish'
+            : htfObv.trend === 'bearish';
+          const htfDiCross = brokeHigh ? htfTfForRange.dmi.crossedUp : htfTfForRange.dmi.crossedDown;
+          const diSpreadConfirms = htfTfForRange.dmi.diSpreadSlope > 1;
+          if (obvConfirms || htfDiCross || diSpreadConfirms) {
+            signalMode = 'breakout';
+            breakoutLevel = brokeHigh ? boSwingHigh : boSwingLow;
+            breakoutBeyond = beyondPct;
+            direction = brokeHigh ? 'bullish' : 'bearish';
+          }
+        }
       }
     }
 
@@ -245,6 +288,8 @@ export class SignalAgent {
       signalMode,
       rangeSupport,
       rangeResistance,
+      breakoutLevel,
+      breakoutBeyond,
       triggeredBy: trigger,
       sessionId,
       createdAt: new Date().toISOString(),

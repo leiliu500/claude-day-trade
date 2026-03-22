@@ -423,6 +423,11 @@ export async function notifySignalAnalysis(result: PipelineResult): Promise<void
   msg += `Alignment: ${result.alignment}\n`;
   msg += `ADX confirmation: ${adxConf}\n`;
   msg += `Bias: ${biasLabel}\n`;
+  if (signal.signalMode === 'range') {
+    msg += `Mode: RANGE (support=$${signal.rangeSupport?.toFixed(2)}, resist=$${signal.rangeResistance?.toFixed(2)})\n`;
+  } else if (signal.signalMode === 'breakout') {
+    msg += `Mode: BREAKOUT (level=$${signal.breakoutLevel?.toFixed(2)}, beyond=${signal.breakoutBeyond?.toFixed(3)}%)\n`;
+  }
   msg += `Confidence: ${confPct}%\n`;
   msg += `Underlying Levels: ${levels}\n`;
 
@@ -487,7 +492,8 @@ async function notifySimple(result: PipelineResult): Promise<void> {
   const confPct = (result.confidence * 100).toFixed(0);
 
   let msg = `<b>Options Signal — ${result.ticker} (${result.profile})</b>\n`;
-  msg += `${dirIcon} Direction: <b>${result.direction}</b> | Alignment: ${result.alignment}\n`;
+  const modeTag = result.signal?.signalMode === 'range' ? ' [RANGE]' : result.signal?.signalMode === 'breakout' ? ' [BREAKOUT]' : '';
+  msg += `${dirIcon} Direction: <b>${result.direction}</b> | Alignment: ${result.alignment}${modeTag}\n`;
   msg += `📊 Confidence: <b>${confPct}%</b>\n`;
   msg += `${decIcon} Decision: <b>${result.decision}</b>\n\n`;
 

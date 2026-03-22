@@ -28,10 +28,12 @@ export interface SignalPayload {
   // Early reversal override: LTF crossed opposite to majority while HTF fading + range extreme.
   reversalOverride?: boolean;
 
-  // Range-bound mode: mean-reversion entries at range extremes when no trend detected.
-  signalMode?: 'trend' | 'range';
+  // Signal mode: trend (default), range (mean-reversion), or breakout (squeeze breakout).
+  signalMode?: 'trend' | 'range' | 'breakout';
   rangeSupport?: number;     // identified support level for range trade
   rangeResistance?: number;  // identified resistance level for range trade
+  breakoutLevel?: number;    // swing high/low that price broke through
+  breakoutBeyond?: number;   // how far price is beyond breakout level (% of price)
 
   triggeredBy: 'AUTO' | 'MANUAL';
   sessionId?: string;

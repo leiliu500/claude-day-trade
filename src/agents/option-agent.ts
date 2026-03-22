@@ -70,6 +70,12 @@ function quoteAgeSeconds(timestamp?: string): number {
  * Returns { stopMult, tpMult } as multipliers of optionATR.
  */
 function dynamicRRMultipliers(signal: SignalPayload): { stopMult: number; tpMult: number } {
+  // Breakout mode: wider stop (room for retest), wide TP (catch the move)
+  // R:R ≈ 2.5 — breakouts need room but have strong directional potential
+  if (signal.signalMode === 'breakout') {
+    return { stopMult: 0.7, tpMult: 1.8 };
+  }
+
   const htf = signal.timeframes[signal.timeframes.length - 1];
   const adx = htf?.dmi.adx ?? 20;
 
