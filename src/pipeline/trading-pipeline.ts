@@ -142,7 +142,7 @@ export async function runPipeline(
       : undefined;
 
     const signal = await signalAgent.run(ticker, profile, trigger, sessionId);
-    console.log(`[Pipeline] Signal: ${signal.direction} (${signal.alignment})`);
+    console.log(`[Pipeline] Signal: ${signal.direction} (${signal.alignment})${signal.signalMode === 'range' ? ` [RANGE mode: support=$${signal.rangeSupport?.toFixed(2)}, resist=$${signal.rangeResistance?.toFixed(2)}]` : ''}`);
 
     // ── Phase 4: Option Selection (contracts already prefetched if stream was warm) ──
     const prefetched = contractsPrefetch ? await contractsPrefetch : undefined;

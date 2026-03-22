@@ -112,6 +112,11 @@ export class DecisionOrchestrator {
       profile: signal.profile,
       direction: signal.direction,
       alignment: signal.alignment,
+      signal_mode: signal.signalMode ?? 'trend',
+      ...(signal.signalMode === 'range' ? {
+        range_support: signal.rangeSupport,
+        range_resistance: signal.rangeResistance,
+      } : {}),
       triggered_by: signal.triggeredBy,
 
       // Analysis
@@ -485,7 +490,39 @@ export class DecisionOrchestrator {
       const strongSignalBypass = !overrideOk && !phaseChangeOk && priorCount < 1
         && analysis.confidence >= 0.75 && signal.alignment === 'all_aligned';
 
-      if (!overrideOk && !phaseChangeOk && !strongSignalBypass && priorCount < 1) {
+      // Range-mode bypass: range entries skip the trend confirmation gate.
+      // Quality is controlled by the range confidence model + cooldown/limits below.
+      // Gate conditions: 45-min wait after market open, 20-min cooldown between range entries,
+      // max 3 range entries per day.
+      let rangeBypass = false;
+      if (signal.signalMode === 'range' && priorCount < 1) {
+        const now = new Date();
+        const todayOpen = new Date(now);
+        todayOpen.setUTCHours(13, 30, 0, 0); // 09:30 ET = 13:30 UTC (EDT)
+        const minutesSinceOpen = (now.getTime() - todayOpen.getTime()) / 60_000;
+        const pastWaitPeriod = minutesSinceOpen >= 45;
+
+        // Count recent range entries today for cooldown + daily limit
+        const todayStr = now.toISOString().slice(0, 10);
+        const rangeEntriesToday = context.recentDecisions.filter(d =>
+          d.decisionType === 'NEW_ENTRY' &&
+          d.reasoning?.includes('[RANGE') &&
+          d.createdAt.startsWith(todayStr)
+        );
+        const underLimit = rangeEntriesToday.length < 3;
+        const lastRangeEntry = rangeEntriesToday[0]; // newest first
+        const cooldownOk = !lastRangeEntry ||
+          (now.getTime() - new Date(lastRangeEntry.createdAt).getTime()) >= 20 * 60_000;
+
+        rangeBypass = pastWaitPeriod && underLimit && cooldownOk;
+        if (!rangeBypass) {
+          const reason = !pastWaitPeriod ? 'waiting 45min after open' :
+            !underLimit ? 'max 3 range entries/day reached' : '20min cooldown active';
+          console.log(`[DecisionOrchestrator] Range bypass blocked: ${reason}`);
+        }
+      }
+
+      if (!overrideOk && !phaseChangeOk && !strongSignalBypass && !rangeBypass && priorCount < 1) {
         rawOutput.decision_type = 'WAIT';
         rawOutput.should_execute = false;
         const timingNote = (phaseChangeStructuralOk && !phaseChangeTimingOk)
@@ -497,6 +534,10 @@ export class DecisionOrchestrator {
           console.log(`[DecisionOrchestrator] Phase-change override blocked by timing filter: ${phaseChangeTimingRejectReason} (priorCount=${priorCount}, confidence=${analysis.confidence.toFixed(2)})`);
         }
         console.log(`[DecisionOrchestrator] NEW_ENTRY blocked by confirmation gate (Stage-1 OBSERVE, priorCount=${priorCount}, confidence=${analysis.confidence.toFixed(2)}, alignment=${signal.alignment})`);
+      } else if (rangeBypass) {
+        const side = signal.direction === 'bullish' ? 'CALL' : 'PUT';
+        rawOutput.reasoning = `[RANGE BYPASS] Mean-reversion ${side} at range ${signal.direction === 'bullish' ? 'support' : 'resistance'} (conf=${(analysis.confidence * 100).toFixed(1)}%, ADX=${htfTf?.dmi.adx.toFixed(1)}). ${rawOutput.reasoning}`;
+        console.log(`[DecisionOrchestrator] NEW_ENTRY range bypass — ${side} (confidence=${analysis.confidence.toFixed(2)}, support=${signal.rangeSupport?.toFixed(2)}, resistance=${signal.rangeResistance?.toFixed(2)})`);
       } else if (strongSignalBypass) {
         const side = signal.direction === 'bullish' ? 'CALL' : 'PUT';
         rawOutput.reasoning = `[STRONG-SIGNAL BYPASS] Confidence ${(analysis.confidence * 100).toFixed(1)}% + all_aligned → immediate ${side} entry (no 2-stage wait). ${rawOutput.reasoning}`;

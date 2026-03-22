@@ -28,6 +28,11 @@ export interface SignalPayload {
   // Early reversal override: LTF crossed opposite to majority while HTF fading + range extreme.
   reversalOverride?: boolean;
 
+  // Range-bound mode: mean-reversion entries at range extremes when no trend detected.
+  signalMode?: 'trend' | 'range';
+  rangeSupport?: number;     // identified support level for range trade
+  rangeResistance?: number;  // identified resistance level for range trade
+
   triggeredBy: 'AUTO' | 'MANUAL';
   sessionId?: string;
   createdAt: string;

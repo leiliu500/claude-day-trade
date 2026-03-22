@@ -189,6 +189,34 @@ export class SignalAgent {
     const atr = tfIndicators[2]?.atr.atr ?? tfIndicators[0]?.atr.atr ?? 0; // use HTF ATR
     const atm = Math.round(currentPrice);  // nearest whole-dollar ATM strike
 
+    // ── Range detection ──────────────────────────────────────────────────────
+    // Detect range-bound regime: low ADX, no fresh DI cross, price at range extreme
+    let signalMode: 'trend' | 'range' = 'trend';
+    let rangeSupport: number | undefined;
+    let rangeResistance: number | undefined;
+    const htfTfForRange = tfIndicators[2]!;
+    const htfAdxForRange = htfTfForRange.dmi.adx;
+    const htfHasFreshCross = htfTfForRange.dmi.crossedUp || htfTfForRange.dmi.crossedDown;
+    const htfRangePos = htfTfForRange.priceStructure.rangePosition;
+    const htfSwingHigh = htfTfForRange.priceStructure.swingHigh;
+    const htfSwingLow = htfTfForRange.priceStructure.swingLow;
+    const htfSwingRange = htfSwingHigh - htfSwingLow;
+    const htfSwingRangePct = htfSwingRange / currentPrice * 100;
+
+    if (htfAdxForRange < 22 && !htfHasFreshCross
+        && htfRangePos >= 0.05 && htfRangePos <= 0.95
+        && htfSwingRangePct >= 0.20) {
+      const atResistance = htfRangePos >= 0.70;
+      const atSupport = htfRangePos <= 0.30;
+      if (atResistance || atSupport) {
+        signalMode = 'range';
+        rangeSupport = htfSwingLow;
+        rangeResistance = htfSwingHigh;
+        // Override direction based on range position
+        direction = atResistance ? 'bearish' : 'bullish';
+      }
+    }
+
     // Numeric strength score 0–100: HTF ADX scaled so ADX 25 ≈ score 50, ADX 50 ≈ score 100
     const htfAdx = tfIndicators[2]?.dmi.adx ?? tfIndicators[1]?.dmi.adx ?? 0;
     const strengthScore = Math.min(100, Math.round(htfAdx * 2));
@@ -214,6 +242,9 @@ export class SignalAgent {
       priorDayLevels,
       orb,
       reversalOverride: reversalOverride || undefined,
+      signalMode,
+      rangeSupport,
+      rangeResistance,
       triggeredBy: trigger,
       sessionId,
       createdAt: new Date().toISOString(),

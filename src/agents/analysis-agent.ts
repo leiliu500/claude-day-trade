@@ -12,6 +12,11 @@ const openai = new OpenAI({ apiKey: config.OPENAI_API_KEY });
  * Range: 0.00 – 1.00
  */
 function computeConfidence(signal: SignalPayload, option: OptionEvaluation): ConfidenceBreakdown {
+  // Range mode uses inverted confidence model
+  if (signal.signalMode === 'range') {
+    return computeRangeConfidence(signal);
+  }
+
   const tfs = signal.timeframes;
   const [ltf, mtf, htf] = tfs;
   if (!ltf || !mtf || !htf) {
@@ -922,6 +927,177 @@ function computeConfidence(signal: SignalPayload, option: OptionEvaluation): Con
   if (thetaDecayPenalty <= -0.10) {
     total = Math.min(total, 0.55);
   }
+
+  return { base, diSpreadBonus, adxBonus, diCrossBonus, alignmentBonus, tdAdjustment, obvBonus, vwapBonus, oiVolumeBonus, pricePositionAdjustment, adxMaturityPenalty, trendPhaseBonus, momentumAccelBonus, structureBonus, orbBonus, recentPriceActionBonus, trContractionPenalty, lowVolPenalty, moveExhaustionPenalty, consolidationPenalty, nearLevelPenalty, thetaDecayPenalty, narrowRangePenalty, total };
+}
+
+/**
+ * Compute range-bound (mean-reversion) confidence score.
+ * Inverted logic: conditions penalized for trend trading (low ADX, consolidation,
+ * near levels) are REWARDED for mean-reversion at range extremes.
+ */
+function computeRangeConfidence(signal: SignalPayload): ConfidenceBreakdown {
+  const tfs = signal.timeframes;
+  const [ltf, , htf] = tfs;
+  const empty: ConfidenceBreakdown = { base: 0.38, diSpreadBonus: 0, adxBonus: 0, diCrossBonus: 0, alignmentBonus: 0, tdAdjustment: 0, obvBonus: 0, vwapBonus: 0, oiVolumeBonus: 0, pricePositionAdjustment: 0, adxMaturityPenalty: 0, trendPhaseBonus: 0, momentumAccelBonus: 0, structureBonus: 0, orbBonus: 0, recentPriceActionBonus: 0, trContractionPenalty: 0, lowVolPenalty: 0, moveExhaustionPenalty: 0, consolidationPenalty: 0, nearLevelPenalty: 0, thetaDecayPenalty: 0, narrowRangePenalty: 0, total: 0.38 };
+  if (!ltf || !htf || !signal.rangeSupport || !signal.rangeResistance) return empty;
+
+  const base = 0.38;
+  const price = signal.currentPrice;
+  const rangeSupport = signal.rangeSupport;
+  const rangeResistance = signal.rangeResistance;
+  const rangeWidth = rangeResistance - rangeSupport;
+  if (rangeWidth <= 0) return empty;
+  const rangePos = (price - rangeSupport) / rangeWidth;
+
+  // Range position extremity (INVERTED: reward extremes)
+  let pricePositionAdjustment = 0;
+  if (signal.direction === 'bullish') {
+    if (rangePos <= 0.15) pricePositionAdjustment = 0.10;
+    else if (rangePos <= 0.25) pricePositionAdjustment = 0.06;
+    else if (rangePos <= 0.35) pricePositionAdjustment = 0.03;
+  } else {
+    if (rangePos >= 0.85) pricePositionAdjustment = 0.10;
+    else if (rangePos >= 0.75) pricePositionAdjustment = 0.06;
+    else if (rangePos >= 0.65) pricePositionAdjustment = 0.03;
+  }
+
+  // VWAP overextension (reward being at/beyond VWAP bands)
+  let vwapBonus = 0;
+  const { upperBand: htfUpper, lowerBand: htfLower, deviation: htfDev, priceVsVwap } = htf.vwap;
+  if (signal.direction === 'bullish') {
+    if (price <= htfLower) vwapBonus = 0.08;
+    else if (price <= htf.vwap.vwap - htfDev) vwapBonus = 0.04;
+    else if (priceVsVwap < 0) vwapBonus = 0.02;
+  } else {
+    if (price >= htfUpper) vwapBonus = 0.08;
+    else if (price >= htf.vwap.vwap + htfDev) vwapBonus = 0.04;
+    else if (priceVsVwap > 0) vwapBonus = 0.02;
+  }
+
+  // Near level bonus (INVERTED: reward proximity to support/resistance)
+  let nearLevelPenalty = 0;
+  const ps = htf.priceStructure;
+  if (signal.direction === 'bullish') {
+    const distToSupport = ps.swingLow > 0 ? ((price - ps.swingLow) / ps.swingLow) * 100 : 999;
+    if (distToSupport >= 0 && distToSupport <= 0.15) nearLevelPenalty = 0.08;
+    else if (distToSupport >= 0 && distToSupport <= 0.30) nearLevelPenalty = 0.05;
+    else if (distToSupport >= 0 && distToSupport <= 0.50) nearLevelPenalty = 0.02;
+  } else {
+    const distToResist = ps.swingHigh > 0 ? ((ps.swingHigh - price) / ps.swingHigh) * 100 : 999;
+    if (distToResist >= 0 && distToResist <= 0.15) nearLevelPenalty = 0.08;
+    else if (distToResist >= 0 && distToResist <= 0.30) nearLevelPenalty = 0.05;
+    else if (distToResist >= 0 && distToResist <= 0.50) nearLevelPenalty = 0.02;
+  }
+
+  // Prior day level alignment
+  let structureBonus = 0;
+  if (signal.priorDayLevels.pdh > 0) {
+    const { pdh, pdl } = signal.priorDayLevels;
+    if (signal.direction === 'bullish') {
+      const distToPDL = pdl > 0 ? Math.abs(price - pdl) / pdl * 100 : 999;
+      if (distToPDL < 0.30) structureBonus = 0.06;
+      else if (distToPDL < 0.50) structureBonus = 0.03;
+    } else {
+      const distToPDH = pdh > 0 ? Math.abs(price - pdh) / pdh * 100 : 999;
+      if (distToPDH < 0.30) structureBonus = 0.06;
+      else if (distToPDH < 0.50) structureBonus = 0.03;
+    }
+  }
+
+  // Low ADX confirmation (INVERTED: reward low ADX in range mode)
+  let lowVolPenalty = 0;
+  if (htf.dmi.adx < 18) lowVolPenalty = 0.06;
+  else if (htf.dmi.adx < 22) lowVolPenalty = 0.03;
+
+  // Consolidation confirmation (INVERTED: chop = range)
+  let consolidationPenalty = 0;
+  if (ltf.bars.length >= 8) {
+    const chopBars = ltf.bars.slice(-6);
+    const totalBarRange = chopBars.reduce((sum, b) => sum + (b.high - b.low), 0);
+    let overallHigh = -Infinity, overallLow = Infinity;
+    for (const b of chopBars) { if (b.high > overallHigh) overallHigh = b.high; if (b.low < overallLow) overallLow = b.low; }
+    const overallRange = overallHigh - overallLow;
+    if (overallRange > 0) {
+      const overlapRatio = totalBarRange / overallRange;
+      if (overlapRatio >= 2.5) consolidationPenalty = 0.04;
+      else if (overlapRatio >= 2.0) consolidationPenalty = 0.02;
+    }
+  }
+
+  // OBV divergence (classic mean-reversion signal)
+  let obvBonus = 0;
+  if (signal.direction === 'bullish' && htf.obv.divergence === 'bullish') obvBonus = 0.04;
+  else if (signal.direction === 'bearish' && htf.obv.divergence === 'bearish') obvBonus = 0.04;
+  if (htf.obv.trend !== signal.direction && htf.obv.trend !== 'neutral') obvBonus += 0.02;
+  obvBonus = Math.min(0.06, obvBonus);
+
+  // Recent price action reversal (want bars turning at extreme)
+  let recentPriceActionBonus = 0;
+  if (ltf.bars.length >= 4) {
+    const recentBars = ltf.bars.slice(-3);
+    const lastBar = recentBars[recentBars.length - 1]!;
+    const isBullish = signal.direction === 'bullish';
+    const lastBarConfirms = isBullish ? lastBar.close > lastBar.open : lastBar.close < lastBar.open;
+    const priorBars = recentBars.slice(0, -1);
+    const priorOpposing = priorBars.filter(b => isBullish ? b.close < b.open : b.close > b.open).length;
+    if (lastBarConfirms && priorOpposing >= 2) recentPriceActionBonus = 0.06;
+    else if (lastBarConfirms && priorOpposing >= 1) recentPriceActionBonus = 0.03;
+  }
+
+  // Small DI spread bonus
+  let diSpreadBonus = 0;
+  const avgDISpread = tfs.reduce((sum, tf) => {
+    const spread = signal.direction === 'bullish'
+      ? tf.dmi.plusDI - tf.dmi.minusDI
+      : tf.dmi.minusDI - tf.dmi.plusDI;
+    return sum + spread;
+  }, 0) / tfs.length;
+  if (avgDISpread > 0) diSpreadBonus = Math.min(0.03, avgDISpread / 40 * 0.03);
+
+  // Range width check
+  let narrowRangePenalty = 0;
+  const rangeWidthPct = rangeWidth / price * 100;
+  if (rangeWidthPct < 0.20) narrowRangePenalty = -0.15;
+  else if (rangeWidthPct < 0.30) narrowRangePenalty = -0.08;
+
+  // PENALTIES: conditions that invalidate range trading
+  let adxBonus = 0;
+  if (htf.dmi.adx >= 30) adxBonus = -0.15;
+  else if (htf.dmi.adx >= 25) adxBonus = -0.10;
+  else if (htf.dmi.adx >= 22 && htf.dmi.adxSlope > 2) adxBonus = -0.06;
+
+  let trendPhaseBonus = 0;
+  if (htf.dmi.adxSlope > 4) trendPhaseBonus = -0.10;
+  else if (htf.dmi.adxSlope > 2) trendPhaseBonus = -0.05;
+
+  let orbBonus = 0;
+  if (signal.orb.orbFormed && signal.orb.breakoutDirection !== 'none') {
+    if (signal.orb.breakoutDirection !== signal.direction) orbBonus = -0.06;
+    else orbBonus = 0.02;
+  }
+
+  let moveExhaustionPenalty = 0;
+  if (signal.direction === 'bullish' && price < rangeSupport) moveExhaustionPenalty = -0.12;
+  else if (signal.direction === 'bearish' && price > rangeResistance) moveExhaustionPenalty = -0.12;
+
+  const diCrossBonus = 0;
+  const alignmentBonus = 0;
+  const tdAdjustment = 0;
+  const oiVolumeBonus = 0;
+  const adxMaturityPenalty = 0;
+  const momentumAccelBonus = 0;
+  const trContractionPenalty = 0;
+  const thetaDecayPenalty = 0;
+
+  let total = Math.max(0, Math.min(1, base + diSpreadBonus + adxBonus + diCrossBonus + alignmentBonus + tdAdjustment + obvBonus + vwapBonus + oiVolumeBonus + pricePositionAdjustment + adxMaturityPenalty + trendPhaseBonus + momentumAccelBonus + structureBonus + orbBonus + recentPriceActionBonus + trContractionPenalty + lowVolPenalty + moveExhaustionPenalty + consolidationPenalty + nearLevelPenalty + thetaDecayPenalty + narrowRangePenalty));
+
+  // Hard gates for range mode
+  if (htf.dmi.adx >= 28) total = Math.min(total, 0.50);
+  else if (htf.dmi.adx >= 25) total = Math.min(total, 0.58);
+  if (htf.dmi.adxSlope > 5) total = Math.min(total, 0.55);
+  if (rangeWidthPct < 0.20) total = Math.min(total, 0.45);
+  if (recentPriceActionBonus < 0) total = Math.min(total, 0.58);
 
   return { base, diSpreadBonus, adxBonus, diCrossBonus, alignmentBonus, tdAdjustment, obvBonus, vwapBonus, oiVolumeBonus, pricePositionAdjustment, adxMaturityPenalty, trendPhaseBonus, momentumAccelBonus, structureBonus, orbBonus, recentPriceActionBonus, trContractionPenalty, lowVolPenalty, moveExhaustionPenalty, consolidationPenalty, nearLevelPenalty, thetaDecayPenalty, narrowRangePenalty, total };
 }

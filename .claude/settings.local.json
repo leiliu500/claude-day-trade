@@ -116,7 +116,10 @@
       "Bash(curl -s -H \"APCA-API-KEY-ID: PK52GZ34XOEQZZMS75G54IQT3I\" -H \"APCA-API-SECRET-KEY: 3xPVDT77uRiepNDnmRrCTotwdXD2yjgKYcHB94LuTHZV\" \"https://paper-api.alpaca.markets/v2/account/portfolio/history?period=all&timeframe=1D\")",
       "Read(//home/ec2-user/**)",
       "Bash(find /home/ec2-user/.claude -name *feedback* -o -name *.md)",
-      "Bash(grep -E \"\\\\.sql$\")"
+      "Bash(grep -E \"\\\\.sql$\")",
+      "Bash(for d:*)",
+      "Bash(do echo:*)",
+      "Bash(grep -r \"backtest\" /home/ec2-user/claude-day-trade/*.md)"
     ],
     "additionalDirectories": [
       "/home/ec2-user/.claude/projects/-home-ec2-user-claude-day-trade"

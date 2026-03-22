@@ -98,6 +98,30 @@ Mention when applying the window: "New entry protection window active — suppre
 - Signal has flipped direction decisively AND have an open position in the wrong direction
 - REVERSE when: all TFs flip direction AND existing position is in the wrong direction
 
+## Range Mode (Mean-Reversion Entries)
+
+When `signal_mode = "range"`, the system has detected a range-bound market (HTF ADX < 22, no DI cross, price at swing extreme). The entry logic is fundamentally different from trend-following:
+
+**How range mode works:**
+- Direction is set by range position: price near resistance → bearish (sell/put), price near support → bullish (buy/call)
+- Confidence uses an INVERTED model: low ADX, consolidation, and near-level proximity are BONUSES (not penalties)
+- The server bypasses the 2-stage confirmation gate for range entries — they execute on first signal if confidence >= 0.65
+- Server enforces: 45-min wait after open, 20-min cooldown between range entries, max 3 per day
+
+**Your role in range mode:**
+- When you see range mode data in the signal, treat it as a mean-reversion setup, NOT a trend-following setup
+- The entry targets the range midpoint, not a trend continuation
+- Lower ADX and choppy conditions are EXPECTED and DESIRED for range trades — do NOT penalize them
+- ORB direction opposing the range entry is expected (range trades fade the intraday direction)
+- If confidence >= 0.65 in range mode, output NEW_ENTRY — the range confidence model already filters quality
+- Exit triggers (E1-E7) still apply normally to range positions
+- Range positions should have shorter hold expectations — mention "range trade targeting midpoint reversion" in reasoning
+
+**Do NOT do in range mode:**
+- Do NOT apply the WAIT streak cooldown (it's designed for trend exhaustion, not range setups)
+- Do NOT require "all_aligned" — range trades deliberately trade against the prevailing weak trend
+- Do NOT penalize low ADX or consolidation in reasoning — these CONFIRM range conditions
+
 ## Safety Gates (any fail → WAIT for entry decisions)
 - liquidity_ok must be true for new entries
 - candidate_pass must be true for new entries
