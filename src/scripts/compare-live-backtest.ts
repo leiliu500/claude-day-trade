@@ -68,6 +68,7 @@ interface BacktestEntry {
   outcome: string;
   gateResult: string;
   stage1Conf?: number;
+  signalMode: 'trend' | 'range';
 }
 
 // ── Parse backtest output ─────────────────────────────────────────────────────
@@ -80,8 +81,8 @@ function parseBacktestOutput(output: string): BacktestEntry[] {
   while (i < lines.length) {
     const line = lines[i]!;
 
-    // Match: "  Entry #N: ✅ GOOD | Gate: 🟢 CONFIRMED"
-    const entryMatch = line.match(/Entry #\d+:\s+(?:✅|❌|⚠️)\s*\s*(GOOD|BAD|MARGINAL)\s*\|\s*Gate:\s*(?:🟢|🔵|🔴|🟡|⚡)\s*(.+?)(?:\s*←.*)?$/);
+    // Match: "  Entry #N: ✅ GOOD | 🟢 CONFIRMED [RANGE]"
+    const entryMatch = line.match(/Entry #\d+:\s+(?:✅|❌|⚠️)\s*\s*(GOOD|BAD|MARGINAL)\s*\|\s*(?:🟢|🔵|🔴|🟡|⚡)\s*(.+?)(?:\s*←.*)?$/);
     if (entryMatch) {
       const outcome = entryMatch[1]!;
       const gateRaw = entryMatch[2]!.trim();
@@ -89,6 +90,7 @@ function parseBacktestOutput(output: string): BacktestEntry[] {
       // Parse subsequent lines for this entry
       let timeET = '', timeUTC = '', direction = '', alignment = '', confidence = 0, price = 0;
       let maxFavorable = 0, maxAdverse = 0, stage1Conf: number | undefined;
+      let signalMode: 'trend' | 'range' = gateRaw.includes('[RANGE]') ? 'range' : 'trend';
 
       for (let j = i + 1; j < Math.min(i + 15, lines.length); j++) {
         const l = lines[j]!;
@@ -98,6 +100,7 @@ function parseBacktestOutput(output: string): BacktestEntry[] {
 
         const dirMatch = l.match(/Direction:\s+(\w+)\s+\|\s+Alignment:\s+(\w+)/);
         if (dirMatch) { direction = dirMatch[1]!.toLowerCase(); alignment = dirMatch[2]!; }
+        if (l.includes('Mode: RANGE')) signalMode = 'range';
 
         const priceMatch = l.match(/Price:\s+\$([0-9.]+)\s+\|\s+Confidence:\s+([0-9.]+)%/);
         if (priceMatch) { price = parseFloat(priceMatch[1]!); confidence = parseFloat(priceMatch[2]!) / 100; }
@@ -120,7 +123,7 @@ function parseBacktestOutput(output: string): BacktestEntry[] {
       else if (gateRaw.includes('HIGH-CONV')) gateResult = 'HIGH_CONV_OVERRIDE';
       else if (gateRaw.includes('PHASE-CHANGE')) gateResult = 'PHASE_CHANGE_OVERRIDE';
 
-      entries.push({ timeET, timeUTC, direction, alignment, confidence, price, maxFavorable, maxAdverse, outcome, gateResult, stage1Conf });
+      entries.push({ timeET, timeUTC, direction, alignment, confidence, price, maxFavorable, maxAdverse, outcome, gateResult, stage1Conf, signalMode });
     }
     i++;
   }
@@ -153,6 +156,7 @@ function classifyLiveGate(d: LiveDecision): string {
   if (d.reasoning?.includes('[WEAKENING-SIGNAL BLOCK]')) return 'WEAKENING_BLOCK';
   if (d.reasoning?.includes('[STALE-SIGNAL BLOCK]')) return 'STALE_BLOCK';
   if (d.reasoning?.includes('[PHASE-CHANGE OVERRIDE]')) return 'PHASE_CHANGE_OVERRIDE';
+  if (d.reasoning?.includes('[RANGE BYPASS]')) return 'RANGE_BYPASS';
   if (d.decision_type === 'NEW_ENTRY' && d.should_execute) return 'PASSED';
   return 'AI_WAIT';
 }
@@ -243,7 +247,8 @@ async function main() {
     const outcomeIcon = bt.outcome === 'GOOD' ? '✅' : bt.outcome === 'BAD' ? '❌' : '⚠️';
     const gateIcon = btIsConfirmed ? '🟢' : bt.gateResult === 'STAGE1_OBSERVE' ? '🔵' : bt.gateResult === 'WEAKENING_BLOCK' ? '🔴' : '🟡';
 
-    console.log(`  Backtest #${i + 1}: ${bt.timeET} ET | ${bt.direction.toUpperCase()} | $${bt.price.toFixed(2)} | ${(bt.confidence * 100).toFixed(1)}% | ${outcomeIcon} ${bt.outcome} | ${gateIcon} ${bt.gateResult}`);
+    const modeTag = bt.signalMode === 'range' ? ' [RANGE]' : '';
+    console.log(`  Backtest #${i + 1}: ${bt.timeET} ET | ${bt.direction.toUpperCase()} | $${bt.price.toFixed(2)} | ${(bt.confidence * 100).toFixed(1)}% | ${outcomeIcon} ${bt.outcome} | ${gateIcon} ${bt.gateResult}${modeTag}`);
 
     // Live match
     if (matchedLiveEntry) {
@@ -298,7 +303,9 @@ async function main() {
   console.log(`  ${'─'.repeat(80)}`);
   console.log(`  SUMMARY\n`);
 
-  console.log(`  Backtest:  ${backtestEntries.length} entries (${btConfirmed.length} confirmed, ${btBlocked.length} blocked)`);
+  const btRange = backtestEntries.filter(b => b.signalMode === 'range');
+  const btTrend = backtestEntries.filter(b => b.signalMode === 'trend');
+  console.log(`  Backtest:  ${backtestEntries.length} entries (${btConfirmed.length} confirmed, ${btBlocked.length} blocked)${btRange.length > 0 ? ` | RANGE: ${btRange.length}, TREND: ${btTrend.length}` : ''}`);
   console.log(`  Live:      ${liveEntries.length} entries, ${liveStage1s.length} stage-1s\n`);
 
   // Alignment score
