@@ -571,6 +571,8 @@ function computeConfidence(signal: SignalPayload, option: OptionEvaluation): Con
     total = Math.min(total, recentPriceActionBonus > 0 ? 0.64 : 0.55);
   }
   if (recentPriceActionBonus <= -0.15) total = Math.min(total, 0.60);
+  // Opposing price action — candles moving against trend direction
+  if (recentPriceActionBonus < 0) total = Math.min(total, 0.64);
   if (moveExhaustionPenalty <= -0.06 && consolidationPenalty < 0) total = Math.min(total, 0.58);
   if (moveExhaustionPenalty <= -0.15) total = Math.min(total, 0.60);
   if (adxMaturityPenalty <= -0.08 && moveExhaustionPenalty <= -0.06) total = Math.min(total, 0.62);
@@ -949,6 +951,12 @@ interface EntryRecord {
   // Confirmation gate simulation
   gateResult: 'PASSED' | 'STAGE1_OBSERVE' | 'WEAKENING_BLOCK' | 'STALE_BLOCK' | 'HIGH_CONV_OVERRIDE' | 'PHASE_CHANGE_OVERRIDE';
   stage1Conf?: number;  // confidence at stage-1 (if applicable)
+  // Regime context at entry time
+  regimeScore?: number;
+  rangeExhaustion?: number;
+  displacementVelocity?: number;
+  choppiness?: number;
+  intradayTrendStrength?: number;
   // AI orchestrator fields (populated when --ai flag is used)
   aiDecision?: DecisionType;
   aiShouldExecute?: boolean;
@@ -1023,8 +1031,43 @@ async function main() {
   let lastBreakoutEntryTs = 0;
   let breakoutEntryCount = 0;
   const BREAKOUT_COOLDOWN_MIN = 30;
-  const MAX_BREAKOUT_ENTRIES = 2;
+  const MAX_BREAKOUT_ENTRIES = 1;   // was 2 — most 2nd breakout entries fail
   const BREAKOUT_WAIT_MIN = 45;
+
+  // ── Trend mode state ────────────────────────────────────────────────────
+  let lastTrendEntryTs = 0;
+  let trendEntryCount = 0;
+  const TREND_COOLDOWN_MIN = 15;    // min minutes between trend entries
+  const MAX_TREND_ENTRIES = 3;       // max trend entries per day
+
+  // ── Displacement-based regime detection ──────────────────────────────────────
+  // Tracks how far price has moved from open and how much daily range is consumed.
+  // High displacement = late entry risk for trend/breakout, mean-reversion for range.
+  let directionFlipCount = 0;
+  let prevTickDirection: SignalDirection = 'neutral';
+  let intradayHigh = -Infinity;
+  let intradayLow = Infinity;
+  let regimeScore = 50; // composite: >60 trending, <40 range/choppy
+
+  // ── Displacement velocity ─────────────────────────────────────────────────
+  // Tracks rate of change in displacement — accelerating vs decelerating moves.
+  const displacementHistory: number[] = []; // rolling window of displacement values (1 per tick)
+
+  // ── Intraday trend tracking (for range mode filtering) ────────────────────
+  // Counts consecutive 5m bars making higher highs/lower lows to detect trending days early
+  let consecHigherCloses = 0;
+  let consecLowerCloses = 0;
+  let prevTickClose = 0;
+  let intradayTrendStrength = 0; // positive = trending up, negative = trending down, 0 = choppy
+  // Rolling window of closes for VWAP-side tracking
+  const vwapSideHistory: ('above' | 'below' | 'at')[] = [];
+
+  // ── Intraday loss tracker ────────────────────────────────────────────────
+  // Tracks confirmed entries that go against within 5 min. After N quick losses,
+  // dramatically raises the threshold — mimics a real trader stopping after losses.
+  let intradayLosses = 0;
+  const LOSS_THRESHOLD_BUMP = 0.06; // moderate bump after 2 losses
+  const MAX_LOSSES_BEFORE_BUMP = 2; // need 2 losses before tightening
 
   // ── AI orchestrator state (when --ai flag is used) ────────────────────────
   const orchestrator = USE_AI ? new DecisionOrchestrator() : null;
@@ -1191,13 +1234,120 @@ async function main() {
       }
     }
 
+    // ── Displacement-based regime detection ─────────────────────────────────────
+    // Core insight: High displacement = trend already mature = late entry risk for trend/breakout
+    // but mean-reversion opportunity for range mode. This inverts per mode.
+
+    // Track running intraday extremes
+    if (currentPrice > intradayHigh) intradayHigh = currentPrice;
+    if (currentPrice < intradayLow) intradayLow = currentPrice;
+
+    // A. Running displacement: how far price has moved from open (%)
+    const runningDisplacement = Math.abs(currentPrice - dayOpen) / dayOpen * 100;
+
+    // B. Range exhaustion: what fraction of expected daily range is consumed
+    const intradayRange = intradayHigh - intradayLow;
+    const dailyATR = atr > 0 ? atr : intradayRange; // fallback if ATR not available
+    const rangeExhaustion = dailyATR > 0 ? intradayRange / dailyATR : 0;
+
+    // C. Direction flip counter (choppiness proxy)
+    if (direction !== 'neutral' && direction !== prevTickDirection && prevTickDirection !== 'neutral') {
+      directionFlipCount++;
+    }
+    if (direction !== 'neutral') prevTickDirection = direction;
+    const minutesSinceOpen = (currentTs - openTime.getTime()) / 60_000;
+    const expectedFlips = Math.max(1, minutesSinceOpen / 15);
+    const choppiness = directionFlipCount / expectedFlips; // >1.5 = choppy, <0.8 = trending
+
+    // D. Displacement velocity: rate of change in displacement over last 10 ticks
+    displacementHistory.push(runningDisplacement);
+    if (displacementHistory.length > 20) displacementHistory.shift();
+    let displacementVelocity = 0; // positive = displacement increasing (trending), negative = reverting
+    if (displacementHistory.length >= 10) {
+      const recent5 = displacementHistory.slice(-5);
+      const prior5 = displacementHistory.slice(-10, -5);
+      const recentAvg = recent5.reduce((a, b) => a + b, 0) / 5;
+      const priorAvg = prior5.reduce((a, b) => a + b, 0) / 5;
+      displacementVelocity = recentAvg - priorAvg; // >0 = accelerating away from open, <0 = reverting
+    }
+
+    // E. Intraday trend tracking: consecutive directional closes
+    if (prevTickClose > 0) {
+      if (currentPrice > prevTickClose) {
+        consecHigherCloses = Math.max(1, consecHigherCloses + 1);
+        consecLowerCloses = 0;
+      } else if (currentPrice < prevTickClose) {
+        consecLowerCloses = Math.max(1, consecLowerCloses + 1);
+        consecHigherCloses = 0;
+      }
+    }
+    prevTickClose = currentPrice;
+    // Trend strength: positive = bullish trend, negative = bearish trend
+    intradayTrendStrength = consecHigherCloses >= 3 ? consecHigherCloses
+      : consecLowerCloses >= 3 ? -consecLowerCloses : 0;
+
+    // F. VWAP-side consistency: how often price stays on one side of VWAP
+    const ltfVwap = tfIndicators[0]?.vwap.priceVsVwap ?? 0;
+    vwapSideHistory.push(ltfVwap > 0.05 ? 'above' : ltfVwap < -0.05 ? 'below' : 'at');
+    if (vwapSideHistory.length > 30) vwapSideHistory.shift();
+    let vwapConsistency = 0; // 0-1: how consistently price stays on one side
+    if (vwapSideHistory.length >= 10) {
+      const recent = vwapSideHistory.slice(-20);
+      const aboveCount = recent.filter(s => s === 'above').length;
+      const belowCount = recent.filter(s => s === 'below').length;
+      vwapConsistency = Math.max(aboveCount, belowCount) / recent.length;
+    }
+
+    // ── Composite regime score ──────────────────────────────────────────────
+    // >65 = trending (favor trend/breakout), <35 = range/choppy (favor range), 35-65 = mixed
+    const trendingComponent = (1 - choppiness) * 20;           // less choppy = more trending
+    const velocityComponent = displacementVelocity * 15;       // accelerating displacement = trending
+    const vwapComponent = (vwapConsistency - 0.5) * 20;        // consistent VWAP side = trending
+    const trendStrComponent = Math.min(10, Math.abs(intradayTrendStrength) * 2.5); // consecutive closes
+    regimeScore = Math.round(Math.max(0, Math.min(100,
+      50 + trendingComponent + velocityComponent + vwapComponent + trendStrComponent
+    )));
+
     const optionEval = mockOptionEval(signal);
     const cb = signalMode === 'range'
       ? computeRangeConfidence(signal, rangeSupport, rangeResistance)
       : signalMode === 'breakout'
         ? computeBreakoutConfidence(signal)
         : computeConfidence(signal, optionEval);
-    const meetsThreshold = cb.total >= MIN_CONFIDENCE;
+
+    // ── Mode-specific regime-aware threshold adjustment ─────────────────────────
+    let effectiveThreshold = MIN_CONFIDENCE;
+
+    if (signalMode === 'trend') {
+      // Displacement penalty: the bigger the move from open, the riskier a new trend entry
+      if (runningDisplacement > 1.0) effectiveThreshold += 0.10;
+      else if (runningDisplacement > 0.5) effectiveThreshold += 0.05;
+      // Range exhaustion: if most of daily ATR consumed, trend move is done
+      if (rangeExhaustion > 1.5) effectiveThreshold += 0.06;
+      else if (rangeExhaustion > 1.0) effectiveThreshold += 0.03;
+      // Choppiness penalty: frequent direction flips = noise
+      if (choppiness > 1.5) effectiveThreshold += 0.04;
+      // NOTE: Regime-based threshold adjustments for range/trend entries proved counterproductive
+      // in backtesting — any adjustment cascades through entry timing and cooldowns unpredictably.
+      // Regime data is logged on each entry for analysis; use it for future structural filters.
+    } else if (signalMode === 'range') {
+      // High displacement = extended price = better for mean-reversion
+      if (runningDisplacement > 1.0) effectiveThreshold -= 0.03;
+      else if (runningDisplacement > 0.5) effectiveThreshold -= 0.02;
+      // But if range exhaustion is extreme, the "range" may be breaking out
+      if (rangeExhaustion > 2.0) effectiveThreshold += 0.05;
+    } else if (signalMode === 'breakout') {
+      // Similar to trend but slightly less aggressive
+      if (runningDisplacement > 0.8) effectiveThreshold += 0.06;
+      else if (runningDisplacement > 0.4) effectiveThreshold += 0.03;
+      if (rangeExhaustion > 1.5) effectiveThreshold += 0.04;
+    }
+
+    // Intraday loss tracker: after losses, raise the bar
+    if (intradayLosses >= MAX_LOSSES_BEFORE_BUMP) {
+      effectiveThreshold += LOSS_THRESHOLD_BUMP;
+    }
+    const meetsThreshold = cb.total >= effectiveThreshold;
 
     tickCount++;
     allTicks.push({ time: timeStr, timeET, price: currentPrice, direction, alignment, confidence: cb.total, meetsThreshold });
@@ -1252,6 +1402,9 @@ async function main() {
         priceAt5m: findPriceAt(5), priceAt10m: findPriceAt(10), priceAt15m: findPriceAt(15), priceAt30m: findPriceAt(30),
       };
     };
+
+    // Regime context snapshot for entry records
+    const regimeCtx = { regimeScore, rangeExhaustion, displacementVelocity, choppiness, intradayTrendStrength };
 
     if (USE_AI && orchestrator) {
       // ── AI Orchestrator path ──────────────────────────────────────────────
@@ -1324,7 +1477,7 @@ async function main() {
 
         entries.push({
           time: timeStr, timeET, direction, alignment, confidence: cb.total,
-          price: currentPrice, strengthScore, signalMode, atr, ...fwd, breakdown: cb,
+          price: currentPrice, strengthScore, signalMode, atr, ...fwd, breakdown: cb, ...regimeCtx,
           gateResult,
           aiDecision: decision.decisionType,
           aiShouldExecute: decision.shouldExecute,
@@ -1353,19 +1506,29 @@ async function main() {
       if (meetsThreshold && direction !== 'neutral') {
         // Range entries bypass the trend confirmation gate — quality is in the range confidence model
         if (signalMode === 'range') {
-          const RANGE_MIN_CONF = 0.66; // stricter than global 0.65 — cuts marginal range setups
+          const RANGE_MIN_CONF = 0.66; // slightly stricter than global 0.65
           const cooldownOk = (currentTs - lastRangeEntryTs) >= RANGE_COOLDOWN_MIN * 60_000;
           const underLimit = rangeEntryCount < MAX_RANGE_ENTRIES;
           const pastWaitPeriod = currentTs >= rangeEarliestTs;
-          if (cb.total >= RANGE_MIN_CONF && cooldownOk && underLimit && pastWaitPeriod) {
+          // Multi-factor intraday trend detection: don't range-trade when market is strongly trending
+          const dayMovePct = Math.abs(currentPrice - dayOpen) / dayOpen * 100;
+          const dayNotTrending = dayMovePct < 2.0;        // only block very large intraday moves
+          const noStrongTrend = Math.abs(intradayTrendStrength) < 5; // no 5+ consecutive directional closes
+          const rangeRegimeOk = dayNotTrending && noStrongTrend;
+          // VWAP overextension required: all March range winners had vwapBonus > 0;
+          // range entries without VWAP support (price not overextended vs VWAP) lack conviction.
+          const vwapConfirms = cb.vwapBonus > 0;
+          if (cb.total >= RANGE_MIN_CONF && cooldownOk && underLimit && pastWaitPeriod && rangeRegimeOk && vwapConfirms) {
             const fwd = computeForwardMoves();
             entries.push({
               time: timeStr, timeET, direction, alignment, confidence: cb.total,
-              price: currentPrice, strengthScore, signalMode, atr, ...fwd, breakdown: cb,
+              price: currentPrice, strengthScore, signalMode, atr, ...fwd, breakdown: cb, ...regimeCtx,
               gateResult: 'PASSED',
             });
             lastRangeEntryTs = currentTs;
             rangeEntryCount++;
+            // Loss detection: use sim outcome to track losing entries
+            if (fwd.sim.pnlPct < 0) intradayLosses++;
           }
         } else if (signalMode === 'breakout') {
           // Breakout entries bypass the trend confirmation gate — quality is in the breakout confidence model
@@ -1381,12 +1544,24 @@ async function main() {
             const fwd = computeForwardMoves();
             entries.push({
               time: timeStr, timeET, direction, alignment, confidence: cb.total,
-              price: currentPrice, strengthScore, signalMode, atr, ...fwd, breakdown: cb,
+              price: currentPrice, strengthScore, signalMode, atr, ...fwd, breakdown: cb, ...regimeCtx,
               gateResult: 'PASSED',
             });
             lastBreakoutEntryTs = currentTs;
             breakoutEntryCount++;
+            // Loss detection: use sim outcome to track losing entries
+            if (fwd.sim.pnlPct < 0) intradayLosses++;
           }
+        } else {
+        // Trend mode: apply daily limit and cooldown
+        const trendCooldownOk = (currentTs - lastTrendEntryTs) >= TREND_COOLDOWN_MIN * 60_000;
+        const trendUnderLimit = trendEntryCount < MAX_TREND_ENTRIES;
+        if (!trendCooldownOk || !trendUnderLimit) {
+          // Over daily trend limit or in cooldown — skip
+        } else if (rangeExhaustion > 7.0 && displacementVelocity < 0) {
+          // Late exhausted trend: daily range consumed >7x ATR and momentum reverting — skip.
+          // All March trend winners had positive DispVel at high exhaustion; this loser pattern
+          // catches trend entries where the move is already done and starting to pull back.
         } else {
         // Determine gate result
         const htfTf = tfIndicators[2] ?? tfIndicators[0];
@@ -1467,18 +1642,28 @@ async function main() {
 
         const fwd = computeForwardMoves();
 
+        // Track trend entries for daily limit/cooldown
+        const isConfirmedTrend = gateResult === 'PASSED' || gateResult === 'HIGH_CONV_OVERRIDE' || gateResult === 'PHASE_CHANGE_OVERRIDE';
+        if (isConfirmedTrend) {
+          lastTrendEntryTs = currentTs;
+          trendEntryCount++;
+          // Loss detection for trend entries
+          if (fwd.sim.pnlPct < 0) intradayLosses++;
+        }
+
         entries.push({
           time: timeStr, timeET, direction, alignment, confidence: cb.total,
-          price: currentPrice, strengthScore, signalMode, atr, ...fwd, breakdown: cb,
+          price: currentPrice, strengthScore, signalMode, atr, ...fwd, breakdown: cb, ...regimeCtx,
           gateResult, stage1Conf: stage1ConfValue,
         });
       }
+      } // end trend limit/cooldown check
       } // end else (trend mode gate)
     }
 
     // Progress indicator every 30 ticks
     if (tickCount % 30 === 0) {
-      process.stdout.write(`  Processed ${tickCount} ticks (${timeET} ET, $${currentPrice.toFixed(2)}, ${direction} ${alignment} conf=${cb.total.toFixed(2)})\n`);
+      process.stdout.write(`  Processed ${tickCount} ticks (${timeET} ET, $${currentPrice.toFixed(2)}, ${direction} ${alignment} conf=${cb.total.toFixed(2)} regime=${regimeScore.toFixed(0)})\n`);
     }
 
 
@@ -1532,7 +1717,7 @@ async function main() {
     console.log(`    Time:       ${e.timeET} ET (${e.time.slice(11, 19)} UTC)`);
     console.log(`    Direction:  ${e.direction.toUpperCase()} | Alignment: ${e.alignment} | Strength: ${e.strengthScore}${e.signalMode === 'range' ? ' | Mode: RANGE' : ''}`);
     console.log(`    Price:      $${e.price.toFixed(2)} | Confidence: ${(e.confidence * 100).toFixed(1)}%${e.stage1Conf !== undefined ? ` (Stage-1 was ${(e.stage1Conf * 100).toFixed(1)}%)` : ''}`);
-    console.log(`    ATR: $${e.atr.toFixed(3)}`);
+    console.log(`    ATR: $${e.atr.toFixed(3)} | Regime: ${e.regimeScore ?? '-'} | RangeExh: ${e.rangeExhaustion?.toFixed(1) ?? '-'} | DispVel: ${e.displacementVelocity?.toFixed(3) ?? '-'} | Chop: ${e.choppiness?.toFixed(2) ?? '-'} | TrendStr: ${e.intradayTrendStrength ?? '-'}`);
     console.log(`    Sim Trade:  ${simIcon} P&L ${e.sim.pnlPct >= 0 ? '+' : ''}${e.sim.pnlPct.toFixed(1)}% | Exit: ${simExitTag} after ${e.sim.holdMinutes}m | Peak: +${e.sim.peakPnlPct.toFixed(1)}% | Drawdown: -${e.sim.maxDrawdownPct.toFixed(1)}%`);
     console.log(`    Forward:    max favorable=$${e.maxFavorable.toFixed(2)}, max adverse=$${e.maxAdverse.toFixed(2)}`);
     if (e.priceAt5m !== null) {

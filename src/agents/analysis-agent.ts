@@ -489,8 +489,9 @@ function computeConfidence(signal: SignalPayload, option: OptionEvaluation): Con
       // Only suppress at range extremes when the range is meaningful (ADX >= 15).
       if (recentPriceActionBonus > 0 && htf.dmi.adx >= 15) {
         const rp = htf.priceStructure.rangePosition;
+        const strongActiveTrend = htf.dmi.adx > 25 && htf.dmi.adxSlope > 0;
         const atExtreme = (signal.direction === 'bullish' && rp >= 0.80) || (signal.direction === 'bearish' && rp <= 0.20);
-        if (atExtreme) {
+        if (atExtreme && !strongActiveTrend) {
           recentPriceActionBonus = 0; // confirming bars at range edge = exhaustion, not signal
         }
       }
@@ -848,8 +849,9 @@ function computeConfidence(signal: SignalPayload, option: OptionEvaluation): Con
   // Relaxed to 0.64 (just below 0.65) when price action actively confirms, since
   // rare cases of genuine trend continuation do exist but should still require
   // elevated confidence from other factors to pass.
-  // Exempt all_aligned — genuine trend continuation across all timeframes.
-  if (adxMaturityPenalty <= -0.15 && signal.alignment !== 'all_aligned') {
+  // Exempt all_aligned with ADX >= 20 — genuine trend continuation across all timeframes.
+  // Require ADX >= 20 alongside all_aligned: very low ADX + all_aligned is noise, not trend.
+  if (adxMaturityPenalty <= -0.15 && !(signal.alignment === 'all_aligned' && htf.dmi.adx >= 20)) {
     if (recentPriceActionBonus > 0) {
       total = Math.min(total, 0.64);
     } else {
@@ -863,6 +865,11 @@ function computeConfidence(signal: SignalPayload, option: OptionEvaluation): Con
   // Cap confidence below entry threshold to prevent entries at reversal points.
   if (recentPriceActionBonus <= -0.15) {
     total = Math.min(total, 0.60);
+  }
+  // Opposing price action — candles moving against trend direction.
+  // Even mild opposition (PA < 0) means real-time price disagrees with lagging indicators.
+  if (recentPriceActionBonus < 0) {
+    total = Math.min(total, 0.64);
   }
 
   // Hard gate: move already exhausted + consolidation.  When a large move has played out
@@ -930,6 +937,32 @@ function computeConfidence(signal: SignalPayload, option: OptionEvaluation): Con
   // Even with strong signals, the theta burn is too aggressive for new entries.
   if (thetaDecayPenalty <= -0.10) {
     total = Math.min(total, 0.55);
+  }
+
+  // Hard gate: exhausted trend with reverting momentum.
+  // If intraday range consumed > 7x ATR AND recent displacement is decelerating,
+  // the trend move is done and starting to pull back — late entry risk is extreme.
+  // All March trend winners had positive displacement velocity at high exhaustion.
+  if (ltf && htf) {
+    const ltfBars = ltf.bars;
+    const htfAtr = htf.atr.atr;
+    if (ltfBars.length >= 20 && htfAtr > 0) {
+      let dayHigh = -Infinity, dayLow = Infinity;
+      for (const b of ltfBars) { if (b.high > dayHigh) dayHigh = b.high; if (b.low < dayLow) dayLow = b.low; }
+      const rangeExhaustion = (dayHigh - dayLow) / htfAtr;
+      // Displacement velocity: compare displacement of recent 5 bars vs prior 5 bars
+      if (rangeExhaustion > 7.0 && ltfBars.length >= 10) {
+        const dayOpen = ltfBars[0]!.open;
+        const recent5 = ltfBars.slice(-5);
+        const prior5 = ltfBars.slice(-10, -5);
+        const avgRecent = recent5.reduce((s, b) => s + Math.abs(b.close - dayOpen) / dayOpen * 100, 0) / 5;
+        const avgPrior = prior5.reduce((s, b) => s + Math.abs(b.close - dayOpen) / dayOpen * 100, 0) / 5;
+        const dispVelocity = avgRecent - avgPrior;
+        if (dispVelocity < 0) {
+          total = Math.min(total, 0.55);
+        }
+      }
+    }
   }
 
   return { base, diSpreadBonus, adxBonus, diCrossBonus, alignmentBonus, tdAdjustment, obvBonus, vwapBonus, oiVolumeBonus, pricePositionAdjustment, adxMaturityPenalty, trendPhaseBonus, momentumAccelBonus, structureBonus, orbBonus, recentPriceActionBonus, trContractionPenalty, lowVolPenalty, moveExhaustionPenalty, consolidationPenalty, nearLevelPenalty, thetaDecayPenalty, narrowRangePenalty, total };
@@ -1106,6 +1139,10 @@ function computeRangeConfidence(signal: SignalPayload): ConfidenceBreakdown {
   if (trendPhaseBonus <= -0.05) total = Math.min(total, 0.55);
   // Opposing ORB + weak reversal candle = breakout against the range trade
   if (orbBonus <= -0.06 && recentPriceActionBonus <= 0.03) total = Math.min(total, 0.58);
+  // VWAP overextension required: range entries without VWAP support (price not overextended
+  // vs VWAP in the mean-reversion direction) lack conviction. All March range winners had
+  // vwapBonus > 0; entries without it consistently failed.
+  if (vwapBonus <= 0) total = Math.min(total, 0.55);
 
   return { base, diSpreadBonus, adxBonus, diCrossBonus, alignmentBonus, tdAdjustment, obvBonus, vwapBonus, oiVolumeBonus, pricePositionAdjustment, adxMaturityPenalty, trendPhaseBonus, momentumAccelBonus, structureBonus, orbBonus, recentPriceActionBonus, trContractionPenalty, lowVolPenalty, moveExhaustionPenalty, consolidationPenalty, nearLevelPenalty, thetaDecayPenalty, narrowRangePenalty, total };
 }
