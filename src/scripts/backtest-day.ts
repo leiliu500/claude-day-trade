@@ -168,6 +168,24 @@ function classifyAlignment(tfs: TimeframeIndicators[], direction: SignalDirectio
   return 'mixed';
 }
 
+// ── Theta decay simulation ───────────────────────────────────────────────────
+// Simulates the theta decay penalty that the live system applies based on option
+// expiration proximity. In live trading, 0DTE options are the default choice,
+// so the backtest assumes 0DTE expiration on the target date.
+
+function simulateThetaDecay(signalTime: string, targetDate: string): number {
+  const now = new Date(signalTime);
+  const marketCloseUtc = new Date(`${targetDate}T20:00:00Z`);
+  const minutesToClose = (marketCloseUtc.getTime() - now.getTime()) / 60000;
+
+  // 0DTE: same logic as analysis-agent.ts
+  if (minutesToClose <= 30) return -0.10;
+  if (minutesToClose <= 60) return -0.06;
+  if (minutesToClose <= 90) return -0.03;
+
+  return 0;
+}
+
 // ── Confidence computation (extracted from analysis-agent.ts) ─────────────────
 // We import the full computeConfidence logic inline to avoid needing the full
 // AnalysisAgent class + OpenAI dependency.
@@ -521,8 +539,8 @@ function computeConfidence(signal: SignalPayload, option: OptionEvaluation): Con
     }
   }
 
-  // Theta decay — use backtest simulated time (no 0DTE concern for backtest, set to 0)
-  const thetaDecayPenalty = 0;
+  // Theta decay — simulate 0DTE penalty based on time remaining to market close
+  const thetaDecayPenalty = simulateThetaDecay(signal.createdAt, TARGET_DATE);
 
   // Narrow range penalty — intraday range vs prior day range
   let narrowRangePenalty = 0;
@@ -763,7 +781,7 @@ function computeRangeConfidence(
   const adxMaturityPenalty = 0;
   const momentumAccelBonus = 0;
   const trContractionPenalty = 0;
-  const thetaDecayPenalty = 0;
+  const thetaDecayPenalty = simulateThetaDecay(signal.createdAt, TARGET_DATE);
 
   let total = Math.max(0, Math.min(1, base + diSpreadBonus + adxBonus + diCrossBonus + alignmentBonus + tdAdjustment + obvBonus + vwapBonus + oiVolumeBonus + pricePositionAdjustment + adxMaturityPenalty + trendPhaseBonus + momentumAccelBonus + structureBonus + orbBonus + recentPriceActionBonus + trContractionPenalty + lowVolPenalty + moveExhaustionPenalty + consolidationPenalty + nearLevelPenalty + thetaDecayPenalty + narrowRangePenalty));
 
@@ -778,6 +796,22 @@ function computeRangeConfidence(
   if (trendPhaseBonus <= -0.05) total = Math.min(total, 0.55);
   // Opposing ORB + weak reversal candle = breakout against the range trade
   if (orbBonus <= -0.06 && recentPriceActionBonus <= 0.03) total = Math.min(total, 0.58);
+  // VWAP overextension required: range entries without VWAP support lack conviction
+  if (vwapBonus <= 0) total = Math.min(total, 0.55);
+  // High choppiness = frequent direction flips = unreliable support/resistance
+  if (ltf && ltf.bars.length >= 15) {
+    const chopBarsAll = ltf.bars;
+    let flips = 0;
+    let prevDir: 'up' | 'down' | null = null;
+    for (let i = 1; i < chopBarsAll.length; i++) {
+      const dir = chopBarsAll[i]!.close > chopBarsAll[i - 1]!.close ? 'up' : 'down';
+      if (prevDir && dir !== prevDir) flips++;
+      prevDir = dir;
+    }
+    const expectedFlips = Math.max(1, chopBarsAll.length / 15);
+    const chopRatio = flips / expectedFlips;
+    if (chopRatio >= 1.3) total = Math.min(total, 0.55);
+  }
 
   return { base, diSpreadBonus, adxBonus, diCrossBonus, alignmentBonus, tdAdjustment, obvBonus, vwapBonus, oiVolumeBonus, pricePositionAdjustment, adxMaturityPenalty, trendPhaseBonus, momentumAccelBonus, structureBonus, orbBonus, recentPriceActionBonus, trContractionPenalty, lowVolPenalty, moveExhaustionPenalty, consolidationPenalty, nearLevelPenalty, thetaDecayPenalty, narrowRangePenalty, total };
 }
@@ -895,7 +929,7 @@ function computeBreakoutConfidence(signal: SignalPayload): ConfidenceBreakdown {
   const moveExhaustionPenalty = 0;
   const consolidationPenalty = 0;
   const nearLevelPenalty = 0;
-  const thetaDecayPenalty = 0;
+  const thetaDecayPenalty = simulateThetaDecay(signal.createdAt, TARGET_DATE);
 
   let total = Math.max(0, Math.min(1, base + diSpreadBonus + adxBonus + diCrossBonus + alignmentBonus + tdAdjustment + obvBonus + vwapBonus + oiVolumeBonus + pricePositionAdjustment + adxMaturityPenalty + trendPhaseBonus + momentumAccelBonus + structureBonus + orbBonus + recentPriceActionBonus + trContractionPenalty + lowVolPenalty + moveExhaustionPenalty + consolidationPenalty + nearLevelPenalty + thetaDecayPenalty + narrowRangePenalty));
 
