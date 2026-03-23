@@ -1011,6 +1011,15 @@ async function main() {
   console.log(`\n  Day range: $${dayLow.toFixed(2)} – $${dayHigh.toFixed(2)} (Open: $${dayOpen.toFixed(2)}, Close: $${dayClose.toFixed(2)})`);
   console.log(`  Day change: ${((dayClose - dayOpen) / dayOpen * 100).toFixed(2)}%\n`);
 
+  // ── Recent daily volatility (for range mode gating) ─────────────────────
+  // Compute average daily range (high-low as % of close) over the last 3 daily bars.
+  // High recent volatility = range levels unreliable → gate range entries.
+  const recentDailyBars = dailyBars.slice(-3);
+  const avgDailyRangePct = recentDailyBars.length >= 2
+    ? recentDailyBars.reduce((s, b) => s + (b.high - b.low) / b.close * 100, 0) / recentDailyBars.length
+    : 0;
+  console.log(`  Recent daily volatility: ${avgDailyRangePct.toFixed(2)}% avg range (${recentDailyBars.length} days)\n`);
+
   // ── Step 2: Walk through market hours in 1-min intervals ──────────────────
   const entries: EntryRecord[] = [];
   const allTicks: { time: string; timeET: string; price: number; direction: SignalDirection; alignment: AlignmentType; confidence: number; meetsThreshold: boolean }[] = [];
@@ -1024,7 +1033,9 @@ async function main() {
   let lastRangeEntryTs = 0;
   let rangeEntryCount = 0;
   const RANGE_COOLDOWN_MIN = 20;   // min minutes between range entries
-  const MAX_RANGE_ENTRIES = 2;      // max range entries per day (3rd entries were 3W/4L)
+  const MAX_RANGE_ENTRIES = 1;      // max 1 range entry per day — 2nd range entries were 3W/7L across Feb+Mar
+  const MAX_DAILY_ENTRIES = 2;     // global cap across all modes — prevents triple-loss days (Feb 5/17, Mar 5)
+  let dailyEntryCount = 0;
   const RANGE_WAIT_MIN = 45;       // don't range trade in first 45 min (let day establish)
 
   // ── Breakout mode state ────────────────────────────────────────────────────
@@ -1463,6 +1474,7 @@ async function main() {
             gateResult = 'PASSED';
           }
           lastEntryTs = currentTs;
+          dailyEntryCount++;
         } else if (decision.reasoning.includes('[STAGE-1 OBSERVE]')) {
           gateResult = 'STAGE1_OBSERVE';
         } else if (decision.reasoning.includes('[WEAKENING-SIGNAL BLOCK]')) {
@@ -1503,10 +1515,10 @@ async function main() {
         }
       }
 
-      if (meetsThreshold && direction !== 'neutral') {
+      if (meetsThreshold && direction !== 'neutral' && dailyEntryCount < MAX_DAILY_ENTRIES) {
         // Range entries bypass the trend confirmation gate — quality is in the range confidence model
         if (signalMode === 'range') {
-          const RANGE_MIN_CONF = 0.66; // slightly stricter than global 0.65
+          const RANGE_MIN_CONF = 0.70; // raised from 0.66 — Feb range entries at 0.66-0.69 were 1W/4L
           const cooldownOk = (currentTs - lastRangeEntryTs) >= RANGE_COOLDOWN_MIN * 60_000;
           const underLimit = rangeEntryCount < MAX_RANGE_ENTRIES;
           const pastWaitPeriod = currentTs >= rangeEarliestTs;
@@ -1518,7 +1530,10 @@ async function main() {
           // VWAP overextension required: all March range winners had vwapBonus > 0;
           // range entries without VWAP support (price not overextended vs VWAP) lack conviction.
           const vwapConfirms = cb.vwapBonus > 0;
-          if (cb.total >= RANGE_MIN_CONF && cooldownOk && underLimit && pastWaitPeriod && rangeRegimeOk && vwapConfirms) {
+          // High choppiness = frequent direction flips = unreliable support/resistance levels.
+          // Feb+Mar data: 0/12 range winners had chop >= 1.3, but 6/27 range losers did.
+          const notTooChoppy = choppiness < 1.3;
+          if (cb.total >= RANGE_MIN_CONF && cooldownOk && underLimit && pastWaitPeriod && rangeRegimeOk && vwapConfirms && notTooChoppy) {
             const fwd = computeForwardMoves();
             entries.push({
               time: timeStr, timeET, direction, alignment, confidence: cb.total,
@@ -1527,7 +1542,7 @@ async function main() {
             });
             lastRangeEntryTs = currentTs;
             rangeEntryCount++;
-            // Loss detection: use sim outcome to track losing entries
+            dailyEntryCount++;
             if (fwd.sim.pnlPct < 0) intradayLosses++;
           }
         } else if (signalMode === 'breakout') {
@@ -1540,7 +1555,18 @@ async function main() {
           const notTooLate = currentTs < breakoutCutoffTs;
           // Mixed alignment breakouts lack directional conviction
           const alignmentOk = alignment !== 'mixed';
-          if (cooldownOk && underLimit && pastWaitPeriod && notTooLate && alignmentOk) {
+          // Breakouts against the trend phase fail at high rate: Feb 7/9 breakout losers
+          // had trendPhaseBonus < 0. Require non-negative trend phase for entry.
+          const trendPhaseOk = cb.trendPhaseBonus >= 0;
+          // Weak ADX breakouts fail: ADX bonus <= 0.020 was 1W/4L (20%).
+          // ADX >= 0.050 was 5W/1L (83%). Require moderate ADX for conviction.
+          const adxOk = cb.adxBonus >= 0.03;
+          // Low strength breakouts fail: Feb str=30,33 were losses.
+          const strengthOk = strengthScore >= 35;
+          // Extremely extended day: >10x ATR consumed = move is exhausted.
+          // Feb 6 breakout at 12x was a STOP loss (bought the top). All winners < 8x.
+          const notExhausted = rangeExhaustion <= 10.0;
+          if (cooldownOk && underLimit && pastWaitPeriod && notTooLate && alignmentOk && trendPhaseOk && adxOk && strengthOk && notExhausted) {
             const fwd = computeForwardMoves();
             entries.push({
               time: timeStr, timeET, direction, alignment, confidence: cb.total,
@@ -1549,7 +1575,7 @@ async function main() {
             });
             lastBreakoutEntryTs = currentTs;
             breakoutEntryCount++;
-            // Loss detection: use sim outcome to track losing entries
+            dailyEntryCount++;
             if (fwd.sim.pnlPct < 0) intradayLosses++;
           }
         } else {
@@ -1562,6 +1588,9 @@ async function main() {
           // Late exhausted trend: daily range consumed >7x ATR and momentum reverting — skip.
           // All March trend winners had positive DispVel at high exhaustion; this loser pattern
           // catches trend entries where the move is already done and starting to pull back.
+        } else if (rangeExhaustion > 12.0) {
+          // Extremely extended day: >12x ATR consumed. Regardless of displacement velocity,
+          // a move this large has exhausted the daily range. Feb+Mar: 0 winners, 2 losers at >12x.
         } else {
         // Determine gate result
         const htfTf = tfIndicators[2] ?? tfIndicators[0];
@@ -1647,7 +1676,7 @@ async function main() {
         if (isConfirmedTrend) {
           lastTrendEntryTs = currentTs;
           trendEntryCount++;
-          // Loss detection for trend entries
+          dailyEntryCount++;
           if (fwd.sim.pnlPct < 0) intradayLosses++;
         }
 

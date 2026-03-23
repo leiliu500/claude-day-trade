@@ -34,5 +34,6 @@ export interface AnalysisResult {
   keyFactors: string[];
   risks: string[];
   desiredRight: 'call' | 'put' | null;
+  rangeExhaustion?: number;        // (dayHigh - dayLow) / htfATR — how much of daily range is consumed
   createdAt: string;
 }

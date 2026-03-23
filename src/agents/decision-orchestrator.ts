@@ -500,7 +500,7 @@ export class DecisionOrchestrator {
       // max 2 range entries per day, stricter confidence threshold (0.66).
       let rangeBypass = false;
       if (signal.signalMode === 'range' && priorCount < 1) {
-        const RANGE_MIN_CONF = 0.66; // stricter than global 0.65 — cuts marginal range setups
+        const RANGE_MIN_CONF = 0.70; // raised from 0.66 — Feb range entries at 0.66-0.69 were 1W/4L
         const now = new Date();
         const todayOpen = new Date(now);
         todayOpen.setUTCHours(13, 30, 0, 0); // 09:30 ET = 13:30 UTC (EDT)
@@ -515,16 +515,16 @@ export class DecisionOrchestrator {
           d.reasoning?.includes('[RANGE') &&
           d.createdAt.startsWith(todayStr)
         );
-        const underLimit = rangeEntriesToday.length < 2;
+        const underLimit = rangeEntriesToday.length < 1; // max 1 range entry per day — 2nd range entries were 3W/7L across Feb+Mar
         const lastRangeEntry = rangeEntriesToday[0]; // newest first
         const cooldownOk = !lastRangeEntry ||
           (now.getTime() - new Date(lastRangeEntry.createdAt).getTime()) >= 20 * 60_000;
 
         rangeBypass = meetsRangeThreshold && pastWaitPeriod && underLimit && cooldownOk;
         if (!rangeBypass) {
-          const reason = !meetsRangeThreshold ? `conf ${analysis.confidence.toFixed(2)} < 0.66 range threshold` :
+          const reason = !meetsRangeThreshold ? `conf ${analysis.confidence.toFixed(2)} < 0.70 range threshold` :
             !pastWaitPeriod ? 'waiting 45min after open' :
-            !underLimit ? 'max 2 range entries/day reached' : '20min cooldown active';
+            !underLimit ? 'max 1 range entry/day reached' : '20min cooldown active';
           console.log(`[DecisionOrchestrator] Range bypass blocked: ${reason}`);
         }
       }
@@ -544,6 +544,17 @@ export class DecisionOrchestrator {
         const notTooLate = minutesSinceOpen < 360; // 15:30 ET = open + 6h
         // Mixed alignment breakouts lack directional conviction
         const alignmentOk = signal.alignment !== 'mixed';
+        // Breakouts against the trend phase fail at high rate: Feb 7/9 breakout losers
+        // had trendPhaseBonus < 0. Require non-negative trend phase for entry.
+        const trendPhaseOk = analysis.confidenceBreakdown.trendPhaseBonus >= 0;
+        // Weak ADX breakouts fail: ADX bonus <= 0.020 was 1W/4L (20%).
+        // ADX >= 0.050 was 5W/1L (83%). Require moderate ADX for conviction.
+        const adxOk = analysis.confidenceBreakdown.adxBonus >= 0.03;
+        // Low strength breakouts fail: Feb str=30,33 were losses.
+        const strengthOk = signal.strengthScore >= 35;
+        // Extremely extended day: >10x ATR consumed = move is exhausted.
+        // Feb 6 breakout at 12x was a STOP loss (bought the top). All winners < 8x.
+        const notExhausted = !analysis.rangeExhaustion || analysis.rangeExhaustion <= 10.0;
 
         const todayStr = now.toISOString().slice(0, 10);
         const breakoutEntriesToday = context.recentDecisions.filter(d =>
@@ -556,17 +567,40 @@ export class DecisionOrchestrator {
         const cooldownOk = !lastBreakoutEntry ||
           (now.getTime() - new Date(lastBreakoutEntry.createdAt).getTime()) >= 30 * 60_000;
 
-        breakoutBypass = pastWaitPeriod && underLimit && cooldownOk && notTooLate && alignmentOk;
+        breakoutBypass = pastWaitPeriod && underLimit && cooldownOk && notTooLate && alignmentOk && trendPhaseOk && adxOk && strengthOk && notExhausted;
         if (!breakoutBypass) {
           const reason = !pastWaitPeriod ? 'waiting 45min after open' :
             !notTooLate ? 'past 15:30 ET breakout cutoff' :
             !alignmentOk ? 'mixed alignment — no directional conviction' :
+            !trendPhaseOk ? `trendPhase ${analysis.confidenceBreakdown.trendPhaseBonus.toFixed(3)} < 0 — counter-trend breakout` :
+            !adxOk ? `ADX bonus ${analysis.confidenceBreakdown.adxBonus.toFixed(3)} < 0.03 — weak momentum` :
+            !strengthOk ? `strength ${signal.strengthScore} < 35 — low conviction` :
+            !notExhausted ? `rangeExhaustion ${analysis.rangeExhaustion?.toFixed(1)} > 10 — day exhausted` :
             !underLimit ? 'max 2 breakout entries/day reached' : '30min cooldown active';
           console.log(`[DecisionOrchestrator] Breakout bypass blocked: ${reason}`);
         }
       }
 
-      if (!overrideOk && !phaseChangeOk && !strongSignalBypass && !rangeBypass && !breakoutBypass && priorCount < 1) {
+      // Global daily entry cap: max 2 entries across all modes — prevents loss-stacking on bad days.
+      // Feb 5/17 and Mar 5 had triple losses; capping at 2 limits damage.
+      const MAX_DAILY_ENTRIES = 2;
+      const dailyCapNow = new Date();
+      const dailyCapTodayStr = dailyCapNow.toISOString().slice(0, 10);
+      const allEntriesToday = context.recentDecisions.filter(d =>
+        d.decisionType === 'NEW_ENTRY' &&
+        d.createdAt.startsWith(dailyCapTodayStr)
+      );
+      if (allEntriesToday.length >= MAX_DAILY_ENTRIES) {
+        rangeBypass = false;
+        breakoutBypass = false;
+        // Also block trend overrides/bypasses
+        if (overrideOk || phaseChangeOk || strongSignalBypass) {
+          console.log(`[DecisionOrchestrator] Daily entry cap reached (${allEntriesToday.length}/${MAX_DAILY_ENTRIES}) — blocking all new entries`);
+        }
+      }
+      const dailyCapOk = allEntriesToday.length < MAX_DAILY_ENTRIES;
+
+      if (!dailyCapOk || (!overrideOk && !phaseChangeOk && !strongSignalBypass && !rangeBypass && !breakoutBypass && priorCount < 1)) {
         rawOutput.decision_type = 'WAIT';
         rawOutput.should_execute = false;
         const timingNote = (phaseChangeStructuralOk && !phaseChangeTimingOk)

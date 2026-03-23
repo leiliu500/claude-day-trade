@@ -951,7 +951,11 @@ function computeConfidence(signal: SignalPayload, option: OptionEvaluation): Con
       for (const b of ltfBars) { if (b.high > dayHigh) dayHigh = b.high; if (b.low < dayLow) dayLow = b.low; }
       const rangeExhaustion = (dayHigh - dayLow) / htfAtr;
       // Displacement velocity: compare displacement of recent 5 bars vs prior 5 bars
-      if (rangeExhaustion > 7.0 && ltfBars.length >= 10) {
+      // Extremely extended day: >12x ATR consumed. Move is done regardless of velocity.
+      // Feb+Mar: 0 trend winners at >12x, 2 losers.
+      if (rangeExhaustion > 12.0) {
+        total = Math.min(total, 0.55);
+      } else if (rangeExhaustion > 7.0 && ltfBars.length >= 10) {
         const dayOpen = ltfBars[0]!.open;
         const recent5 = ltfBars.slice(-5);
         const prior5 = ltfBars.slice(-10, -5);
@@ -1143,6 +1147,22 @@ function computeRangeConfidence(signal: SignalPayload): ConfidenceBreakdown {
   // vs VWAP in the mean-reversion direction) lack conviction. All March range winners had
   // vwapBonus > 0; entries without it consistently failed.
   if (vwapBonus <= 0) total = Math.min(total, 0.55);
+  // High choppiness = frequent direction flips = unreliable support/resistance.
+  // Feb+Mar data: 0/12 range winners had choppiness >= 1.3, but 6/27 losers did.
+  // Compute choppiness from LTF bars: count direction flips vs expected flips.
+  if (ltf && ltf.bars.length >= 15) {
+    const chopBarsAll = ltf.bars;
+    let flips = 0;
+    let prevDir: 'up' | 'down' | null = null;
+    for (let i = 1; i < chopBarsAll.length; i++) {
+      const dir = chopBarsAll[i]!.close > chopBarsAll[i - 1]!.close ? 'up' : 'down';
+      if (prevDir && dir !== prevDir) flips++;
+      prevDir = dir;
+    }
+    const expectedFlips = Math.max(1, chopBarsAll.length / 15);
+    const chopRatio = flips / expectedFlips;
+    if (chopRatio >= 1.3) total = Math.min(total, 0.55);
+  }
 
   return { base, diSpreadBonus, adxBonus, diCrossBonus, alignmentBonus, tdAdjustment, obvBonus, vwapBonus, oiVolumeBonus, pricePositionAdjustment, adxMaturityPenalty, trendPhaseBonus, momentumAccelBonus, structureBonus, orbBonus, recentPriceActionBonus, trContractionPenalty, lowVolPenalty, moveExhaustionPenalty, consolidationPenalty, nearLevelPenalty, thetaDecayPenalty, narrowRangePenalty, total };
 }
@@ -1466,6 +1486,16 @@ export class AnalysisAgent {
     const meetsEntryThreshold = cb.total >= config.MIN_CONFIDENCE;
     const desiredRight = deriveDesiredRight(signal);
 
+    // Compute range exhaustion: (dayHigh - dayLow) / htfATR — how extended the day is
+    let rangeExhaustion: number | undefined;
+    const ltfTf = signal.timeframes[0];
+    const htfTf = signal.timeframes[2] ?? signal.timeframes[0];
+    if (ltfTf && htfTf && ltfTf.bars.length >= 20 && htfTf.atr.atr > 0) {
+      let dayHigh = -Infinity, dayLow = Infinity;
+      for (const b of ltfTf.bars) { if (b.high > dayHigh) dayHigh = b.high; if (b.low < dayLow) dayLow = b.low; }
+      rangeExhaustion = (dayHigh - dayLow) / htfTf.atr.atr;
+    }
+
     let aiExplanation = 'Market closed or confidence below threshold — AI explanation skipped.';
     let keyFactors: string[] = [];
     let risks: string[] = [];
@@ -1488,6 +1518,7 @@ export class AnalysisAgent {
       keyFactors,
       risks,
       desiredRight,
+      rangeExhaustion,
       createdAt: new Date().toISOString(),
     };
   }

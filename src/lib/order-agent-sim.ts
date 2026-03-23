@@ -181,8 +181,51 @@ export function simulateOrderAgent(
       return mkResult(i, 'RAPID_DECLINE', currentPremium);
     }
 
+    // ── PROFIT PROTECTION (checked first — protect gains before loss-detection rules) ──
+
+    // ── Rule 10: Dynamic trailing with time-decay bonus (after 10 min) ──
+    // Adds +1% per minute after 10 min hold, capped at +10% (20 min)
+    // MUST be checked BEFORE profit-reversal so large peaks exit at retained %,
+    // not at 0%. E.g., peak +17% exits at +11% (retain 65%) instead of 0%.
+    const timeBonus = i >= 10 ? Math.min((i - 10) * 1, 10) : 0;
+
+    if (peakPnlPct_ >= 15) {
+      const retain = Math.min(0.65 + timeBonus / 100, 0.85);
+      if (currentPnl <= peakPnlPct_ * retain && currentPnl < peakPnlPct_) {
+        return mkResult(i, 'TRAILING_DECAY', currentPremium);
+      }
+    } else if (peakPnlPct_ >= 10) {
+      const retain = Math.min(0.60 + timeBonus / 100, 0.80);
+      if (currentPnl <= peakPnlPct_ * retain && currentPnl < peakPnlPct_) {
+        return mkResult(i, 'TRAILING_DECAY', currentPremium);
+      }
+    } else if (peakPnlPct_ >= 5) {
+      const retain = Math.min(0.60 + timeBonus / 100, 0.80);
+      if (currentPnl <= peakPnlPct_ * retain && currentPnl < peakPnlPct_) {
+        return mkResult(i, 'TRAILING_DECAY', currentPremium);
+      }
+    } else if (peakPnlPct_ >= 3) {
+      // New tier: lock gains at 55% of peak for 3-5% peaks
+      if (currentPnl <= peakPnlPct_ * 0.55 && currentPnl < peakPnlPct_ && i >= 2) {
+        return mkResult(i, 'TRAILING_DECAY', currentPremium);
+      }
+    }
+
+    // ── Rule 7: Small-gain locks ──
+    // Peak 2-3%: exit if faded to ≤ 0.5% after 3+ bars
+    if (peakPnlPct_ >= 2 && peakPnlPct_ < 3 && currentPnl <= 0.5 && i >= 3) {
+      return mkResult(i, 'SMALL_GAIN_LOCK', currentPremium);
+    }
+    // Peak 1-2%: exit if faded to ≤ 0.3% after 3+ bars
+    if (peakPnlPct_ >= 1 && peakPnlPct_ < 2 && currentPnl <= 0.3 && i >= 3) {
+      return mkResult(i, 'SMALL_GAIN_LOCK', currentPremium);
+    }
+
+    // ── LOSS DETECTION (checked after profit protection) ──
+
     // ── Rule 5: Profit reversal (peak ≥ 1%, current ≤ 0%) ──
-    if (peakPnlPct_ >= 1 && currentPnl <= 0 && (i >= 3 || peakPnlPct_ >= 5)) {
+    // Only fires for small peaks (< 3%) — larger peaks are caught by TRAILING_DECAY above.
+    if (peakPnlPct_ >= 1 && peakPnlPct_ < 3 && currentPnl <= 0 && i >= 3) {
       return mkResult(i, 'PROFIT_REVERSAL', currentPremium);
     }
 
@@ -207,41 +250,6 @@ export function simulateOrderAgent(
     // Early bleed: peak < 1%, current ≤ -5%, 4+ bars
     if (peakPnlPct_ < 1 && currentPnl <= -5 && i >= 4) {
       return mkResult(i, 'BAD_ENTRY', currentPremium);
-    }
-
-    // ── Rule 7: Small-gain locks ──
-    // Peak 3-5%: exit if faded to ≤ 0.5% after 4+ bars
-    if (peakPnlPct_ >= 3 && peakPnlPct_ < 5 && currentPnl <= 0.5 && i >= 4) {
-      return mkResult(i, 'SMALL_GAIN_LOCK', currentPremium);
-    }
-    // Peak 2-3%: exit if faded to ≤ 0.5% after 4+ bars
-    if (peakPnlPct_ >= 2 && peakPnlPct_ < 3 && currentPnl <= 0.5 && i >= 4) {
-      return mkResult(i, 'SMALL_GAIN_LOCK', currentPremium);
-    }
-    // Peak 1-2%: exit if faded to ≤ 0.4% after 4+ bars
-    if (peakPnlPct_ >= 1 && peakPnlPct_ < 2 && currentPnl <= 0.4 && i >= 4) {
-      return mkResult(i, 'SMALL_GAIN_LOCK', currentPremium);
-    }
-
-    // ── Rule 10: Dynamic trailing with time-decay bonus (after 10 min) ──
-    // Adds +1% per minute after 10 min hold, capped at +10% (20 min)
-    const timeBonus = i >= 10 ? Math.min((i - 10) * 1, 10) : 0;
-
-    if (peakPnlPct_ >= 15) {
-      const retain = Math.min(0.65 + timeBonus / 100, 0.85);
-      if (currentPnl <= peakPnlPct_ * retain && currentPnl < peakPnlPct_) {
-        return mkResult(i, 'TRAILING_DECAY', currentPremium);
-      }
-    } else if (peakPnlPct_ >= 10) {
-      const retain = Math.min(0.60 + timeBonus / 100, 0.80);
-      if (currentPnl <= peakPnlPct_ * retain && currentPnl < peakPnlPct_) {
-        return mkResult(i, 'TRAILING_DECAY', currentPremium);
-      }
-    } else if (peakPnlPct_ >= 5) {
-      const retain = Math.min(0.65 + timeBonus / 100, 0.80);
-      if (currentPnl <= peakPnlPct_ * retain && currentPnl < peakPnlPct_) {
-        return mkResult(i, 'TRAILING_DECAY', currentPremium);
-      }
     }
 
     // ── Rules 3 & 4: Trailing stop + profit floors ──
