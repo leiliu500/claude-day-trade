@@ -987,8 +987,21 @@ async function main() {
   const endStr = TARGET_DATE + 'T23:59:59Z';
 
   console.log(`Fetching 1m bars: ${startStr} → ${endStr}`);
-  const allOneMin = await fetchBarsRange(TICKER, '1m', startStr, endStr);
-  console.log(`  → ${allOneMin.length} 1-min bars fetched`);
+  const allOneMinRaw = await fetchBarsRange(TICKER, '1m', startStr, endStr);
+  // Filter to regular-session bars only (9:30–16:00 ET), matching the live
+  // stream's _isRegularSession filter. Pre/post-market bars would pollute
+  // DMI/OBV/etc. and cause indicator divergence from live.
+  const allOneMin = allOneMinRaw.filter(b => {
+    const parts = new Intl.DateTimeFormat('en-US', {
+      timeZone: 'America/New_York',
+      hour: '2-digit', minute: '2-digit', hour12: false,
+    }).formatToParts(new Date(b.timestamp));
+    const hour = parseInt(parts.find(p => p.type === 'hour')!.value, 10);
+    const minute = parseInt(parts.find(p => p.type === 'minute')!.value, 10);
+    const mins = hour * 60 + minute;
+    return mins >= 9 * 60 + 30 && mins < 16 * 60;
+  });
+  console.log(`  → ${allOneMinRaw.length} 1-min bars fetched (${allOneMin.length} regular-session)`);
 
   console.log(`Fetching daily bars for prior day levels...`);
   const dailyBars = await fetchBarsRange(TICKER, '1d', warmupStart.toISOString().slice(0, 10) + 'T00:00:00Z', endStr);
@@ -1091,20 +1104,70 @@ async function main() {
   const rangeEarliestTs = openTime.getTime() + RANGE_WAIT_MIN * 60_000;
   const breakoutEarliestTs = openTime.getTime() + BREAKOUT_WAIT_MIN * 60_000;
 
+  // ── Simulate the live stream's ring buffer ───────────────────────────────
+  // Live: seedHistoricalBars fetches 1000 raw bars (limit=1000, 4 cal days back),
+  // filters to regular session, trims to BAR_CACHE_SIZE=800. Then new bars are
+  // appended during the day, maintaining the 800-bar cap.
+  // To replicate: take the first 1000 raw bars before market open, filter to
+  // regular session, then grow the cache minute-by-minute during the walk.
+  const STREAM_SEED_LIMIT = 1000; // matches alpaca-stream.ts _fetchHistoricalOneMins limit
+  const BAR_CACHE_SIZE = 800;     // matches alpaca-stream.ts BAR_CACHE_SIZE
+  const openTs = openTime.getTime();
+  // Live _fetchHistoricalOneMins: fetches from (now - 4 days) with limit=1000,
+  // NO end param. Alpaca returns chronologically, so we get the FIRST 1000 bars
+  // from the warmup start date — NOT the last 1000 before market open.
+  const warmupTs = new Date(TARGET_DATE);
+  warmupTs.setDate(warmupTs.getDate() - 4);
+  const warmupStartTs = warmupTs.getTime();
+  const priorRawBars = allOneMinRaw.filter(b => {
+    const ts = new Date(b.timestamp).getTime();
+    return ts >= warmupStartTs && ts < openTs;
+  });
+  // Take the FIRST STREAM_SEED_LIMIT bars (matching Alpaca ascending + limit=1000)
+  const seedRaw = priorRawBars.slice(0, STREAM_SEED_LIMIT);
+  // Filter to regular session (same as _seedCache → _isRegularSession)
+  const seedFiltered = seedRaw.filter(b => {
+    const parts = new Intl.DateTimeFormat('en-US', {
+      timeZone: 'America/New_York',
+      hour: '2-digit', minute: '2-digit', hour12: false,
+    }).formatToParts(new Date(b.timestamp));
+    const hour = parseInt(parts.find(p => p.type === 'hour')!.value, 10);
+    const minute = parseInt(parts.find(p => p.type === 'minute')!.value, 10);
+    const mins = hour * 60 + minute;
+    return mins >= 9 * 60 + 30 && mins < 16 * 60;
+  });
+  // Trim to BAR_CACHE_SIZE (newest kept)
+  const streamCache: OHLCVBar[] = seedFiltered.slice(-BAR_CACHE_SIZE);
+  console.log(`  Stream cache seed: ${seedRaw.length} raw → ${seedFiltered.length} regular-session → ${streamCache.length} (cap ${BAR_CACHE_SIZE})`);
+
+  // Index for efficiently adding today's bars during the walk
+  const todayBars = allOneMin.filter(b => b.timestamp.startsWith(TARGET_DATE));
+  let todayBarIdx = 0;
+
   let tickCount = 0;
   for (let t = new Date(openTime); t <= closeTime; t.setMinutes(t.getMinutes() + 1)) {
     const currentTs = t.getTime();
     const timeStr = t.toISOString();
     const timeET = utcToET(timeStr);
 
-    // Slice bars up to current timestamp
-    const barsUpTo = allOneMin.filter(b => new Date(b.timestamp).getTime() <= currentTs);
-    if (barsUpTo.length < 20) continue; // need minimum bars for indicators
+    // Add completed bars to the stream cache (bar at T is complete at T+60s)
+    while (todayBarIdx < todayBars.length) {
+      const barTs = new Date(todayBars[todayBarIdx]!.timestamp).getTime();
+      if (barTs < currentTs) {
+        streamCache.push(todayBars[todayBarIdx]!);
+        if (streamCache.length > BAR_CACHE_SIZE) streamCache.splice(0, streamCache.length - BAR_CACHE_SIZE);
+        todayBarIdx++;
+      } else {
+        break;
+      }
+    }
 
-    // Aggregate to 3m and 5m
-    const ltfBars = barsUpTo.slice(-500); // 1m bars, last 500
-    const mtfBars = aggregate1mBars(allOneMin, '3m', currentTs).slice(-500);
-    const htfBars = aggregate1mBars(allOneMin, '5m', currentTs).slice(-500);
+    if (streamCache.length < 20) continue; // need minimum bars for indicators
+
+    // Derive timeframe bars from the stream cache (matching live behavior)
+    const ltfBars = streamCache.slice(-500); // 1m bars, last 500 (matches BARS_LIMIT in signal-agent)
+    const mtfBars = aggregate1mBars(streamCache, '3m', currentTs).slice(-500);
+    const htfBars = aggregate1mBars(streamCache, '5m', currentTs).slice(-500);
 
     if (ltfBars.length < 14 || mtfBars.length < 14 || htfBars.length < 14) continue;
 
@@ -1566,7 +1629,11 @@ async function main() {
           // Extremely extended day: >10x ATR consumed = move is exhausted.
           // Feb 6 breakout at 12x was a STOP loss (bought the top). All winners < 8x.
           const notExhausted = rangeExhaustion <= 10.0;
-          if (cooldownOk && underLimit && pastWaitPeriod && notTooLate && alignmentOk && trendPhaseOk && adxOk && strengthOk && notExhausted) {
+          // Strong-signal bypass: matches live DecisionOrchestrator logic where
+          // conf >= 0.75 + all_aligned skips the confirmation gate entirely.
+          // This allows high-conviction breakouts through even with trendPhase < 0.
+          const strongSignalBypass = cb.total >= 0.75 && alignment === 'all_aligned';
+          if (cooldownOk && underLimit && pastWaitPeriod && notTooLate && alignmentOk && (trendPhaseOk || strongSignalBypass) && adxOk && strengthOk && notExhausted) {
             const fwd = computeForwardMoves();
             entries.push({
               time: timeStr, timeET, direction, alignment, confidence: cb.total,

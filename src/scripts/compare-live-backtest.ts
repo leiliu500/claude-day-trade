@@ -68,7 +68,7 @@ interface BacktestEntry {
   outcome: string;
   gateResult: string;
   stage1Conf?: number;
-  signalMode: 'trend' | 'range';
+  signalMode: 'trend' | 'range' | 'breakout';
 }
 
 // ── Parse backtest output ─────────────────────────────────────────────────────
@@ -90,7 +90,7 @@ function parseBacktestOutput(output: string): BacktestEntry[] {
       // Parse subsequent lines for this entry
       let timeET = '', timeUTC = '', direction = '', alignment = '', confidence = 0, price = 0;
       let maxFavorable = 0, maxAdverse = 0, stage1Conf: number | undefined;
-      let signalMode: 'trend' | 'range' = gateRaw.includes('[RANGE]') ? 'range' : 'trend';
+      let signalMode: 'trend' | 'range' | 'breakout' = gateRaw.includes('[RANGE]') ? 'range' : gateRaw.includes('[BREAKOUT]') ? 'breakout' : 'trend';
 
       for (let j = i + 1; j < Math.min(i + 15, lines.length); j++) {
         const l = lines[j]!;
@@ -101,6 +101,7 @@ function parseBacktestOutput(output: string): BacktestEntry[] {
         const dirMatch = l.match(/Direction:\s+(\w+)\s+\|\s+Alignment:\s+(\w+)/);
         if (dirMatch) { direction = dirMatch[1]!.toLowerCase(); alignment = dirMatch[2]!; }
         if (l.includes('Mode: RANGE')) signalMode = 'range';
+        if (l.includes('Mode: BREAKOUT')) signalMode = 'breakout';
 
         const priceMatch = l.match(/Price:\s+\$([0-9.]+)\s+\|\s+Confidence:\s+([0-9.]+)%/);
         if (priceMatch) { price = parseFloat(priceMatch[1]!); confidence = parseFloat(priceMatch[2]!) / 100; }
@@ -305,7 +306,12 @@ async function main() {
 
   const btRange = backtestEntries.filter(b => b.signalMode === 'range');
   const btTrend = backtestEntries.filter(b => b.signalMode === 'trend');
-  console.log(`  Backtest:  ${backtestEntries.length} entries (${btConfirmed.length} confirmed, ${btBlocked.length} blocked)${btRange.length > 0 ? ` | RANGE: ${btRange.length}, TREND: ${btTrend.length}` : ''}`);
+  const btBreakout = backtestEntries.filter(b => b.signalMode === 'breakout');
+  const modeParts: string[] = [];
+  if (btRange.length > 0) modeParts.push(`RANGE: ${btRange.length}`);
+  if (btBreakout.length > 0) modeParts.push(`BREAKOUT: ${btBreakout.length}`);
+  if (btTrend.length > 0) modeParts.push(`TREND: ${btTrend.length}`);
+  console.log(`  Backtest:  ${backtestEntries.length} entries (${btConfirmed.length} confirmed, ${btBlocked.length} blocked)${modeParts.length > 0 ? ` | ${modeParts.join(', ')}` : ''}`);
   console.log(`  Live:      ${liveEntries.length} entries, ${liveStage1s.length} stage-1s\n`);
 
   // Alignment score

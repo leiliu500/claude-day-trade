@@ -81,7 +81,10 @@
       "Bash(npm install --silent)",
       "Bash(docker exec day-trade-postgres psql -U trader -d day_trade -c \"SELECT outcome, grade, score, pnl_total::numeric\\(10,2\\), hold_duration_min, signal_quality, timing_quality, risk_management_quality, ticker, option_right, evaluated_at FROM trading.trade_evaluations ORDER BY evaluated_at DESC LIMIT 20;\")",
       "Bash(curl -si -H \"Upgrade: websocket\" -H \"Connection: Upgrade\" -H \"Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\" -H \"Sec-WebSocket-Version: 13\" \"https://stream.data.alpaca.markets/v2/sip\")",
-      "Bash(find /home/ec2-user/claude-day-trade -type d -name test* -o -name output* -o -name results* -o -name data)"
+      "Bash(find /home/ec2-user/claude-day-trade -type d -name test* -o -name output* -o -name results* -o -name data)",
+      "Bash(wc -l /home/ec2-user/claude-day-trade/src/agents/*.ts)",
+      "Bash(grep 15:1[0-5])",
+      "Bash(./node_modules/.bin/tsc --noEmit src/scripts/compare-live-backtest.ts)"
     ],
     "additionalDirectories": [
       "/tmp"
