@@ -492,7 +492,12 @@ export class DecisionOrchestrator {
       // Strong-signal bypass: conf >= 75% + all_aligned can skip stage-2.
       // Backtest showed no false positives at this level on losing days (Mar 11/17/19),
       // but captures profitable entries on trending days (Mar 18: +9.2%, Mar 20: +16.8%).
+      // IMPORTANT: Only for trend entries. Breakout entries have their own bypass gate
+      // with trendPhase >= 0 requirement — strongSignalBypass must NOT override that.
+      // Mar 23: bullish breakout at day high with trendPhase=-0.04 entered via this bypass
+      // at 86% + all_aligned → immediate reversal, grade F entry.
       const strongSignalBypass = !overrideOk && !phaseChangeOk && priorCount < 1
+        && signal.signalMode !== 'breakout'
         && analysis.confidence >= 0.75 && signal.alignment === 'all_aligned';
 
       // Range-mode bypass: range entries skip the trend confirmation gate.

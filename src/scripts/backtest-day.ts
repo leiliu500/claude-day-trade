@@ -974,15 +974,25 @@ interface EntryRecord {
   strengthScore: number;
   signalMode: 'trend' | 'range' | 'breakout';
   // Price moves after entry (from remaining bars)
-  maxFavorable: number;   // max price move in signal direction
-  maxAdverse: number;     // max price move against signal direction
+  maxFavorable: number;   // max price move in signal direction ($)
+  maxAdverse: number;     // max price move against signal direction ($)
+  // Entry quality metrics (stock-price-based — accurate, no sim dependency)
+  mfePct: number;         // max favorable excursion as % of entry price
+  maePct: number;         // max adverse excursion as % of entry price
+  mfeOverMae: number;     // MFE/MAE ratio (higher = better entry)
+  directionCorrect: boolean;  // price moved favorably > 0.15% within 30min
+  move5mPct: number | null;   // directional move at 5m as % of price
+  move10mPct: number | null;  // directional move at 10m as % of price
+  move15mPct: number | null;  // directional move at 15m as % of price
+  move30mPct: number | null;  // directional move at 30m as % of price
+  entryGrade: 'A' | 'B' | 'C' | 'D' | 'F';  // stock-price-based grade
   priceAt5m: number | null;
   priceAt10m: number | null;
   priceAt15m: number | null;
   priceAt30m: number | null;
   outcome: 'GOOD' | 'BAD' | 'MARGINAL';
   atr: number;
-  // Simulated order-agent result
+  // Simulated order-agent result (secondary — not fully accurate for options)
   sim: SimResult;
   breakdown: ConfidenceBreakdown;
   // Confirmation gate simulation
@@ -1507,26 +1517,63 @@ async function main() {
         });
         return bar?.close ?? null;
       };
+
+      // ── Entry quality metrics (stock-price-based — fully accurate) ──
+      const mfePct = (maxFavorable / currentPrice) * 100;
+      const maePct = (maxAdverse / currentPrice) * 100;
+      const mfeOverMae = maePct > 0.01 ? mfePct / maePct : (mfePct > 0 ? 99.9 : 0);
+
+      // Directional move at key intervals (as % of entry price, positive = favorable)
+      const computeMovePct = (priceAtN: number | null): number | null => {
+        if (priceAtN === null) return null;
+        const move = direction === 'bullish' ? priceAtN - currentPrice : currentPrice - priceAtN;
+        return (move / currentPrice) * 100;
+      };
+      const p5m = findPriceAt(5), p10m = findPriceAt(10), p15m = findPriceAt(15), p30m = findPriceAt(30);
+      const move5mPct = computeMovePct(p5m);
+      const move10mPct = computeMovePct(p10m);
+      const move15mPct = computeMovePct(p15m);
+      const move30mPct = computeMovePct(p30m);
+
+      // Direction correct: price moved favorably > 0.10% within 30min
+      // (0.10% ≈ $0.65 for SPY — meaningful directional move at checkpoints)
+      const bestMoveIn30m = [move5mPct, move10mPct, move15mPct, move30mPct]
+        .filter((v): v is number => v !== null);
+      const directionCorrect = bestMoveIn30m.length > 0 && Math.max(...bestMoveIn30m) > 0.10;
+
+      // Entry grade: stock-price-based classification
+      //   A: MFE > 0.4% AND MFE/MAE > 2.0 — strong directional move with low risk
+      //   B: MFE > 0.25% AND MFE/MAE > 1.2 — good move with acceptable risk
+      //   C: MFE > 0.15% AND direction correct — moved right way but modest
+      //   D: direction correct but weak (MFE < 0.15% or MFE/MAE < 0.8)
+      //   F: direction wrong or no meaningful favorable move
+      let entryGrade: 'A' | 'B' | 'C' | 'D' | 'F';
+      if (mfePct > 0.40 && mfeOverMae > 2.0) entryGrade = 'A';
+      else if (mfePct > 0.25 && mfeOverMae > 1.2) entryGrade = 'B';
+      else if (mfePct > 0.15 && directionCorrect) entryGrade = 'C';
+      else if (directionCorrect) entryGrade = 'D';
+      else entryGrade = 'F';
+
+      // Outcome based on entry quality (stock-price), NOT sim P&L
+      let outcome: 'GOOD' | 'BAD' | 'MARGINAL' = 'MARGINAL';
+      if (entryGrade === 'A' || entryGrade === 'B') outcome = 'GOOD';
+      else if (entryGrade === 'F') outcome = 'BAD';
+
       // Recent 1m bars before entry for volatility measurement
       const recentBars = targetDateBars.filter(b => {
         const bt = new Date(b.timestamp).getTime();
         return bt <= currentTs && bt > currentTs - 10 * 60_000;
       });
-      // Simulate order-agent trailing stop on remaining bars
+      // Simulate order-agent trailing stop on remaining bars (secondary metric)
       const sim = TCFG.simulate(currentPrice, direction, atr, allFutureBars, {
         recentBars,
         ...(signalMode === 'range' ? { stopMult: 0.5, tpMult: 0.8 }
           : signalMode === 'breakout' ? { stopMult: TCFG.breakoutStopMult, tpMult: TCFG.breakoutTpMult } : {}),
       });
-      // Outcome based on simulated P&L
-      let outcome: 'GOOD' | 'BAD' | 'MARGINAL' = 'MARGINAL';
-      if (sim.pnlPct >= 5) outcome = 'GOOD';
-      else if (sim.pnlPct <= -5) outcome = 'BAD';
-      else if (sim.pnlPct > 0) outcome = 'GOOD';
-      else if (sim.pnlPct < -2) outcome = 'BAD';
       return {
-        maxFavorable, maxAdverse, outcome, sim,
-        priceAt5m: findPriceAt(5), priceAt10m: findPriceAt(10), priceAt15m: findPriceAt(15), priceAt30m: findPriceAt(30),
+        maxFavorable, maxAdverse, mfePct, maePct, mfeOverMae, directionCorrect,
+        move5mPct, move10mPct, move15mPct, move30mPct, entryGrade, outcome, sim,
+        priceAt5m: p5m, priceAt10m: p10m, priceAt15m: p15m, priceAt30m: p30m,
       };
     };
 
@@ -1662,7 +1709,7 @@ async function main() {
             lastRangeEntryTs = currentTs;
             rangeEntryCount++;
             dailyEntryCount++;
-            if (fwd.sim.pnlPct < 0) intradayLosses++;
+            if (fwd.entryGrade === 'F' || fwd.entryGrade === 'D') intradayLosses++;
           }
         } else if (signalMode === 'breakout') {
           // Breakout entries bypass the trend confirmation gate — quality is in the breakout confidence model
@@ -1701,7 +1748,7 @@ async function main() {
             lastBreakoutEntryTs = currentTs;
             breakoutEntryCount++;
             dailyEntryCount++;
-            if (fwd.sim.pnlPct < 0) intradayLosses++;
+            if (fwd.entryGrade === 'F' || fwd.entryGrade === 'D') intradayLosses++;
           }
         } else {
         // Trend mode: apply daily limit and cooldown
@@ -1802,7 +1849,7 @@ async function main() {
           lastTrendEntryTs = currentTs;
           trendEntryCount++;
           dailyEntryCount++;
-          if (fwd.sim.pnlPct < 0) intradayLosses++;
+          if (fwd.entryGrade === 'F' || fwd.entryGrade === 'D') intradayLosses++;
         }
 
         entries.push({
@@ -1857,39 +1904,38 @@ async function main() {
 
   for (let i = 0; i < confirmedEntries.length; i++) {
     const e = confirmedEntries[i]!;
-    const tag = e.outcome === 'BAD' ? '❌ BAD' : e.outcome === 'GOOD' ? '✅ GOOD' : '⚠️  MARGINAL';
+    const gradeIcon = { A: '🟢 A', B: '🔵 B', C: '🟡 C', D: '🟠 D', F: '🔴 F' }[e.entryGrade];
     const gateTag = e.gateResult === 'PASSED' ? '🟢 CONFIRMED'
       : e.gateResult === 'HIGH_CONV_OVERRIDE' ? '⚡ HIGH-CONV OVERRIDE'
       : '⚡ PHASE-CHANGE OVERRIDE';
+    const modeTag = e.signalMode === 'range' ? ' [RANGE]' : e.signalMode === 'breakout' ? ' [BREAKOUT]' : '';
+    const dirTag = e.directionCorrect ? '✅' : '❌';
+    console.log(`  Entry #${i + 1}: Grade ${gradeIcon} | ${gateTag}${modeTag}`);
+    console.log(`    Time:       ${e.timeET} ET (${e.time.slice(11, 19)} UTC)`);
+    console.log(`    Direction:  ${e.direction.toUpperCase()} ${dirTag} | Alignment: ${e.alignment} | Strength: ${e.strengthScore}${e.signalMode === 'range' ? ' | Mode: RANGE' : ''}`);
+    console.log(`    Price:      $${e.price.toFixed(2)} | Confidence: ${(e.confidence * 100).toFixed(1)}%${e.stage1Conf !== undefined ? ` (Stage-1 was ${(e.stage1Conf * 100).toFixed(1)}%)` : ''}`);
+    console.log(`    ATR: $${e.atr.toFixed(3)} | Regime: ${e.regimeScore ?? '-'} | RangeExh: ${e.rangeExhaustion?.toFixed(1) ?? '-'} | DispVel: ${e.displacementVelocity?.toFixed(3) ?? '-'} | Chop: ${e.choppiness?.toFixed(2) ?? '-'} | TrendStr: ${e.intradayTrendStrength ?? '-'}`);
+    // Entry quality (stock-price-based — primary metric)
+    console.log(`    Entry Quality: MFE=${e.mfePct.toFixed(2)}% | MAE=${e.maePct.toFixed(2)}% | MFE/MAE=${e.mfeOverMae.toFixed(1)} | Fav=$${e.maxFavorable.toFixed(2)} | Adv=$${e.maxAdverse.toFixed(2)}`);
+    // Directional moves at intervals
+    const fmtMove = (label: string, pct: number | null, price: number | null) => {
+      if (pct === null || price === null) return '';
+      return `    ${label}:  $${price.toFixed(2)} (${pct >= 0 ? '+' : ''}${pct.toFixed(3)}%)`;
+    };
+    const moveLines = [
+      fmtMove('5m ', e.move5mPct, e.priceAt5m),
+      fmtMove('10m', e.move10mPct, e.priceAt10m),
+      fmtMove('15m', e.move15mPct, e.priceAt15m),
+      fmtMove('30m', e.move30mPct, e.priceAt30m),
+    ].filter(l => l);
+    if (moveLines.length > 0) console.log(moveLines.join('\n'));
+    // Sim trade (secondary — approximate)
     const simIcon = e.sim.pnlPct >= 0 ? '📈' : '📉';
     const simExitTag = e.sim.exitReason === 'TP' ? '🎯 TP'
       : e.sim.exitReason === 'STOP' ? '🛑 STOP'
       : e.sim.exitReason === 'CLOSE' ? '🔔 CLOSE'
       : e.sim.exitReason;
-    const modeTag = e.signalMode === 'range' ? ' [RANGE]' : e.signalMode === 'breakout' ? ' [BREAKOUT]' : '';
-    console.log(`  Entry #${i + 1}: ${tag} | ${gateTag}${modeTag}`);
-    console.log(`    Time:       ${e.timeET} ET (${e.time.slice(11, 19)} UTC)`);
-    console.log(`    Direction:  ${e.direction.toUpperCase()} | Alignment: ${e.alignment} | Strength: ${e.strengthScore}${e.signalMode === 'range' ? ' | Mode: RANGE' : ''}`);
-    console.log(`    Price:      $${e.price.toFixed(2)} | Confidence: ${(e.confidence * 100).toFixed(1)}%${e.stage1Conf !== undefined ? ` (Stage-1 was ${(e.stage1Conf * 100).toFixed(1)}%)` : ''}`);
-    console.log(`    ATR: $${e.atr.toFixed(3)} | Regime: ${e.regimeScore ?? '-'} | RangeExh: ${e.rangeExhaustion?.toFixed(1) ?? '-'} | DispVel: ${e.displacementVelocity?.toFixed(3) ?? '-'} | Chop: ${e.choppiness?.toFixed(2) ?? '-'} | TrendStr: ${e.intradayTrendStrength ?? '-'}`);
-    console.log(`    Sim Trade:  ${simIcon} P&L ${e.sim.pnlPct >= 0 ? '+' : ''}${e.sim.pnlPct.toFixed(1)}% | Exit: ${simExitTag} after ${e.sim.holdMinutes}m | Peak: +${e.sim.peakPnlPct.toFixed(1)}% | Drawdown: -${e.sim.maxDrawdownPct.toFixed(1)}%`);
-    console.log(`    Forward:    max favorable=$${e.maxFavorable.toFixed(2)}, max adverse=$${e.maxAdverse.toFixed(2)}`);
-    if (e.priceAt5m !== null) {
-      const m5 = e.direction === 'bullish' ? e.priceAt5m - e.price : e.price - e.priceAt5m;
-      console.log(`    5m later:   $${e.priceAt5m.toFixed(2)} (${m5 >= 0 ? '+' : ''}${m5.toFixed(2)})`);
-    }
-    if (e.priceAt10m !== null) {
-      const m10 = e.direction === 'bullish' ? e.priceAt10m - e.price : e.price - e.priceAt10m;
-      console.log(`    10m later:  $${e.priceAt10m.toFixed(2)} (${m10 >= 0 ? '+' : ''}${m10.toFixed(2)})`);
-    }
-    if (e.priceAt15m !== null) {
-      const m15 = e.direction === 'bullish' ? e.priceAt15m - e.price : e.price - e.priceAt15m;
-      console.log(`    15m later:  $${e.priceAt15m.toFixed(2)} (${m15 >= 0 ? '+' : ''}${m15.toFixed(2)})`);
-    }
-    if (e.priceAt30m !== null) {
-      const m30 = e.direction === 'bullish' ? e.priceAt30m - e.price : e.price - e.priceAt30m;
-      console.log(`    30m later:  $${e.priceAt30m.toFixed(2)} (${m30 >= 0 ? '+' : ''}${m30.toFixed(2)})`);
-    }
+    console.log(`    Sim (approx): ${simIcon} P&L ${e.sim.pnlPct >= 0 ? '+' : ''}${e.sim.pnlPct.toFixed(1)}% | Exit: ${simExitTag} after ${e.sim.holdMinutes}m | Peak: +${e.sim.peakPnlPct.toFixed(1)}% | DD: -${e.sim.maxDrawdownPct.toFixed(1)}%`);
     // Top confidence factors
     const cb = e.breakdown;
     const factors = [
@@ -1922,7 +1968,50 @@ async function main() {
     console.log('');
   }
 
-  // ── Sim Performance Summary ──
+  // ── Entry Quality Summary (PRIMARY — stock-price-based, fully accurate) ──
+  const confirmedGood = confirmedEntries.filter(e => e.outcome === 'GOOD').length;
+  const confirmedBad = confirmedEntries.filter(e => e.outcome === 'BAD').length;
+  const confirmedMarginal = confirmedEntries.length - confirmedGood - confirmedBad;
+  const dirCorrectCount = confirmedEntries.filter(e => e.directionCorrect).length;
+  const dirAccuracy = confirmedEntries.length > 0 ? (dirCorrectCount / confirmedEntries.length * 100) : 0;
+  const avgMfePct = confirmedEntries.length > 0 ? confirmedEntries.reduce((s, e) => s + e.mfePct, 0) / confirmedEntries.length : 0;
+  const avgMaePct = confirmedEntries.length > 0 ? confirmedEntries.reduce((s, e) => s + e.maePct, 0) / confirmedEntries.length : 0;
+  const avgMfeOverMae = confirmedEntries.length > 0 ? confirmedEntries.reduce((s, e) => s + e.mfeOverMae, 0) / confirmedEntries.length : 0;
+  const gradeA = confirmedEntries.filter(e => e.entryGrade === 'A').length;
+  const gradeB = confirmedEntries.filter(e => e.entryGrade === 'B').length;
+  const gradeC = confirmedEntries.filter(e => e.entryGrade === 'C').length;
+  const gradeD = confirmedEntries.filter(e => e.entryGrade === 'D').length;
+  const gradeF = confirmedEntries.filter(e => e.entryGrade === 'F').length;
+
+  console.log(`${'─'.repeat(80)}`);
+  console.log(`  ENTRY QUALITY (stock-price-based — primary metric)`);
+  console.log(`${'─'.repeat(80)}`);
+  console.log(`  Entries:      ${confirmedEntries.length} confirmed | ${blockedEntries.length} blocked`);
+  console.log(`  Direction:    ${dirCorrectCount}/${confirmedEntries.length} correct (${dirAccuracy.toFixed(0)}%)`);
+  console.log(`  Avg MFE:      ${avgMfePct.toFixed(3)}% | Avg MAE: ${avgMaePct.toFixed(3)}% | Avg MFE/MAE: ${avgMfeOverMae.toFixed(1)}`);
+  console.log(`  Grades:       🟢 A:${gradeA}  🔵 B:${gradeB}  🟡 C:${gradeC}  🟠 D:${gradeD}  🔴 F:${gradeF}`);
+  console.log(`  Outcome:      ✅ ${confirmedGood} good (A+B) | ❌ ${confirmedBad} bad (F) | ⚠️  ${confirmedMarginal} marginal (C+D)`);
+
+  // ── Mode breakdown by entry quality ──
+  const rangeEntries = confirmedEntries.filter(e => e.signalMode === 'range');
+  const trendEntries = confirmedEntries.filter(e => e.signalMode === 'trend');
+  const breakoutEntries = confirmedEntries.filter(e => e.signalMode === 'breakout');
+  if (rangeEntries.length > 0 || breakoutEntries.length > 0) {
+    const modeSummary = (label: string, entries: typeof confirmedEntries) => {
+      const correct = entries.filter(e => e.directionCorrect).length;
+      const mfe = entries.reduce((s, e) => s + e.mfePct, 0) / (entries.length || 1);
+      const mae = entries.reduce((s, e) => s + e.maePct, 0) / (entries.length || 1);
+      const grades = entries.map(e => e.entryGrade).join('');
+      return `${label}: ${correct}/${entries.length} dir (${mfe.toFixed(2)}/${mae.toFixed(2)} MFE/MAE) [${grades}]`;
+    };
+    const parts = [];
+    if (rangeEntries.length > 0) parts.push(modeSummary('RANGE', rangeEntries));
+    if (breakoutEntries.length > 0) parts.push(modeSummary('BREAKOUT', breakoutEntries));
+    if (trendEntries.length > 0) parts.push(modeSummary('TREND', trendEntries));
+    console.log(`  By mode:      ${parts.join(' | ')}`);
+  }
+
+  // ── Sim Summary (SECONDARY — approximate, option P&L not fully accurate) ──
   const confirmedSims = confirmedEntries.map(e => e.sim);
   const simWins = confirmedSims.filter(s => s.pnlPct > 0).length;
   const simLosses = confirmedSims.filter(s => s.pnlPct <= 0).length;
@@ -1933,47 +2022,23 @@ async function main() {
   const tpExits = confirmedSims.filter(s => s.exitReason === 'TP').length;
   const stopExits = confirmedSims.filter(s => s.exitReason === 'STOP').length;
   const closeExits = confirmedSims.filter(s => s.exitReason === 'CLOSE').length;
-  const confirmedGood = confirmedEntries.filter(e => e.outcome === 'GOOD').length;
-  const confirmedBad = confirmedEntries.filter(e => e.outcome === 'BAD').length;
-
-  console.log(`${'─'.repeat(80)}`);
-  console.log(`  SUMMARY (confirmed entries only)`);
-  console.log(`  Entries:     ${confirmedEntries.length} confirmed | ${blockedEntries.length} blocked`);
-  console.log(`  Sim P&L:     ${simWins}W / ${simLosses}L (${confirmedSims.length > 0 ? ((simWins / confirmedSims.length) * 100).toFixed(0) : 0}%) | Avg: ${avgPnl >= 0 ? '+' : ''}${avgPnl.toFixed(1)}% | Total: ${totalPnl >= 0 ? '+' : ''}${totalPnl.toFixed(1)}%`);
-  console.log(`  Avg hold:    ${avgHold.toFixed(0)}m | Avg peak: +${avgPeak.toFixed(1)}%`);
-  console.log(`  Exits:       🎯 TP: ${tpExits} | 🛑 STOP: ${stopExits} | 🔔 CLOSE: ${closeExits}`);
-  console.log(`  Outcome:     ✅ ${confirmedGood} good | ❌ ${confirmedBad} bad | ⚠️  ${confirmedEntries.length - confirmedGood - confirmedBad} marginal`);
-
-  // ── Mode breakdown ──
-  const rangeEntries = confirmedEntries.filter(e => e.signalMode === 'range');
-  const trendEntries = confirmedEntries.filter(e => e.signalMode === 'trend');
-  const breakoutEntries = confirmedEntries.filter(e => e.signalMode === 'breakout');
-  if (rangeEntries.length > 0 || breakoutEntries.length > 0) {
-    const modeSummary = (label: string, entries: typeof confirmedEntries) => {
-      const w = entries.filter(e => e.sim.pnlPct > 0).length;
-      const l = entries.length - w;
-      const pnl = entries.reduce((s, e) => s + e.sim.pnlPct, 0);
-      return `${label}: ${w}W/${l}L, P&L ${pnl >= 0 ? '+' : ''}${pnl.toFixed(1)}%`;
-    };
-    const parts = [];
-    if (rangeEntries.length > 0) parts.push(modeSummary('RANGE', rangeEntries));
-    if (breakoutEntries.length > 0) parts.push(modeSummary('BREAKOUT', breakoutEntries));
-    if (trendEntries.length > 0) parts.push(modeSummary('TREND', trendEntries));
-    console.log(`  By mode:     ${parts.join(' | ')}`);
-  }
+  console.log(`\n  SIM (approximate — option premium not fully modeled)`);
+  console.log(`  Sim W/L:      ${simWins}W / ${simLosses}L (${confirmedSims.length > 0 ? ((simWins / confirmedSims.length) * 100).toFixed(0) : 0}%) | Avg: ${avgPnl >= 0 ? '+' : ''}${avgPnl.toFixed(1)}% | Total: ${totalPnl >= 0 ? '+' : ''}${totalPnl.toFixed(1)}%`);
+  console.log(`  Avg hold:     ${avgHold.toFixed(0)}m | Avg peak: +${avgPeak.toFixed(1)}%`);
+  console.log(`  Exits:        🎯 TP: ${tpExits} | 🛑 STOP: ${stopExits} | 🔔 CLOSE: ${closeExits}`);
 
   // ── Blocked signals (brief) ──
   if (blockedEntries.length > 0) {
     const blockedGood = blockedEntries.filter(e => e.outcome === 'GOOD').length;
     const blockedBad = blockedEntries.filter(e => e.outcome === 'BAD').length;
     console.log(`\n  ── Blocked Signals ──`);
-    console.log(`  ${blockedEntries.length} blocked (${blockedGood} good missed, ${blockedBad} bad avoided)`);
+    console.log(`  ${blockedEntries.length} blocked (${blockedGood} good missed [A/B], ${blockedBad} bad avoided [F])`);
     for (const blocked of blockedEntries) {
+      const gradeIcon = { A: '🟢A', B: '🔵B', C: '🟡C', D: '🟠D', F: '🔴F' }[blocked.entryGrade];
       const outcomeIcon = blocked.outcome === 'GOOD' ? '⚠️  MISSED' : blocked.outcome === 'BAD' ? '✅ AVOIDED' : '── MARGINAL';
       const blockTag = blocked.gateResult === 'STAGE1_OBSERVE' ? 'STAGE-1'
         : blocked.gateResult === 'WEAKENING_BLOCK' ? 'WEAKENING'
         : blocked.gateResult === 'STALE_BLOCK' ? 'STALE' : blocked.gateResult;
-      const simPnl = blocked.sim.pnlPct;
       const bcb = blocked.breakdown;
       const bFactors = [
         { name: 'DI Spread', val: bcb.diSpreadBonus }, { name: 'ADX', val: bcb.adxBonus },
@@ -1987,7 +2052,7 @@ async function main() {
         { name: 'NarrowRng', val: bcb.narrowRangePenalty },
       ].filter(f => Math.abs(f.val) >= 0.01);
       const bFactorStr = bFactors.map(f => `${f.name}=${f.val >= 0 ? '+' : ''}${f.val.toFixed(3)}`).join(', ');
-      console.log(`     ${blocked.timeET} ET ${blocked.direction} ${blockTag} → ${outcomeIcon} (conf=${(blocked.confidence * 100).toFixed(1)}%, sim=${simPnl >= 0 ? '+' : ''}${simPnl.toFixed(1)}%)`);
+      console.log(`     ${blocked.timeET} ET ${blocked.direction} ${blockTag} → ${outcomeIcon} ${gradeIcon} (conf=${(blocked.confidence * 100).toFixed(1)}%, MFE=${blocked.mfePct.toFixed(2)}% MAE=${blocked.maePct.toFixed(2)}%)`);
       console.log(`       Factors: base=0.380, ${bFactorStr}`);
     }
   }
@@ -2012,8 +2077,7 @@ async function main() {
       return eDiff < step * 60_000;
     });
     const marker = entryHere
-      ? (entryHere.sim.pnlPct > 0 ? ` 📈${entryHere.sim.pnlPct >= 0 ? '+' : ''}${entryHere.sim.pnlPct.toFixed(1)}%`
-        : ` 📉${entryHere.sim.pnlPct.toFixed(1)}%`)
+      ? ` ${({ A: '🟢', B: '🔵', C: '🟡', D: '🟠', F: '🔴' })[entryHere.entryGrade]} ${entryHere.entryGrade} MFE=${entryHere.mfePct.toFixed(2)}%`
       : '';
     const dir = tick.direction === 'bullish' ? '▲' : tick.direction === 'bearish' ? '▼' : '─';
     const confBar = '█'.repeat(Math.round(tick.confidence * 20));
@@ -2022,10 +2086,12 @@ async function main() {
 
   console.log(`\n${'='.repeat(80)}\n`);
 
-  if (confirmedBad > 0) {
-    console.log(`  ⚠️  ${confirmedBad} BAD CONFIRMED ENTRY(S) — review confidence factors above for tuning opportunities.\n`);
+  if (gradeF > 0) {
+    console.log(`  ⚠️  ${gradeF} F-grade entry(s) — wrong direction. Review filters to block these.\n`);
+  } else if (gradeD > 0) {
+    console.log(`  🟠 ${gradeD} D-grade entry(s) — direction correct but weak move. Consider tighter filters.\n`);
   } else if (confirmedEntries.length > 0) {
-    console.log(`  ✅ All confirmed entries were good on ${TARGET_DATE}.\n`);
+    console.log(`  ✅ All confirmed entries graded C or better on ${TARGET_DATE}.\n`);
   } else {
     console.log(`  ── No confirmed entries on ${TARGET_DATE}.\n`);
   }

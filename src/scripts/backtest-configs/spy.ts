@@ -126,6 +126,12 @@ export const SPY_CONFIG: Partial<TickerBacktestConfig> = {
   // Trade-off: also skips some 2nd winners (Oct 1 +6.0%, Dec 8 +4.8%).
   maxDailyEntries: 1,
 
+  // Strict trend phase for breakouts: require trendPhase >= 0, NO high-conf bypass.
+  // Mar 23: bullish breakout at day high with trendPhase=-0.040 bypassed via
+  // strongSignalBypass (86% + all_aligned) → grade F, MFE=0.00%, MAE=1.28%.
+  // Breakout into fading momentum is a reversal trap regardless of confidence.
+  breakoutStrictTrendPhase: true,
+
   // SPY breakout entry filter
   shouldAllowEntry: spyShouldAllowEntry,
 
