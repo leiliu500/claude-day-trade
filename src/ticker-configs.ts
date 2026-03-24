@@ -13,6 +13,7 @@ import type { TradingProfile } from './types/market.js';
 import type { TickerStrategy, PartialTickerStrategy } from './strategies/strategy.js';
 import { defaultStrategy } from './strategies/default.js';
 import { qqqStrategy } from './strategies/qqq.js';
+import { spyStrategy } from './strategies/spy.js';
 
 export interface TickerConfig {
   /** Ticker symbol (e.g. 'SPY') */
@@ -72,7 +73,8 @@ export const DEFAULT_TICKER_CONFIG: Omit<TickerConfig, 'ticker'> = {
 /** Per-ticker overrides. `strategy` accepts a partial — unspecified hooks use defaults. */
 const TICKER_OVERRIDES: Record<string, Partial<Omit<TickerConfig, 'ticker' | 'strategy'>> & { strategy?: PartialTickerStrategy }> = {
   SPY: {
-    // SPY is tuned and battle-tested — use defaults
+    // Tuned Q4 2025 + Q1 2026: blocks breakout entries in mature trending regimes
+    strategy: spyStrategy,
   },
   QQQ: {
     // Tuned from Q1 2026 backtest: 6W/3L (67%), +63.5% P&L
