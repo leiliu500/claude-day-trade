@@ -1,103 +1,42 @@
 /**
- * order-agent-sim.ts — Simulates the order-agent's deterministic exit rules on
- * historical 1-minute bars.  Mirrors every profit-protection and loss-minimization
- * rule from the real order-agent so backtests reflect realistic trade outcomes.
+ * order-agent-sim-qqq.ts — QQQ-specific order simulation.
  *
- * Rules replicated from src/agents/order-agent.ts:
- *   1. Initial hard stop (ATR-based or 13% trailing floor)
- *   2. Take-profit target
- *   3. Adaptive trailing stop (87% / 90% / 92% by peak tier)
- *   4. Profit-protection floors (7 tiers: 3% → 40% peak)
- *   5. Profit reversal exit (peak ≥ 1%, current ≤ 0%)
- *   6. Pre-emptive loss exit (-10% after 9+ bars)
- *   7. Small-gain locks (peak 1-5%, fading near 0)
- *   8. Bad entry fast-cuts (never confirmed, immediate adverse, early bleed)
- *   9. Rapid decline (9 consecutive declines + ≤ -6%)
- *  10. Dynamic trailing with time-decay bonus (after 10 min)
+ * Calibrated from live market data (2026-03-24):
+ *   QQQ ATM 1DTE call: mid=$4.07, delta=0.49, bid-ask spread=$0.18 (4.4%)
+ *   QQQ ATM 1DTE put:  mid=$5.71, delta=-0.51, bid-ask spread=$0.06 (1.1%)
+ *   QQQ 5m ATR: $6.64, optionAtr (delta=0.5): $3.32
+ *   Premium / optionAtr = 1.2x (vs SPY's 5.0x)
+ *
+ * No live QQQ trades exist yet for fill-level calibration. Tuned from market
+ * structure observations:
+ *
+ *   1. Lower premium floor (2x vs shared 3x): QQQ options are cheap relative
+ *      to underlying moves. ATM premiums run ~1.2-1.5x optionAtr, but the sim
+ *      needs a floor above 1x to avoid division-by-zero-like instability.
+ *      2x gives premiums in the $1.3-3.0 range, which better reflects the
+ *      tighter premium/ATR relationship than the shared 3x.
+ *
+ *   2. Trailing stop floor (entry*0.87): matches live option-agent behavior.
+ *      Same as SPY — this is a structural feature of the order-agent, not
+ *      ticker-specific.
+ *
+ *   3. No bar-0 early exit: QQQ options have wider bid-ask spreads (4-5% on
+ *      calls vs SPY's ~1-2%). The live system can't scalp $0.01 from the spread
+ *      the way it can on SPY. Sub-minute exits on QQQ would typically be at a
+ *      loss (crossing the spread), not a gain.
  */
 
-// ── Types ──────────────────────────────────────────────────────────────────────
+import {
+  type OHLCVBar, type SignalDirection, type SimResult, type SimConfig,
+  toPremium, pnlPct, trailFactor, profitFloor, estimateEntryPremium,
+} from './order-agent-sim.js';
 
-export interface OHLCVBar {
-  timestamp: string;
-  open: number;
-  high: number;
-  low: number;
-  close: number;
-  volume: number;
-}
+// QQQ premium floor multiplier: 2x optionAtr.
+// QQQ ATM options cost ~1.2x optionAtr (vs SPY's 5x). Using 2x as a floor
+// to avoid edge cases while keeping % swings realistic for QQQ's higher beta.
+const QQQ_PREMIUM_FLOOR_MULT = 2;
 
-export type SignalDirection = 'bullish' | 'bearish' | 'neutral';
-
-export interface SimResult {
-  exitPrice: number;       // underlying price at exit
-  exitReason: string;      // STOP | TP | PROFIT_REVERSAL | PRE_EMPTIVE | SMALL_GAIN_LOCK | BAD_ENTRY | RAPID_DECLINE | TRAILING_DECAY | CLOSE
-  holdMinutes: number;     // how long the position was held
-  pnlPct: number;          // simulated P&L % on the option premium
-  peakPnlPct: number;      // highest P&L % reached before exit
-  maxDrawdownPct: number;  // worst drawdown from peak before exit
-}
-
-export interface SimConfig {
-  stopMult?: number;    // default 1.0
-  tpMult?: number;      // default 1.6
-  delta?: number;       // option delta, default 0.50
-  recentBars?: OHLCVBar[];  // recent 1m bars before entry for volatility measurement
-}
-
-// ── Helpers ────────────────────────────────────────────────────────────────────
-
-/** Convert underlying bar close to option premium given entry state. */
-export function toPremium(
-  entryPrice: number, entryPremium: number, barClose: number,
-  direction: SignalDirection, delta: number,
-): number {
-  const move = direction === 'bullish' ? barClose - entryPrice : entryPrice - barClose;
-  return entryPremium + move * delta;
-}
-
-export function pnlPct(current: number, entry: number): number {
-  return ((current - entry) / entry) * 100;
-}
-
-// ── Trailing stop tiers ────────────────────────────────────────────────────────
-
-export function trailFactor(peakPnl: number): number {
-  if (peakPnl >= 40) return 0.92;
-  if (peakPnl >= 25) return 0.90;
-  return 0.87;
-}
-
-export function profitFloor(peakPnl: number, entryPremium: number): number {
-  if (peakPnl >= 40) return entryPremium * 1.25;
-  if (peakPnl >= 30) return entryPremium * 1.18;
-  if (peakPnl >= 20) return entryPremium * 1.08;
-  if (peakPnl >= 15) return entryPremium * 1.03;
-  if (peakPnl >= 10) return entryPremium * 1.0;
-  if (peakPnl >= 5)  return entryPremium * 1.015;
-  if (peakPnl >= 3)  return entryPremium * 0.995;
-  return 0;
-}
-
-// ── Shared premium estimation ────────────────────────────────────────────────
-
-export function estimateEntryPremium(
-  atr: number, delta: number, recentBars?: OHLCVBar[], premiumFloorMult = 3,
-): { entryPremium: number; recentVolatility: number; optionAtr: number } {
-  const optionAtr = atr * delta;
-  let recentVolatility = optionAtr;
-  if (recentBars && recentBars.length >= 3) {
-    const recent = recentBars.slice(-10);
-    const maxRange = Math.max(...recent.map(b => (b.high - b.low) * delta));
-    recentVolatility = Math.max(optionAtr, maxRange);
-  }
-  const entryPremium = Math.max(recentVolatility * premiumFloorMult, optionAtr * premiumFloorMult, 1.0);
-  return { entryPremium, recentVolatility, optionAtr };
-}
-
-// ── Main simulation (default / shared) ──────────────────────────────────────
-
-export function simulateOrderAgent(
+export function simulateOrderAgentQqq(
   entryPrice: number,
   direction: SignalDirection,
   atr: number,
@@ -109,12 +48,13 @@ export function simulateOrderAgent(
   const tpMult = cfg.tpMult ?? 1.6;
 
   const { entryPremium, recentVolatility, optionAtr } = estimateEntryPremium(
-    atr, delta, cfg.recentBars,
+    atr, delta, cfg.recentBars, QQQ_PREMIUM_FLOOR_MULT,
   );
 
-  // Initial stop: ATR-based, using the volatility-adjusted premium
+  // Initial stop: ATR-based, with trailing stop floor (matches live option-agent)
   const atrStop = entryPremium - stopMult * recentVolatility;
-  let currentStop = Math.max(0.01, atrStop);
+  const trailingFloor = entryPremium * 0.87;
+  let currentStop = Math.max(0.01, Math.min(atrStop, trailingFloor));
   const tpTarget = entryPremium + tpMult * optionAtr;
 
   let highestPrice = entryPremium;
@@ -150,8 +90,6 @@ export function simulateOrderAgent(
     const worstPremium = entryPremium + worstUnderlying * delta;
 
     // ── Rule 1: Initial hard stop (first 3 bars) ──
-    // Bar 0 (entry bar): use close only — intra-bar noise on entry is expected.
-    // Bars 1-2: use intra-bar worst to catch genuine breakdowns.
     if (i < 3 && peakPnlPct_ < 3) {
       const checkPrice = i === 0 ? currentPremium : worstPremium;
       if (checkPrice <= currentStop) {
@@ -168,7 +106,7 @@ export function simulateOrderAgent(
     }
     prevPremium = currentPremium;
 
-    // Update peak tracking using close price
+    // Update peak tracking
     if (currentPremium > highestPrice) highestPrice = currentPremium;
     if (currentPnl > peakPnlPct_) peakPnlPct_ = currentPnl;
 
@@ -186,12 +124,9 @@ export function simulateOrderAgent(
       return mkResult(i, 'RAPID_DECLINE', currentPremium);
     }
 
-    // ── PROFIT PROTECTION (checked first — protect gains before loss-detection rules) ──
+    // ── PROFIT PROTECTION ──
 
     // ── Rule 10: Dynamic trailing with time-decay bonus (after 10 min) ──
-    // Adds +1% per minute after 10 min hold, capped at +10% (20 min)
-    // MUST be checked BEFORE profit-reversal so large peaks exit at retained %,
-    // not at 0%. E.g., peak +17% exits at +11% (retain 65%) instead of 0%.
     const timeBonus = i >= 10 ? Math.min((i - 10) * 1, 10) : 0;
 
     if (peakPnlPct_ >= 15) {
@@ -210,26 +145,22 @@ export function simulateOrderAgent(
         return mkResult(i, 'TRAILING_DECAY', currentPremium);
       }
     } else if (peakPnlPct_ >= 3) {
-      // New tier: lock gains at 55% of peak for 3-5% peaks
       if (currentPnl <= peakPnlPct_ * 0.55 && currentPnl < peakPnlPct_ && i >= 2) {
         return mkResult(i, 'TRAILING_DECAY', currentPremium);
       }
     }
 
     // ── Rule 7: Small-gain locks ──
-    // Peak 2-3%: exit if faded to ≤ 0.5% after 3+ bars
     if (peakPnlPct_ >= 2 && peakPnlPct_ < 3 && currentPnl <= 0.5 && i >= 3) {
       return mkResult(i, 'SMALL_GAIN_LOCK', currentPremium);
     }
-    // Peak 1-2%: exit if faded to ≤ 0.3% after 3+ bars
     if (peakPnlPct_ >= 1 && peakPnlPct_ < 2 && currentPnl <= 0.3 && i >= 3) {
       return mkResult(i, 'SMALL_GAIN_LOCK', currentPremium);
     }
 
-    // ── LOSS DETECTION (checked after profit protection) ──
+    // ── LOSS DETECTION ──
 
     // ── Rule 5: Profit reversal (peak ≥ 1%, current ≤ 0%) ──
-    // Only fires for small peaks (< 3%) — larger peaks are caught by TRAILING_DECAY above.
     if (peakPnlPct_ >= 1 && peakPnlPct_ < 3 && currentPnl <= 0 && i >= 3) {
       return mkResult(i, 'PROFIT_REVERSAL', currentPremium);
     }
@@ -240,27 +171,20 @@ export function simulateOrderAgent(
     }
 
     // ── Rule 8: Bad entry fast-cuts ──
-    // Never confirmed: peak < 0.3%, current ≤ -3%, bars 3-8
     if (peakPnlPct_ < 0.3 && currentPnl <= -3 && i >= 3 && i <= 8) {
       return mkResult(i, 'BAD_ENTRY', currentPremium);
     }
-    // Immediate adverse: peak < 0.5%, current ≤ -5%, 3+ consecutive declines, 3+ bars
     if (peakPnlPct_ < 0.5 && currentPnl <= -5 && consecutiveDeclines >= 3 && i >= 3) {
       return mkResult(i, 'BAD_ENTRY', currentPremium);
     }
-    // Bad entry cut: peak < 1%, current ≤ -3%, 5+ bars
     if (peakPnlPct_ < 1 && currentPnl <= -3 && i >= 5) {
       return mkResult(i, 'BAD_ENTRY', currentPremium);
     }
-    // Early bleed: peak < 1%, current ≤ -5%, 4+ bars
     if (peakPnlPct_ < 1 && currentPnl <= -5 && i >= 4) {
       return mkResult(i, 'BAD_ENTRY', currentPremium);
     }
 
     // ── Rules 3 & 4: Trailing stop + profit floors ──
-    // Grace period: don't tighten the trailing stop in the first 4 bars unless
-    // we already have meaningful profit (peak >= 5%). This prevents the 0.87
-    // trailing factor from choking entries during initial chop.
     const tf = trailFactor(peakPnlPct_);
     const rawTrailingStop = highestPrice * tf;
     const pf = profitFloor(peakPnlPct_, entryPremium);

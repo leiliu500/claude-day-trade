@@ -10,6 +10,7 @@
 
 import type { ConfidenceBreakdown } from '../../types/analysis.js';
 import type { SignalDirection, AlignmentType } from '../../types/signal.js';
+import { simulateOrderAgent, type OHLCVBar, type SimResult, type SimConfig } from '../../lib/order-agent-sim.js';
 
 // ── Entry context passed to hooks ────────────────────────────────────────────
 
@@ -28,6 +29,10 @@ export interface EntryContext {
   intradayTrendStrength: number;
   regimeScore: number;
   dailyEntryCount: number;
+  /** LTF (1m) bars for per-ticker regime computation — matches live strategy access */
+  ltfBars?: Array<{ open: number; high: number; low: number; close: number }>;
+  /** LTF VWAP price-vs-VWAP for per-ticker regime computation */
+  ltfVwapPriceVs?: number;
 }
 
 // ── Config interface ─────────────────────────────────────────────────────────
@@ -75,6 +80,20 @@ export interface TickerBacktestConfig {
    * Default: returns the breakdown unchanged.
    */
   adjustConfidence: (breakdown: ConfidenceBreakdown, ctx: EntryContext) => ConfidenceBreakdown;
+
+  /**
+   * Per-ticker order simulation function.
+   * Each ticker can override with its own exit rules, premium estimation, etc.
+   *
+   * Default: shared simulateOrderAgent from order-agent-sim.ts.
+   */
+  simulate: (
+    entryPrice: number,
+    direction: SignalDirection,
+    atr: number,
+    futureBars: OHLCVBar[],
+    cfg?: SimConfig,
+  ) => SimResult;
 }
 
 export const DEFAULT_BT_CONFIG: TickerBacktestConfig = {
@@ -91,4 +110,5 @@ export const DEFAULT_BT_CONFIG: TickerBacktestConfig = {
   trendMaxExhaustion: 12.0,
   shouldAllowEntry: () => true,
   adjustConfidence: (cb) => cb,
+  simulate: simulateOrderAgent,
 };

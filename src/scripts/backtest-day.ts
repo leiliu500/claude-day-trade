@@ -30,7 +30,6 @@ import type { PositionContext, DecisionResult, DecisionType } from '../types/dec
 import { normalizeAlpacaBars } from '../types/market.js';
 import { v4 as uuidv4 } from 'uuid';
 import { DecisionOrchestrator } from '../agents/decision-orchestrator.js';
-import { simulateOrderAgent } from '../lib/order-agent-sim.js';
 import type { SimResult } from '../lib/order-agent-sim.js';
 
 // ── Config ────────────────────────────────────────────────────────────────────
@@ -1433,6 +1432,8 @@ async function main() {
       breakdown: cbRaw, strengthScore, currentPrice, atr,
       rangeExhaustion, displacementVelocity, choppiness,
       intradayTrendStrength, regimeScore, dailyEntryCount,
+      ltfBars: ltfBars as Array<{ open: number; high: number; low: number; close: number }>,
+      ltfVwapPriceVs: tfIndicators[0]?.vwap?.priceVsVwap ?? 0,
     };
     const cb = TCFG.adjustConfidence(cbRaw, entryCtx);
 
@@ -1512,7 +1513,7 @@ async function main() {
         return bt <= currentTs && bt > currentTs - 10 * 60_000;
       });
       // Simulate order-agent trailing stop on remaining bars
-      const sim = simulateOrderAgent(currentPrice, direction, atr, allFutureBars, {
+      const sim = TCFG.simulate(currentPrice, direction, atr, allFutureBars, {
         recentBars,
         ...(signalMode === 'range' ? { stopMult: 0.5, tpMult: 0.8 }
           : signalMode === 'breakout' ? { stopMult: TCFG.breakoutStopMult, tpMult: TCFG.breakoutTpMult } : {}),

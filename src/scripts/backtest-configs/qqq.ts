@@ -14,6 +14,7 @@
 
 import type { TickerBacktestConfig, EntryContext } from './types.js';
 import type { ConfidenceBreakdown } from '../../types/analysis.js';
+import { simulateOrderAgentQqq } from '../../lib/order-agent-sim-qqq.js';
 
 /**
  * QQQ entry filter — applies after all shared filters pass.
@@ -96,4 +97,7 @@ export const QQQ_CONFIG: Partial<TickerBacktestConfig> = {
   // ── QQQ code hooks ──
   shouldAllowEntry: qqqShouldAllowEntry,
   adjustConfidence: qqqAdjustConfidence,
+
+  // QQQ-specific order simulation (shared defaults for now)
+  simulate: simulateOrderAgentQqq,
 };
