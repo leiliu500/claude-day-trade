@@ -33,6 +33,12 @@ export interface EntryContext {
    *  Positive = accelerating away from open (trending), negative = reverting.
    *  Computed from LTF bars: avg displacement of last 5 bars minus prior 5 bars. */
   displacementVelocity?: number;
+  /** Intraday range exhaustion: (dayHigh - dayLow) / HTF ATR.
+   *  Higher = more of the daily range consumed, less room for follow-through. */
+  rangeExhaustion?: number;
+  /** Direction flip frequency in recent LTF bars (0 = perfectly smooth, >1 = choppy).
+   *  Computed as (actual flips) / (expected flips at random = barCount / 4). */
+  choppiness?: number;
 }
 
 // ── Mode detection result ────────────────────────────────────────────────────

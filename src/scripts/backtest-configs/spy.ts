@@ -41,7 +41,14 @@ function spyShouldAllowEntry(ctx: EntryContext): boolean {
   //    Q4+Q1 data: dvel < -0.05 was 1W/3L (25%), the 3 losses were EARLY_EXIT.
   if (signalMode === 'breakout' && displacementVelocity < -0.05) return false;
 
-  // 3. Block bullish trend entries at very high regime (>= 80).
+  // 3. Block trend entries in exhausted + choppy conditions.
+  //    Exh > 7.0 + Chop >= 0.6: trend move is done, price is oscillating.
+  //    Q4+Q1 data: 0W/3L (-9.0%). Sole high-Exh trend winner had Chop=0.25.
+  if (signalMode === 'trend'
+      && ctx.rangeExhaustion > 7.0
+      && ctx.choppiness >= 0.6) return false;
+
+  // 4. Block bullish trend entries at very high regime (>= 80).
   //    SPY bullish momentum at this level = price already ran to the day high,
   //    high probability of stalling or reversing. Bearish high-regime is fine.
   //    Q1 2026: bullish trend at regime >= 80 was 1W/1L, sole win +3.1%.

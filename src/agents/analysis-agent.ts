@@ -1519,15 +1519,18 @@ export class AnalysisAgent {
     }
 
     // ── Build per-symbol entry context (shared by adjustConfidence + shouldAllowEntry) ──
-    // Displacement velocity: rate of change in price displacement from day open.
-    // Positive = price accelerating away from open (trending), negative = reverting.
     // Computed from LTF bars filtered to today's regular session.
     let displacementVelocity: number | undefined;
+    let rangeExhaustion: number | undefined;
+    let choppiness: number | undefined;
     {
       const ltfBars = signal.timeframes[0]?.bars;
+      const htfAtr = (signal.timeframes[2] ?? signal.timeframes[0])?.atr.atr ?? 0;
       if (ltfBars && ltfBars.length >= 10) {
         const todayStr = new Date().toISOString().slice(0, 10);
         const todayBars = ltfBars.filter(b => b.timestamp.startsWith(todayStr));
+
+        // Displacement velocity: avg displacement of last 5 bars minus prior 5 bars
         if (todayBars.length >= 10) {
           const dayOpen = todayBars[0]!.open;
           if (dayOpen > 0) {
@@ -1537,6 +1540,26 @@ export class AnalysisAgent {
             const avgPrior = prior5.reduce((s, b) => s + Math.abs(b.close - dayOpen) / dayOpen * 100, 0) / 5;
             displacementVelocity = avgRecent - avgPrior;
           }
+        }
+
+        // Range exhaustion: (dayHigh - dayLow) / HTF ATR
+        if (htfAtr > 0 && todayBars.length >= 20) {
+          let dayHigh = -Infinity, dayLow = Infinity;
+          for (const b of todayBars) { if (b.high > dayHigh) dayHigh = b.high; if (b.low < dayLow) dayLow = b.low; }
+          rangeExhaustion = (dayHigh - dayLow) / htfAtr;
+        }
+
+        // Choppiness: direction flip frequency in last 30 bars
+        if (todayBars.length >= 15) {
+          const recent = todayBars.slice(-30);
+          let flips = 0;
+          let prevDir: string | null = null;
+          for (const bar of recent) {
+            const dir = bar.close >= bar.open ? 'up' : 'down';
+            if (prevDir && dir !== prevDir) flips++;
+            prevDir = dir;
+          }
+          choppiness = flips / Math.max(1, recent.length / 4);
         }
       }
     }
@@ -1551,6 +1574,8 @@ export class AnalysisAgent {
       currentPrice: signal.currentPrice,
       atr: signal.atr,
       displacementVelocity,
+      rangeExhaustion,
+      choppiness,
     };
 
     // Per-symbol confidence adjustment hook
@@ -1571,15 +1596,7 @@ export class AnalysisAgent {
     }
     const desiredRight = deriveDesiredRight(signal);
 
-    // Compute range exhaustion: (dayHigh - dayLow) / htfATR — how extended the day is
-    let rangeExhaustion: number | undefined;
-    const ltfTf = signal.timeframes[0];
-    const htfTf = signal.timeframes[2] ?? signal.timeframes[0];
-    if (ltfTf && htfTf && ltfTf.bars.length >= 20 && htfTf.atr.atr > 0) {
-      let dayHigh = -Infinity, dayLow = Infinity;
-      for (const b of ltfTf.bars) { if (b.high > dayHigh) dayHigh = b.high; if (b.low < dayLow) dayLow = b.low; }
-      rangeExhaustion = (dayHigh - dayLow) / htfTf.atr.atr;
-    }
+    // rangeExhaustion already computed above for entryCtx
 
     let aiExplanation = 'Market closed or confidence below threshold — AI explanation skipped.';
     let keyFactors: string[] = [];

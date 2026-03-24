@@ -176,6 +176,15 @@ function spyShouldAllowEntry(ctx: EntryContext): boolean {
   if (signalMode === 'breakout' && ctx.displacementVelocity !== undefined
       && ctx.displacementVelocity < -0.05) return false;
 
+  // Block trend entries in exhausted + choppy conditions.
+  // When intraday range > 7x ATR AND price action is choppy (flips >= 0.6),
+  // the trend move is done and price is oscillating — entries reverse.
+  // Q4 2025 + Q1 2026: trend entries at Exh > 7.0 + Chop >= 0.6 were 0W/3L (-9.0%).
+  // The sole high-Exh trend winner (Nov 4, +4.9%) had Chop=0.25 (smooth trend).
+  if (signalMode === 'trend'
+      && ctx.rangeExhaustion !== undefined && ctx.rangeExhaustion > 7.0
+      && ctx.choppiness !== undefined && ctx.choppiness >= 0.6) return false;
+
   // Block bullish trend entries at very high regime (>= 80).
   // SPY bullish momentum at this level = price already ran to the day high,
   // high probability of stalling or reversing. Bearish entries at high regime

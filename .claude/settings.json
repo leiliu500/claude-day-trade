@@ -89,7 +89,8 @@
       "Bash(sort -t= -k2 -rn)",
       "Bash(chmod +x /tmp/run-backtest-batch.sh)",
       "Bash(bash /tmp/run-backtest-batch.sh)",
-      "Bash(npx vitest:*)"
+      "Bash(npx vitest:*)",
+      "Bash(grep -E '\\(CONFIRMED.*BREAKOUT|CONFIRMED$|ATR.*Regime\\)')"
     ],
     "additionalDirectories": [
       "/tmp"
