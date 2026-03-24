@@ -124,7 +124,7 @@ export const SPY_CONFIG: Partial<TickerBacktestConfig> = {
   // SPY: max 1 entry per day — 2nd entries on losing days compound losses.
   // Q4 2025: Oct 7 (2L -28.6%), Oct 9 (2L -11.3%) — 2nd entries added -9.8%.
   // Trade-off: also skips some 2nd winners (Oct 1 +6.0%, Dec 8 +4.8%).
-  maxDailyEntries: 1,
+  maxDailyEntries: 2,
 
   // Strict trend phase for breakouts: require trendPhase >= 0, NO high-conf bypass.
   // Mar 23: bullish breakout at day high with trendPhase=-0.040 bypassed via

@@ -80,7 +80,7 @@ export const QQQ_CONFIG: Partial<TickerBacktestConfig> = {
   // Filter stale/pre-market data (ATR $0.37 on $625 = 0.06%)
   minAtrPct: 0.08,
   // QQQ: 1 entry per day — 2nd entries chase and lose
-  maxDailyEntries: 1,
+  maxDailyEntries: 2,
   // Tighter breakout exhaustion (7.0 vs SPY 10.0)
   breakoutMaxExhaustion: 7.0,
   // Choppiness filter: Mar 05 loss had chop=1.21
