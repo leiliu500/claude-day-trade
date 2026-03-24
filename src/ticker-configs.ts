@@ -82,7 +82,7 @@ const TICKER_OVERRIDES: Record<string, Partial<Omit<TickerConfig, 'ticker' | 'st
     minConfidence: 0.65,
     maxDailyEntries: 1,    // QQQ: 2nd entries chase and lose
     maxContracts: 5,       // smaller size — newer symbol, less data
-    enabled: false,        // enable when ready for live trading
+    enabled: true,
     strategy: qqqStrategy,
   },
 };
