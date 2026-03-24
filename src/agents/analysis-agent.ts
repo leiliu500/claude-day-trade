@@ -11,12 +11,35 @@ const openai = new OpenAI({ apiKey: config.OPENAI_API_KEY });
  * Compute deterministic confidence score from signal data.
  * Range: 0.00 – 1.00
  */
+// ── Exported for per-symbol strategy overrides ────────────────────────────────
+// These wrap the private functions so strategies/default.ts can reference them.
+// Per-symbol strategies (e.g. strategies/qqq.ts) do NOT import these — they
+// provide their own implementations.
+
+/** Trend confidence model — SPY-tuned default.
+ *  Calls computeConfidence which routes by signalMode; for trend signals
+ *  (the default), it falls through to the trend-specific logic. */
+export const computeTrendConfidenceFn = (signal: SignalPayload, option: OptionEvaluation): ConfidenceBreakdown => {
+  return computeConfidence(signal, option);
+};
+/** Range confidence model — SPY-tuned default */
+export const computeRangeConfidenceFn = (signal: SignalPayload): ConfidenceBreakdown => {
+  return computeRangeConfidence(signal);
+};
+/** Breakout confidence model — SPY-tuned default */
+export const computeBreakoutConfidenceFn = (signal: SignalPayload): ConfidenceBreakdown => {
+  return computeBreakoutConfidence(signal);
+};
+
+/**
+ * Internal confidence router — dispatches to mode-specific model.
+ * Used internally by AnalysisAgent.run() for backward compat.
+ * Strategies bypass this and call mode-specific functions directly.
+ */
 function computeConfidence(signal: SignalPayload, option: OptionEvaluation): ConfidenceBreakdown {
-  // Range mode uses inverted confidence model
   if (signal.signalMode === 'range') {
     return computeRangeConfidence(signal);
   }
-  // Breakout mode: squeeze breakout from consolidation
   if (signal.signalMode === 'breakout') {
     return computeBreakoutConfidence(signal);
   }
@@ -1481,9 +1504,54 @@ async function generateExplanation(
 }
 
 export class AnalysisAgent {
-  async run(signal: SignalPayload, option: OptionEvaluation, timeGateOk = true): Promise<AnalysisResult> {
-    const cb = computeConfidence(signal, option);
-    const meetsEntryThreshold = cb.total >= config.MIN_CONFIDENCE;
+  async run(signal: SignalPayload, option: OptionEvaluation, timeGateOk = true, tickerCfg?: import('../ticker-configs.js').TickerConfig): Promise<AnalysisResult> {
+    // Use per-symbol strategy if available, otherwise fall back to internal router
+    let cb: ConfidenceBreakdown;
+    if (tickerCfg?.strategy) {
+      const strategy = tickerCfg.strategy;
+      cb = signal.signalMode === 'range'
+        ? strategy.computeRangeConfidence(signal)
+        : signal.signalMode === 'breakout'
+          ? strategy.computeBreakoutConfidence(signal)
+          : strategy.computeTrendConfidence(signal, option);
+    } else {
+      cb = computeConfidence(signal, option);
+    }
+
+    // Per-symbol confidence adjustment hook
+    if (tickerCfg?.strategy?.adjustConfidence) {
+      const ctx = {
+        signalMode: (signal.signalMode ?? 'trend') as 'trend' | 'range' | 'breakout',
+        direction: signal.direction,
+        alignment: signal.alignment,
+        confidence: cb.total,
+        breakdown: cb,
+        strengthScore: signal.strengthScore,
+        currentPrice: signal.currentPrice,
+        atr: signal.atr,
+      };
+      cb = tickerCfg.strategy.adjustConfidence(cb, ctx);
+    }
+
+    const minConf = tickerCfg?.minConfidence ?? config.MIN_CONFIDENCE;
+    let meetsEntryThreshold = cb.total >= minConf;
+
+    // Per-symbol entry filter hook — can block entries even if confidence meets threshold
+    if (meetsEntryThreshold && tickerCfg?.strategy?.shouldAllowEntry) {
+      const ctx = {
+        signalMode: (signal.signalMode ?? 'trend') as 'trend' | 'range' | 'breakout',
+        direction: signal.direction,
+        alignment: signal.alignment,
+        confidence: cb.total,
+        breakdown: cb,
+        strengthScore: signal.strengthScore,
+        currentPrice: signal.currentPrice,
+        atr: signal.atr,
+      };
+      if (!tickerCfg.strategy.shouldAllowEntry(ctx)) {
+        meetsEntryThreshold = false;
+      }
+    }
     const desiredRight = deriveDesiredRight(signal);
 
     // Compute range exhaustion: (dayHigh - dayLow) / htfATR — how extended the day is

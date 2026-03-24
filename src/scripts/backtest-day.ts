@@ -39,7 +39,11 @@ const USE_AI = process.argv.includes('--ai');
 const TARGET_DATE = process.argv.filter(a => !a.startsWith('--'))[2] || '2026-03-18';
 const TICKER = process.argv.filter(a => !a.startsWith('--'))[3] || 'SPY';
 const PROFILE = 'S' as const; // Scalp: 1m, 3m, 5m
-const MIN_CONFIDENCE = parseFloat(process.env.BT_THRESHOLD ?? '') || config.MIN_CONFIDENCE; // 0.65 default
+
+// ── Per-ticker config (loaded from backtest-configs/<ticker>.ts) ────────────
+import { loadBacktestConfig } from './backtest-configs/index.js';
+const TCFG = loadBacktestConfig(TICKER);
+const MIN_CONFIDENCE = parseFloat(process.env.BT_THRESHOLD ?? '') || TCFG.minConfidence;
 
 // Market hours in UTC (ET + 4 during EDT, ET + 5 during EST)
 // March 18 2026 is EDT → 9:30 ET = 13:30 UTC, 16:00 ET = 20:00 UTC
@@ -1081,7 +1085,7 @@ async function main() {
   let rangeEntryCount = 0;
   const RANGE_COOLDOWN_MIN = 20;   // min minutes between range entries
   const MAX_RANGE_ENTRIES = 1;      // max 1 range entry per day — 2nd range entries were 3W/7L across Feb+Mar
-  const MAX_DAILY_ENTRIES = 2;     // global cap across all modes — prevents triple-loss days (Feb 5/17, Mar 5)
+  const MAX_DAILY_ENTRIES = TCFG.maxDailyEntries; // per-ticker daily cap
   let dailyEntryCount = 0;
   const RANGE_WAIT_MIN = 45;       // don't range trade in first 45 min (let day establish)
 
@@ -1417,11 +1421,20 @@ async function main() {
     )));
 
     const optionEval = mockOptionEval(signal);
-    const cb = signalMode === 'range'
+    const cbRaw = signalMode === 'range'
       ? computeRangeConfidence(signal, rangeSupport, rangeResistance)
       : signalMode === 'breakout'
         ? computeBreakoutConfidence(signal)
         : computeConfidence(signal, optionEval);
+
+    // Per-ticker confidence adjustment hook — allows QQQ etc. to apply custom penalties
+    const entryCtx = {
+      signalMode, direction, alignment, confidence: cbRaw.total,
+      breakdown: cbRaw, strengthScore, currentPrice, atr,
+      rangeExhaustion, displacementVelocity, choppiness,
+      intradayTrendStrength, regimeScore, dailyEntryCount,
+    };
+    const cb = TCFG.adjustConfidence(cbRaw, entryCtx);
 
     // ── Mode-specific regime-aware threshold adjustment ─────────────────────────
     let effectiveThreshold = MIN_CONFIDENCE;
@@ -1456,6 +1469,11 @@ async function main() {
       effectiveThreshold += LOSS_THRESHOLD_BUMP;
     }
     const meetsThreshold = cb.total >= effectiveThreshold;
+
+    // Per-ticker: filter breakout entries with stale/insufficient data (abnormally low ATR%)
+    // Only applied to breakout mode — trend entries with low ATR can still be valid
+    const atrPct = atr / currentPrice * 100;
+    const atrOk = signalMode !== 'breakout' || atrPct >= TCFG.minAtrPct;
 
     tickCount++;
     allTicks.push({ time: timeStr, timeET, price: currentPrice, direction, alignment, confidence: cb.total, meetsThreshold });
@@ -1497,7 +1515,7 @@ async function main() {
       const sim = simulateOrderAgent(currentPrice, direction, atr, allFutureBars, {
         recentBars,
         ...(signalMode === 'range' ? { stopMult: 0.5, tpMult: 0.8 }
-          : signalMode === 'breakout' ? { stopMult: 0.7, tpMult: 1.8 } : {}),
+          : signalMode === 'breakout' ? { stopMult: TCFG.breakoutStopMult, tpMult: TCFG.breakoutTpMult } : {}),
       });
       // Outcome based on simulated P&L
       let outcome: 'GOOD' | 'BAD' | 'MARGINAL' = 'MARGINAL';
@@ -1612,7 +1630,10 @@ async function main() {
         }
       }
 
-      if (meetsThreshold && direction !== 'neutral' && dailyEntryCount < MAX_DAILY_ENTRIES) {
+      // Per-ticker entry filter hook — allows QQQ etc. to block entries with custom logic
+      const tickerAllows = !meetsThreshold || TCFG.shouldAllowEntry(entryCtx);
+
+      if (meetsThreshold && atrOk && tickerAllows && direction !== 'neutral' && dailyEntryCount < MAX_DAILY_ENTRIES) {
         // Range entries bypass the trend confirmation gate — quality is in the range confidence model
         if (signalMode === 'range') {
           const RANGE_MIN_CONF = 0.70; // raised from 0.66 — Feb range entries at 0.66-0.69 were 1W/4L
@@ -1659,15 +1680,17 @@ async function main() {
           // ADX >= 0.050 was 5W/1L (83%). Require moderate ADX for conviction.
           const adxOk = cb.adxBonus >= 0.03;
           // Low strength breakouts fail: Feb str=30,33 were losses.
-          const strengthOk = strengthScore >= 35;
-          // Extremely extended day: >10x ATR consumed = move is exhausted.
-          // Feb 6 breakout at 12x was a STOP loss (bought the top). All winners < 8x.
-          const notExhausted = rangeExhaustion <= 10.0;
-          // Strong-signal bypass: matches live DecisionOrchestrator logic where
-          // conf >= 0.75 + all_aligned skips the confirmation gate entirely.
-          // This allows high-conviction breakouts through even with trendPhase < 0.
-          const strongSignalBypass = cb.total >= 0.75 && alignment === 'all_aligned';
-          if (cooldownOk && underLimit && pastWaitPeriod && notTooLate && alignmentOk && (trendPhaseOk || strongSignalBypass) && adxOk && strengthOk && notExhausted) {
+          const strengthOk = strengthScore >= TCFG.breakoutMinStrength;
+          // Extended day: move is exhausted. Per-ticker threshold.
+          const notExhausted = rangeExhaustion <= TCFG.breakoutMaxExhaustion;
+          // Per-ticker choppiness filter for breakouts
+          const notTooChoppy = choppiness < TCFG.breakoutMaxChop;
+          // Strong-signal bypass: conf >= 0.75 + all_aligned skips trendPhase check.
+          // Per-ticker: breakoutStrictTrendPhase disables this bypass.
+          const strongSignalBypass = !TCFG.breakoutStrictTrendPhase && cb.total >= 0.75 && alignment === 'all_aligned';
+          // Per-ticker: minimum confidence for breakout entries
+          const breakoutConfOk = TCFG.breakoutMinConfidence <= 0 || cb.total >= TCFG.breakoutMinConfidence;
+          if (cooldownOk && underLimit && pastWaitPeriod && notTooLate && alignmentOk && (trendPhaseOk || strongSignalBypass) && adxOk && strengthOk && notExhausted && notTooChoppy && breakoutConfOk) {
             const fwd = computeForwardMoves();
             entries.push({
               time: timeStr, timeET, direction, alignment, confidence: cb.total,
@@ -1689,7 +1712,7 @@ async function main() {
           // Late exhausted trend: daily range consumed >7x ATR and momentum reverting — skip.
           // All March trend winners had positive DispVel at high exhaustion; this loser pattern
           // catches trend entries where the move is already done and starting to pull back.
-        } else if (rangeExhaustion > 12.0) {
+        } else if (rangeExhaustion > TCFG.trendMaxExhaustion) {
           // Extremely extended day: >12x ATR consumed. Regardless of displacement velocity,
           // a move this large has exhausted the daily range. Feb+Mar: 0 winners, 2 losers at >12x.
         } else {

@@ -1,0 +1,94 @@
+/**
+ * Per-ticker backtest configuration.
+ *
+ * Each ticker has its own file (spy.ts, qqq.ts) that exports a partial config.
+ * Includes both numeric parameters AND code hooks (functions) that override
+ * core trading logic per-symbol.
+ *
+ * backtest-day.ts merges it with defaults at runtime.
+ */
+
+import type { ConfidenceBreakdown } from '../../types/analysis.js';
+import type { SignalDirection, AlignmentType } from '../../types/signal.js';
+
+// ── Entry context passed to hooks ────────────────────────────────────────────
+
+export interface EntryContext {
+  signalMode: 'trend' | 'range' | 'breakout';
+  direction: SignalDirection;
+  alignment: AlignmentType;
+  confidence: number;
+  breakdown: ConfidenceBreakdown;
+  strengthScore: number;
+  currentPrice: number;
+  atr: number;
+  rangeExhaustion: number;
+  displacementVelocity: number;
+  choppiness: number;
+  intradayTrendStrength: number;
+  regimeScore: number;
+  dailyEntryCount: number;
+}
+
+// ── Config interface ─────────────────────────────────────────────────────────
+
+export interface TickerBacktestConfig {
+  // ── Numeric parameters ─────────────────────────────────────────────────────
+  minConfidence: number;
+  /** Minimum ATR% to accept breakout entry — filters stale/pre-market data */
+  minAtrPct: number;
+  /** Max entries per day across all modes */
+  maxDailyEntries: number;
+  /** Breakout: max rangeExhaustion to accept */
+  breakoutMaxExhaustion: number;
+  /** Breakout: max choppiness to accept */
+  breakoutMaxChop: number;
+  /** Breakout: min strength score */
+  breakoutMinStrength: number;
+  /** Breakout: require trendPhase >= 0 always (no strongSignal bypass) */
+  breakoutStrictTrendPhase: boolean;
+  /** Breakout: minimum confidence (above base threshold) */
+  breakoutMinConfidence: number;
+  /** Sim: stop multiplier for breakout mode */
+  breakoutStopMult: number;
+  /** Sim: TP multiplier for breakout mode */
+  breakoutTpMult: number;
+  /** Trend: max rangeExhaustion for confirmation gate entries */
+  trendMaxExhaustion: number;
+
+  // ── Code hooks — override with custom per-ticker logic ─────────────────────
+
+  /**
+   * Custom entry filter — called after all standard filters pass.
+   * Return true to allow entry, false to block.
+   * Use this for ticker-specific logic that doesn't fit into parameters.
+   *
+   * Default: always returns true (no additional filtering).
+   */
+  shouldAllowEntry: (ctx: EntryContext) => boolean;
+
+  /**
+   * Custom confidence adjustment — called after the shared confidence model.
+   * Receives the computed breakdown, returns a modified one.
+   * Use this for ticker-specific confidence caps, bonuses, or penalties.
+   *
+   * Default: returns the breakdown unchanged.
+   */
+  adjustConfidence: (breakdown: ConfidenceBreakdown, ctx: EntryContext) => ConfidenceBreakdown;
+}
+
+export const DEFAULT_BT_CONFIG: TickerBacktestConfig = {
+  minConfidence: 0.65,
+  minAtrPct: 0,
+  maxDailyEntries: 2,
+  breakoutMaxExhaustion: 10.0,
+  breakoutMaxChop: 999,
+  breakoutMinStrength: 35,
+  breakoutStrictTrendPhase: false,
+  breakoutMinConfidence: 0,
+  breakoutStopMult: 0.7,
+  breakoutTpMult: 1.8,
+  trendMaxExhaustion: 12.0,
+  shouldAllowEntry: () => true,
+  adjustConfidence: (cb) => cb,
+};

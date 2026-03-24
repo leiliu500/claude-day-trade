@@ -45,6 +45,7 @@ import {
 import { AlpacaStreamManager } from '../lib/alpaca-stream.js';
 import type { TradeUpdateEvent } from '../lib/alpaca-stream.js';
 import { config } from '../config.js';
+import { getTickerConfig } from '../ticker-configs.js';
 import type { DecisionResult } from '../types/decision.js';
 import type { OptionCandidate } from '../types/options.js';
 import type { SizeResult, OrderRecord } from '../types/trade.js';
@@ -216,12 +217,13 @@ export class OrderAgent {
       const currentMid = await fetchOptionMid(candidate.contract.symbol);
       if (currentMid !== null && candidate.entryPremium > 0) {
         const driftPct = Math.abs(currentMid - candidate.entryPremium) / candidate.entryPremium;
-        if (driftPct > config.MAX_ENTRY_DRIFT_PCT) {
+        const tcfg = getTickerConfig(ticker);
+        if (driftPct > tcfg.maxEntryDriftPct) {
           console.warn(
             `[OrderAgent ${ticker}] Stale entry guard: ` +
             `selection mid=$${candidate.entryPremium.toFixed(2)}, ` +
             `current mid=$${currentMid.toFixed(2)}, ` +
-            `drift=${(driftPct * 100).toFixed(1)}% > ${(config.MAX_ENTRY_DRIFT_PCT * 100).toFixed(0)}% — skipping`,
+            `drift=${(driftPct * 100).toFixed(1)}% > ${(tcfg.maxEntryDriftPct * 100).toFixed(0)}% — skipping`,
           );
           this.positionId = await insertPosition({ sessionId, decisionId: decision.id, ticker, candidate, sizing });
           await this._voidPosition('stale_entry_rejected');
@@ -231,7 +233,7 @@ export class OrderAgent {
             `Option: ${candidate.contract.symbol}\n` +
             `Selection mid: $${candidate.entryPremium.toFixed(2)}\n` +
             `Current mid: $${currentMid.toFixed(2)}\n` +
-            `Drift: ${(driftPct * 100).toFixed(1)}% > ${(config.MAX_ENTRY_DRIFT_PCT * 100).toFixed(0)}% threshold`,
+            `Drift: ${(driftPct * 100).toFixed(1)}% > ${(tcfg.maxEntryDriftPct * 100).toFixed(0)}% threshold`,
           );
           this._selfRemove();
           return;
@@ -445,7 +447,7 @@ export class OrderAgent {
       //   (b) standard urgency EXIT/REDUCE with high confidence (>= MIN_CONFIDENCE) —
       //       market has turned while we waited; filling into a losing trade is worse than missing the entry.
       const isExitOrReduce = suggestion.decisionType === 'EXIT' || suggestion.decisionType === 'REDUCE_EXPOSURE';
-      const isHighConfidence = (suggestion.confidence ?? 0) >= config.MIN_CONFIDENCE;
+      const isHighConfidence = (suggestion.confidence ?? 0) >= getTickerConfig(this.cfg.decision.ticker).minConfidence;
       const shouldCancel =
         suggestion.urgency === 'immediate' ||
         (isExitOrReduce && suggestion.urgency === 'standard' && isHighConfidence);

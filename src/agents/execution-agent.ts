@@ -11,6 +11,7 @@
 
 import { config } from '../config.js';
 import { checkSafetyGates } from '../pipeline/safety-gates.js';
+import type { TickerConfig } from '../ticker-configs.js';
 import type { AnalysisResult } from '../types/analysis.js';
 import type { OptionEvaluation } from '../types/options.js';
 import type { DecisionResult } from '../types/decision.js';
@@ -46,6 +47,7 @@ function computeSizing(
   accountEquity: number,
   accountBuyingPower: number,
   spread: number,
+  tickerCfg?: TickerConfig,
 ): SizeResult {
   const tier: ConvictionTier =
     convictionScore >= 7 ? 'MAX_CONVICTION' :
@@ -53,12 +55,14 @@ function computeSizing(
     'REGULAR';
 
   const multiplier      = tier === 'MAX_CONVICTION' ? 1.5 : tier === 'SIZABLE' ? 1.25 : 1;
-  const baseRisk        = accountEquity * config.MAX_RISK_PCT;
+  const maxRiskPct = tickerCfg?.maxRiskPct ?? config.MAX_RISK_PCT;
+  const maxContracts = tickerCfg?.maxContracts ?? config.MAX_CONTRACTS;
+  const baseRisk        = accountEquity * maxRiskPct;
   const effectiveRisk   = baseRisk * multiplier;
   const riskPerContract = (entryPremium - stopPremium) * 100;
 
   let qty = riskPerContract > 0 ? Math.floor(effectiveRisk / riskPerContract) : 1;
-  qty = Math.max(1, Math.min(qty, config.MAX_CONTRACTS));
+  qty = Math.max(1, Math.min(qty, maxContracts));
 
   const totalCost = qty * entryPremium * 100;
   if (totalCost > accountBuyingPower) {
@@ -93,8 +97,9 @@ export class ExecutionAgent {
     accountBuyingPower: number;
     dailyRealizedPnl: number;
     timeGateOk: boolean;
+    tickerCfg?: TickerConfig;
   }): { sizing: SizeResult | null; passed: boolean; failedGates: string[] } {
-    const { decision, signal, option, analysis, accountEquity, accountBuyingPower, dailyRealizedPnl, timeGateOk } = params;
+    const { decision, signal, option, analysis, accountEquity, accountBuyingPower, dailyRealizedPnl, timeGateOk, tickerCfg } = params;
     const candidate = option.winnerCandidate;
 
     if (!candidate) {
@@ -109,6 +114,7 @@ export class ExecutionAgent {
       accountEquity,
       accountBuyingPower,
       candidate.contract.spread,
+      tickerCfg,
     );
 
     // LTF ATR% for volatility spike gate — LTF is timeframes[0]
@@ -125,6 +131,7 @@ export class ExecutionAgent {
       proposedQty:  sizing.qty,
       proposedCost: sizing.qty * candidate.entryPremium * 100,
       ltfAtrPct,
+      tickerCfg,
     });
 
     if (!gates.passed) {

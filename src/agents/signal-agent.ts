@@ -118,7 +118,8 @@ export class SignalAgent {
     ticker: string,
     profile: TradingProfile,
     trigger: 'AUTO' | 'MANUAL',
-    sessionId?: string
+    sessionId?: string,
+    tickerCfg?: import('../ticker-configs.js').TickerConfig,
   ): Promise<SignalPayload> {
     const [ltf, mtf, htf] = PROFILE_TIMEFRAMES[profile];
 
@@ -189,80 +190,81 @@ export class SignalAgent {
     const atr = tfIndicators[2]?.atr.atr ?? tfIndicators[0]?.atr.atr ?? 0; // use HTF ATR
     const atm = Math.round(currentPrice);  // nearest whole-dollar ATM strike
 
-    // ── Range detection ──────────────────────────────────────────────────────
-    // Detect range-bound regime: low ADX, no fresh DI cross, price at range extreme
+    // ── Mode detection (per-symbol strategy or inline default) ────────────────
     let signalMode: 'trend' | 'range' | 'breakout' = 'trend';
     let rangeSupport: number | undefined;
     let rangeResistance: number | undefined;
-    const htfTfForRange = tfIndicators[2]!;
-    const htfAdxForRange = htfTfForRange.dmi.adx;
-    const htfHasFreshCross = htfTfForRange.dmi.crossedUp || htfTfForRange.dmi.crossedDown;
-    const htfRangePos = htfTfForRange.priceStructure.rangePosition;
-    const htfSwingHigh = htfTfForRange.priceStructure.swingHigh;
-    const htfSwingLow = htfTfForRange.priceStructure.swingLow;
-    const htfSwingRange = htfSwingHigh - htfSwingLow;
-    const htfSwingRangePct = htfSwingRange / currentPrice * 100;
-
-    if (htfAdxForRange < 22 && !htfHasFreshCross
-        && htfRangePos >= 0.05 && htfRangePos <= 0.95
-        && htfSwingRangePct >= 0.20) {
-      const atResistance = htfRangePos >= 0.70;
-      const atSupport = htfRangePos <= 0.30;
-      if (atResistance || atSupport) {
-        signalMode = 'range';
-        rangeSupport = htfSwingLow;
-        rangeResistance = htfSwingHigh;
-        // Override direction based on range position
-        direction = atResistance ? 'bearish' : 'bullish';
-      }
-    }
-
-    // ── Breakout detection ────────────────────────────────────────────────────
-    // Detect squeeze breakout: ADX was low but rising, price just broke swing high/low,
-    // with volume confirmation.  Catches the transition from range to trend before ADX
-    // reaches 22+ and the phase-change override can fire.
     let breakoutLevel: number | undefined;
     let breakoutBeyond: number | undefined;
-    if (signalMode === 'trend' && htfAdxForRange < 25 && htfTfForRange.dmi.adxSlope > 0) {
-      // Use lagged swing levels (exclude last 3 bars) so the breakout level is a fixed
-      // target, not one that moves with price.
-      const htfBarsForBO = htfTfForRange.bars.slice(-20, -3);
-      let boSwingHigh = -Infinity, boSwingLow = Infinity;
-      for (const b of htfBarsForBO) {
-        if (b.high > boSwingHigh) boSwingHigh = b.high;
-        if (b.low < boSwingLow) boSwingLow = b.low;
+
+    const strategy = tickerCfg?.strategy;
+    if (strategy) {
+      // Use per-symbol strategy for mode detection
+      const modeResult = strategy.detectMode(tfIndicators, direction, currentPrice);
+      signalMode = modeResult.signalMode;
+      if (modeResult.direction) direction = modeResult.direction;
+      rangeSupport = modeResult.rangeSupport;
+      rangeResistance = modeResult.rangeResistance;
+      breakoutLevel = modeResult.breakoutLevel;
+      breakoutBeyond = modeResult.breakoutBeyond;
+    } else {
+      // Inline default (SPY-tuned) — kept for backward compat with backtest scripts
+      const htfTfForRange = tfIndicators[2]!;
+      const htfAdxForRange = htfTfForRange.dmi.adx;
+      const htfHasFreshCross = htfTfForRange.dmi.crossedUp || htfTfForRange.dmi.crossedDown;
+      const htfRangePos = htfTfForRange.priceStructure.rangePosition;
+      const htfSwingHigh = htfTfForRange.priceStructure.swingHigh;
+      const htfSwingLow = htfTfForRange.priceStructure.swingLow;
+      const htfSwingRange = htfSwingHigh - htfSwingLow;
+      const htfSwingRangePct = htfSwingRange / currentPrice * 100;
+
+      if (htfAdxForRange < 22 && !htfHasFreshCross
+          && htfRangePos >= 0.05 && htfRangePos <= 0.95
+          && htfSwingRangePct >= 0.20) {
+        const atResistance = htfRangePos >= 0.70;
+        const atSupport = htfRangePos <= 0.30;
+        if (atResistance || atSupport) {
+          signalMode = 'range';
+          rangeSupport = htfSwingLow;
+          rangeResistance = htfSwingHigh;
+          direction = atResistance ? 'bearish' : 'bullish';
+        }
       }
-      const boSwingRange = boSwingHigh - boSwingLow;
-      const brokeHigh = currentPrice > boSwingHigh && boSwingRange > 0;
-      const brokeLow = currentPrice < boSwingLow && boSwingRange > 0;
-      if (brokeHigh || brokeLow) {
-        const beyondPct = brokeHigh
-          ? ((currentPrice - boSwingHigh) / currentPrice) * 100
-          : ((boSwingLow - currentPrice) / currentPrice) * 100;
-        // Only trigger if price is genuinely beyond the level (> 0.02% to filter noise)
-        // but not too far (< 0.40% — that's chasing, not a fresh breakout)
-        if (beyondPct > 0.02 && beyondPct < 0.40) {
-          // Confirmation: OBV trending in breakout direction, or fresh DI cross, or rising DI spread.
-          // OBV alone is too strict — breakout momentum often leads OBV.
-          const htfObv = tfIndicators[2]!.obv;
-          const obvConfirms = brokeHigh
-            ? htfObv.trend === 'bullish'
-            : htfObv.trend === 'bearish';
-          const htfDiCross = brokeHigh ? htfTfForRange.dmi.crossedUp : htfTfForRange.dmi.crossedDown;
-          const diSpreadConfirms = htfTfForRange.dmi.diSpreadSlope > 1;
-          if (obvConfirms || htfDiCross || diSpreadConfirms) {
-            signalMode = 'breakout';
-            breakoutLevel = brokeHigh ? boSwingHigh : boSwingLow;
-            breakoutBeyond = beyondPct;
-            direction = brokeHigh ? 'bullish' : 'bearish';
+
+      if (signalMode === 'trend' && htfAdxForRange < 25 && htfTfForRange.dmi.adxSlope > 0) {
+        const htfBarsForBO = htfTfForRange.bars.slice(-20, -3);
+        let boSwingHigh = -Infinity, boSwingLow = Infinity;
+        for (const b of htfBarsForBO) {
+          if (b.high > boSwingHigh) boSwingHigh = b.high;
+          if (b.low < boSwingLow) boSwingLow = b.low;
+        }
+        const boSwingRange = boSwingHigh - boSwingLow;
+        const brokeHigh = currentPrice > boSwingHigh && boSwingRange > 0;
+        const brokeLow = currentPrice < boSwingLow && boSwingRange > 0;
+        if (brokeHigh || brokeLow) {
+          const beyondPct = brokeHigh
+            ? ((currentPrice - boSwingHigh) / currentPrice) * 100
+            : ((boSwingLow - currentPrice) / currentPrice) * 100;
+          if (beyondPct > 0.02 && beyondPct < 0.40) {
+            const htfObv = tfIndicators[2]!.obv;
+            const obvConfirms = brokeHigh ? htfObv.trend === 'bullish' : htfObv.trend === 'bearish';
+            const htfDiCross = brokeHigh ? htfTfForRange.dmi.crossedUp : htfTfForRange.dmi.crossedDown;
+            const diSpreadConfirms = htfTfForRange.dmi.diSpreadSlope > 1;
+            if (obvConfirms || htfDiCross || diSpreadConfirms) {
+              signalMode = 'breakout';
+              breakoutLevel = brokeHigh ? boSwingHigh : boSwingLow;
+              breakoutBeyond = beyondPct;
+              direction = brokeHigh ? 'bullish' : 'bearish';
+            }
           }
         }
       }
     }
 
-    // Numeric strength score 0–100: HTF ADX scaled so ADX 25 ≈ score 50, ADX 50 ≈ score 100
-    const htfAdx = tfIndicators[2]?.dmi.adx ?? tfIndicators[1]?.dmi.adx ?? 0;
-    const strengthScore = Math.min(100, Math.round(htfAdx * 2));
+    // Numeric strength score — per-symbol strategy or default
+    const strengthScore = strategy
+      ? strategy.computeStrength(tfIndicators)
+      : Math.min(100, Math.round((tfIndicators[2]?.dmi.adx ?? tfIndicators[1]?.dmi.adx ?? 0) * 2));
 
     // Market structure: PDH/PDL from daily bars; ORB from LTF (most granular intraday bars)
     const priorDayLevels = computePriorDayLevels(dailyBars, currentPrice);

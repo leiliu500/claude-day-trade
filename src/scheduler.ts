@@ -5,16 +5,15 @@ import { notifySignalAnalysis, notifyAlert } from './telegram/notifier.js';
 import { AlpacaStreamManager } from './lib/alpaca-stream.js';
 import { cancelAllOpenOrders, closeAllPositions } from './lib/alpaca-api.js';
 import { OrderAgentRegistry } from './agents/order-agent-registry.js';
+import { getEnabledTickers } from './ticker-configs.js';
 import {
   insertSchedulerRun,
   completeSchedulerRun,
   type TickerRunResult,
 } from './db/repositories/scheduler-runs.js';
 
-// Default AUTO tickers — can be extended via config
-const AUTO_TICKERS: Array<{ ticker: string; profile: 'S' | 'M' | 'L' }> = [
-  { ticker: 'SPY', profile: 'S' },
-];
+// AUTO tickers — loaded from per-symbol config (ticker-configs.ts)
+const AUTO_TICKERS = getEnabledTickers();
 
 const TRADING_INTERVAL_MS = 3 * 60 * 1000; // 3 minutes
 

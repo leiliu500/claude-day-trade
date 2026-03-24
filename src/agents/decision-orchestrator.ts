@@ -100,8 +100,9 @@ function computeServerConfirmationCount(
 }
 
 export class DecisionOrchestrator {
-  async run(input: OrchestratorInput): Promise<DecisionResult> {
+  async run(input: OrchestratorInput, tickerCfg?: import('../ticker-configs.js').TickerConfig): Promise<DecisionResult> {
     const { signal, option, analysis, context, timeGateOk } = input;
+    const minConfidence = tickerCfg?.minConfidence ?? config.MIN_CONFIDENCE;
     const { isEodWindow, minutesToClose } = computeEodWindow();
     const { isFomcWindow, minutesToEvent: fomcMinutesToEvent, eventDescription: fomcEventDescription } = checkFomcWindow(30);
 
@@ -333,10 +334,10 @@ export class DecisionOrchestrator {
         rawOutput.decision_type = 'WAIT';
         rawOutput.should_execute = false;
         rawOutput.reasoning = `[GATE OVERRIDE] Liquidity/candidate gate failed. ${rawOutput.reasoning}`;
-      } else if (analysis.confidence < config.MIN_CONFIDENCE) {
+      } else if (analysis.confidence < minConfidence) {
         rawOutput.decision_type = 'WAIT';
         rawOutput.should_execute = false;
-        rawOutput.reasoning = `[GATE OVERRIDE] Confidence ${analysis.confidence.toFixed(2)} < ${config.MIN_CONFIDENCE}. ${rawOutput.reasoning}`;
+        rawOutput.reasoning = `[GATE OVERRIDE] Confidence ${analysis.confidence.toFixed(2)} < ${minConfidence}. ${rawOutput.reasoning}`;
       }
       // NOTE: should_execute=false returned by the AI for a valid NEW_ENTRY/ADD_POSITION is
       // intentionally respected — it means the AI expressed doubt.  The confirmation count gate

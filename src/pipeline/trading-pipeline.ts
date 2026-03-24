@@ -12,6 +12,7 @@ import { insertSignalSnapshot } from '../db/repositories/signals.js';
 import { insertDecision } from '../db/repositories/decisions.js';
 import { v4 as uuidv4 } from 'uuid';
 import { config } from '../config.js';
+import { getTickerConfig, type TickerConfig } from '../ticker-configs.js';
 import { fetchOptionMid } from '../lib/alpaca-api.js';
 import type { TradingProfile } from '../types/market.js';
 import type { DecisionType, DecisionResult, PositionContext } from '../types/decision.js';
@@ -31,9 +32,10 @@ function deterministicWait(
   profile: TradingProfile,
   timeGateOk: boolean,
   sessionId: string,
+  tickerCfg: TickerConfig,
 ): DecisionResult {
   const confPct = (analysis.confidence * 100).toFixed(0);
-  const threshPct = (config.MIN_CONFIDENCE * 100).toFixed(0);
+  const threshPct = (tickerCfg.minConfidence * 100).toFixed(0);
   const reason = !timeGateOk
     ? `Market closed (time gate) — no open positions to manage. AI orchestration skipped. (Confidence ${confPct}%, threshold ${threshPct}%)`
     : `Confidence ${confPct}% < threshold ${threshPct}% — no open positions to manage. AI orchestration skipped.`;
@@ -96,11 +98,32 @@ export interface PipelineResult {
   error?: string;
 }
 
-const signalAgent          = new SignalAgent();
-const optionAgent          = new OptionAgent();
-const analysisAgent        = new AnalysisAgent();
-const decisionOrchestrator = new DecisionOrchestrator();
-const executionAgent       = new ExecutionAgent();
+// ── Per-ticker agent instances ──────────────────────────────────────────────
+// Each ticker gets its own DecisionOrchestrator (stateful: confirmation history)
+// and AnalysisAgent (may be extended with per-symbol tuning).
+// Signal, Option, and Execution agents are stateless — shared across tickers.
+const signalAgent    = new SignalAgent();
+const optionAgent    = new OptionAgent();
+const executionAgent = new ExecutionAgent();
+
+interface TickerAgents {
+  analysisAgent: AnalysisAgent;
+  decisionOrchestrator: DecisionOrchestrator;
+}
+const tickerAgents = new Map<string, TickerAgents>();
+
+function getAgentsForTicker(ticker: string): TickerAgents {
+  let agents = tickerAgents.get(ticker);
+  if (!agents) {
+    agents = {
+      analysisAgent: new AnalysisAgent(),
+      decisionOrchestrator: new DecisionOrchestrator(),
+    };
+    tickerAgents.set(ticker, agents);
+    console.log(`[Pipeline] Created isolated agents for ${ticker}`);
+  }
+  return agents;
+}
 
 /**
  * The main trading pipeline — runs end-to-end for one ticker + profile.
@@ -121,7 +144,9 @@ export async function runPipeline(
   profile: TradingProfile,
   trigger: 'AUTO' | 'MANUAL'
 ): Promise<PipelineResult> {
-  console.log(`[Pipeline] Starting: ${ticker} ${profile} (${trigger})`);
+  const tickerCfg = getTickerConfig(ticker);
+  const { analysisAgent, decisionOrchestrator } = getAgentsForTicker(ticker);
+  console.log(`[Pipeline] Starting: ${ticker} ${profile} (${trigger}) [minConf=${tickerCfg.minConfidence}]`);
 
   try {
     // ── Phase 1: Market hours (cheap — determines whether AI calls are needed) ─
@@ -141,7 +166,7 @@ export async function runPipeline(
       ? optionAgent.prefetchContracts(ticker, estimatedAtm)
       : undefined;
 
-    const signal = await signalAgent.run(ticker, profile, trigger, sessionId);
+    const signal = await signalAgent.run(ticker, profile, trigger, sessionId, tickerCfg);
     console.log(`[Pipeline] Signal: ${signal.direction} (${signal.alignment})${signal.signalMode === 'range' ? ` [RANGE mode: support=$${signal.rangeSupport?.toFixed(2)}, resist=$${signal.rangeResistance?.toFixed(2)}]` : signal.signalMode === 'breakout' ? ` [BREAKOUT mode: level=$${signal.breakoutLevel?.toFixed(2)}, beyond=${signal.breakoutBeyond?.toFixed(3)}%]` : ''}`);
 
     // ── Phase 4: Option Selection (contracts already prefetched if stream was warm) ──
@@ -150,7 +175,7 @@ export async function runPipeline(
     console.log(`[Pipeline] Option: winner=${optionEval.winner ?? 'none'}, liq=${optionEval.liquidityOk}`);
 
     // ── Phase 5: Analysis (deterministic confidence; AI explanation only when market open) ──
-    const analysis = await analysisAgent.run(signal, optionEval, timeGateOk);
+    const analysis = await analysisAgent.run(signal, optionEval, timeGateOk, tickerCfg);
     console.log(`[Pipeline] Analysis: confidence=${analysis.confidence.toFixed(2)}, threshold=${analysis.meetsEntryThreshold}`);
     if (analysis.confidenceBreakdown) {
       const cb = analysis.confidenceBreakdown;
@@ -178,8 +203,8 @@ export async function runPipeline(
     // Fire both concurrently: AI streams decision while fresh quote fetches
     const [decision, freshMid] = await Promise.all([
       useAI
-        ? decisionOrchestrator.run({ signal, option: optionEval, analysis, context, timeGateOk })
-        : deterministicWait(signal, analysis, ticker, profile, timeGateOk, sessionId),
+        ? decisionOrchestrator.run({ signal, option: optionEval, analysis, context, timeGateOk }, tickerCfg)
+        : deterministicWait(signal, analysis, ticker, profile, timeGateOk, sessionId, tickerCfg),
       optionSymbol ? fetchOptionMid(optionSymbol).catch(() => null) : Promise.resolve(null),
     ]);
     console.log(`[Pipeline] Decision: ${decision.decisionType} (execute=${decision.shouldExecute}${useAI ? '' : ', deterministic'})`);
@@ -252,7 +277,7 @@ export async function runPipeline(
         const { sizing: newSizing, passed: newPassed, failedGates: newFailed } = executionAgent.prepareEntry({
           decision, signal, option: optionEval, analysis,
           accountEquity: context.accountEquity, accountBuyingPower: context.accountBuyingPower,
-          dailyRealizedPnl: context.dailyRealizedPnl, timeGateOk,
+          dailyRealizedPnl: context.dailyRealizedPnl, timeGateOk, tickerCfg,
         });
         if (!newPassed || !newSizing || !optionEval.winnerCandidate) {
           result.failedGates = newFailed; break;
@@ -285,7 +310,7 @@ export async function runPipeline(
         const { sizing: addSizing, passed: addPassed, failedGates: addFailed } = executionAgent.prepareEntry({
           decision, signal, option: optionEval, analysis,
           accountEquity: context.accountEquity, accountBuyingPower: context.accountBuyingPower,
-          dailyRealizedPnl: context.dailyRealizedPnl, timeGateOk,
+          dailyRealizedPnl: context.dailyRealizedPnl, timeGateOk, tickerCfg,
         });
         if (!addPassed || !addSizing || !optionEval.winnerCandidate) {
           result.failedGates = addFailed; break;
@@ -404,7 +429,7 @@ export async function runPipeline(
         const { sizing: revSizing, passed: revPassed, failedGates: revFailed } = executionAgent.prepareEntry({
           decision, signal, option: optionEval, analysis,
           accountEquity: context.accountEquity, accountBuyingPower: context.accountBuyingPower,
-          dailyRealizedPnl: context.dailyRealizedPnl, timeGateOk,
+          dailyRealizedPnl: context.dailyRealizedPnl, timeGateOk, tickerCfg,
         });
         if (!revPassed || !revSizing || !optionEval.winnerCandidate) {
           result.failedGates = revFailed; break;

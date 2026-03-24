@@ -84,7 +84,11 @@
       "Bash(find /home/ec2-user/claude-day-trade -type d -name test* -o -name output* -o -name results* -o -name data)",
       "Bash(wc -l /home/ec2-user/claude-day-trade/src/agents/*.ts)",
       "Bash(grep 15:1[0-5])",
-      "Bash(./node_modules/.bin/tsc --noEmit src/scripts/compare-live-backtest.ts)"
+      "Bash(./node_modules/.bin/tsc --noEmit src/scripts/compare-live-backtest.ts)",
+      "Read(//home/ec2-user/claude-day-trade/**)",
+      "Bash(sort -t= -k2 -rn)",
+      "Bash(chmod +x /tmp/run-backtest-batch.sh)",
+      "Bash(bash /tmp/run-backtest-batch.sh)"
     ],
     "additionalDirectories": [
       "/tmp"

@@ -1,4 +1,5 @@
 import { config } from '../config.js';
+import type { TickerConfig } from '../ticker-configs.js';
 import type { AnalysisResult } from '../types/analysis.js';
 import type { OptionEvaluation } from '../types/options.js';
 import type { DecisionResult } from '../types/decision.js';
@@ -23,8 +24,16 @@ export function checkSafetyGates(params: {
   proposedQty: number;
   proposedCost: number;
   ltfAtrPct?: number;
+  tickerCfg?: TickerConfig;
 }): GateCheckResult {
-  const { timeGateOk, analysis, option, decision, accountBuyingPower, accountEquity, dailyRealizedPnl, proposedQty, proposedCost, ltfAtrPct } = params;
+  const { timeGateOk, analysis, option, decision, accountBuyingPower, accountEquity, dailyRealizedPnl, proposedQty, proposedCost, ltfAtrPct, tickerCfg } = params;
+  // Per-symbol config with global fallback
+  const minConfidence = tickerCfg?.minConfidence ?? config.MIN_CONFIDENCE;
+  const maxSpreadPct = tickerCfg?.maxSpreadPct ?? config.MAX_SPREAD_PCT;
+  const minRRRatio = tickerCfg?.minRRRatio ?? config.MIN_RR_RATIO;
+  const maxContracts = tickerCfg?.maxContracts ?? config.MAX_CONTRACTS;
+  const dailyLossLimitPct = tickerCfg?.dailyLossLimitPct ?? config.DAILY_LOSS_LIMIT_PCT;
+  const maxLtfAtrPct = tickerCfg?.maxLtfAtrPct ?? config.MAX_LTF_ATR_PCT;
   const failed: string[] = [];
 
   // 1. Time gate — market must be open
@@ -33,18 +42,18 @@ export function checkSafetyGates(params: {
   // 2. Liquidity gate — spread must be within limit
   if (!option.liquidityOk) {
     const pct = option.winnerCandidate?.contract.spreadPct?.toFixed(2) ?? '?';
-    failed.push(`LIQUIDITY_GATE: spread ${pct}% exceeds ${(config.MAX_SPREAD_PCT * 100).toFixed(0)}%`);
+    failed.push(`LIQUIDITY_GATE: spread ${pct}% exceeds ${(maxSpreadPct * 100).toFixed(0)}%`);
   }
 
   // 3. Confidence gate — must meet minimum for entry
-  if (analysis.confidence < config.MIN_CONFIDENCE) {
-    failed.push(`CONFIDENCE_GATE: ${analysis.confidence.toFixed(2)} < ${config.MIN_CONFIDENCE}`);
+  if (analysis.confidence < minConfidence) {
+    failed.push(`CONFIDENCE_GATE: ${analysis.confidence.toFixed(2)} < ${minConfidence}`);
   }
 
   // 4. R:R gate — minimum risk/reward
   const rr = option.winnerCandidate?.rrRatio ?? 0;
-  if (rr < config.MIN_RR_RATIO) {
-    failed.push(`RR_GATE: R:R ${rr.toFixed(2)} < ${config.MIN_RR_RATIO}`);
+  if (rr < minRRRatio) {
+    failed.push(`RR_GATE: R:R ${rr.toFixed(2)} < ${minRRRatio}`);
   }
 
   // 5. Side mismatch gate
@@ -63,17 +72,17 @@ export function checkSafetyGates(params: {
   }
 
   // 8. Quantity cap gate
-  if (proposedQty > config.MAX_CONTRACTS) {
-    failed.push(`QTY_CAP_GATE: qty ${proposedQty} > max ${config.MAX_CONTRACTS}`);
+  if (proposedQty > maxContracts) {
+    failed.push(`QTY_CAP_GATE: qty ${proposedQty} > max ${maxContracts}`);
   }
 
   // 9. Daily loss limit gate — halt new entries once today's realized losses exceed threshold
   if (accountEquity > 0 && dailyRealizedPnl < 0) {
-    const limitUsd = accountEquity * config.DAILY_LOSS_LIMIT_PCT;
+    const limitUsd = accountEquity * dailyLossLimitPct;
     if (-dailyRealizedPnl > limitUsd) {
       failed.push(
         `DAILY_LOSS_GATE: today's realized P&L $${dailyRealizedPnl.toFixed(0)} exceeds ` +
-        `-${(config.DAILY_LOSS_LIMIT_PCT * 100).toFixed(0)}% limit ($-${limitUsd.toFixed(0)})`,
+        `-${(dailyLossLimitPct * 100).toFixed(0)}% limit ($-${limitUsd.toFixed(0)})`,
       );
     }
   }
@@ -100,9 +109,9 @@ export function checkSafetyGates(params: {
   }
 
   // 11. Volatility spike gate — skip entries when LTF ATR% indicates choppy/event-driven conditions
-  if (ltfAtrPct !== undefined && ltfAtrPct > config.MAX_LTF_ATR_PCT) {
+  if (ltfAtrPct !== undefined && ltfAtrPct > maxLtfAtrPct) {
     failed.push(
-      `VOLATILITY_SPIKE_GATE: LTF ATR ${(ltfAtrPct * 100).toFixed(2)}% > ${(config.MAX_LTF_ATR_PCT * 100).toFixed(0)}% — conditions too volatile for entry`,
+      `VOLATILITY_SPIKE_GATE: LTF ATR ${(ltfAtrPct * 100).toFixed(2)}% > ${(maxLtfAtrPct * 100).toFixed(0)}% — conditions too volatile for entry`,
     );
   }
 
