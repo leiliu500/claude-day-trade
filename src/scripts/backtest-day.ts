@@ -1442,7 +1442,7 @@ async function main() {
       breakdown: cbRaw, strengthScore, currentPrice, atr,
       rangeExhaustion, displacementVelocity, choppiness,
       intradayTrendStrength, regimeScore, dailyEntryCount,
-      ltfBars: ltfBars as Array<{ open: number; high: number; low: number; close: number }>,
+      ltfBars,
       ltfVwapPriceVs: tfIndicators[0]?.vwap?.priceVsVwap ?? 0,
     };
     const cb = TCFG.adjustConfidence(cbRaw, entryCtx);

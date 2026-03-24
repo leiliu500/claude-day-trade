@@ -1518,19 +1518,46 @@ export class AnalysisAgent {
       cb = computeConfidence(signal, option);
     }
 
+    // ── Build per-symbol entry context (shared by adjustConfidence + shouldAllowEntry) ──
+    // Displacement velocity: rate of change in price displacement from day open.
+    // Positive = price accelerating away from open (trending), negative = reverting.
+    // Computed from LTF bars filtered to today's regular session.
+    let displacementVelocity: number | undefined;
+    {
+      const ltfBars = signal.timeframes[0]?.bars;
+      if (ltfBars && ltfBars.length >= 10) {
+        const todayStr = new Date().toISOString().slice(0, 10);
+        const todayBars = ltfBars.filter(b => b.timestamp.startsWith(todayStr));
+        if (todayBars.length >= 10) {
+          const dayOpen = todayBars[0]!.open;
+          if (dayOpen > 0) {
+            const recent5 = todayBars.slice(-5);
+            const prior5 = todayBars.slice(-10, -5);
+            const avgRecent = recent5.reduce((s, b) => s + Math.abs(b.close - dayOpen) / dayOpen * 100, 0) / 5;
+            const avgPrior = prior5.reduce((s, b) => s + Math.abs(b.close - dayOpen) / dayOpen * 100, 0) / 5;
+            displacementVelocity = avgRecent - avgPrior;
+          }
+        }
+      }
+    }
+
+    const entryCtx = {
+      signalMode: (signal.signalMode ?? 'trend') as 'trend' | 'range' | 'breakout',
+      direction: signal.direction,
+      alignment: signal.alignment,
+      confidence: cb.total,
+      breakdown: cb,
+      strengthScore: signal.strengthScore,
+      currentPrice: signal.currentPrice,
+      atr: signal.atr,
+      displacementVelocity,
+    };
+
     // Per-symbol confidence adjustment hook
     if (tickerCfg?.strategy?.adjustConfidence) {
-      const ctx = {
-        signalMode: (signal.signalMode ?? 'trend') as 'trend' | 'range' | 'breakout',
-        direction: signal.direction,
-        alignment: signal.alignment,
-        confidence: cb.total,
-        breakdown: cb,
-        strengthScore: signal.strengthScore,
-        currentPrice: signal.currentPrice,
-        atr: signal.atr,
-      };
-      cb = tickerCfg.strategy.adjustConfidence(cb, ctx);
+      cb = tickerCfg.strategy.adjustConfidence(cb, entryCtx);
+      entryCtx.confidence = cb.total;
+      entryCtx.breakdown = cb;
     }
 
     const minConf = tickerCfg?.minConfidence ?? config.MIN_CONFIDENCE;
@@ -1538,17 +1565,7 @@ export class AnalysisAgent {
 
     // Per-symbol entry filter hook — can block entries even if confidence meets threshold
     if (meetsEntryThreshold && tickerCfg?.strategy?.shouldAllowEntry) {
-      const ctx = {
-        signalMode: (signal.signalMode ?? 'trend') as 'trend' | 'range' | 'breakout',
-        direction: signal.direction,
-        alignment: signal.alignment,
-        confidence: cb.total,
-        breakdown: cb,
-        strengthScore: signal.strengthScore,
-        currentPrice: signal.currentPrice,
-        atr: signal.atr,
-      };
-      if (!tickerCfg.strategy.shouldAllowEntry(ctx)) {
+      if (!tickerCfg.strategy.shouldAllowEntry(entryCtx)) {
         meetsEntryThreshold = false;
       }
     }

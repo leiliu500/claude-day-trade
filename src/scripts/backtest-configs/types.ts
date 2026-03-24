@@ -29,8 +29,8 @@ export interface EntryContext {
   intradayTrendStrength: number;
   regimeScore: number;
   dailyEntryCount: number;
-  /** LTF (1m) bars for per-ticker regime computation — matches live strategy access */
-  ltfBars?: Array<{ open: number; high: number; low: number; close: number }>;
+  /** LTF bars for per-ticker regime computation — matches live strategy access */
+  ltfBars?: Array<{ timestamp: string; open: number; high: number; low: number; close: number }>;
   /** LTF VWAP price-vs-VWAP for per-ticker regime computation */
   ltfVwapPriceVs?: number;
 }

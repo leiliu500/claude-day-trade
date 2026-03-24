@@ -88,7 +88,8 @@
       "Read(//home/ec2-user/claude-day-trade/**)",
       "Bash(sort -t= -k2 -rn)",
       "Bash(chmod +x /tmp/run-backtest-batch.sh)",
-      "Bash(bash /tmp/run-backtest-batch.sh)"
+      "Bash(bash /tmp/run-backtest-batch.sh)",
+      "Bash(npx vitest:*)"
     ],
     "additionalDirectories": [
       "/tmp"

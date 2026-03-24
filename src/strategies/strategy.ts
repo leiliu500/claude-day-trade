@@ -29,6 +29,10 @@ export interface EntryContext {
   strengthScore: number;
   currentPrice: number;
   atr: number;
+  /** Rate of change in price displacement from day open.
+   *  Positive = accelerating away from open (trending), negative = reverting.
+   *  Computed from LTF bars: avg displacement of last 5 bars minus prior 5 bars. */
+  displacementVelocity?: number;
 }
 
 // ── Mode detection result ────────────────────────────────────────────────────
