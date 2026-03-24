@@ -1,6 +1,5 @@
 import cron from 'node-cron';
 import { runPipeline } from './pipeline/trading-pipeline.js';
-import { runDailyCleanup } from './pipeline/daily-cleanup.js';
 import { notifySignalAnalysis, notifyAlert } from './telegram/notifier.js';
 import { AlpacaStreamManager } from './lib/alpaca-stream.js';
 import { cancelAllOpenOrders, closeAllPositions } from './lib/alpaca-api.js';
@@ -258,13 +257,6 @@ export function startScheduler(): void {
   }, { timezone: 'America/New_York' });
   console.log(`[Scheduler] Pre-close cron: "${preCloseCron}" ET (Mon-Fri 15:50 ET, DST-aware)`);
 
-  // Daily cleanup — once a day, cron precision is fine here
-  const cleanupCron = '0 7 * * 1-5';
-  cron.schedule(cleanupCron, async () => {
-    console.log('[Scheduler] Daily cleanup triggered');
-    await runDailyCleanup();
-  }, { timezone: 'UTC' });
-  console.log(`[Scheduler] Cleanup cron: "${cleanupCron}" (Mon-Fri 07:00 UTC)`);
 
   console.log(`[Scheduler] AUTO tickers: ${AUTO_TICKERS.map(t => `${t.ticker}(${t.profile})`).join(', ')}`);
 }
