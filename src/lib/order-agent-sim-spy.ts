@@ -91,18 +91,20 @@ export function simulateOrderAgentSpy(
     const worstPremium = entryPremium + worstUnderlying * delta;
 
     // ── SPY Bar-0 early exit on adverse close ───────────────────────────────
-    // Live order-agent polls option quotes every 5s. If bar 0 closes adverse
-    // (stock moved against entry), the live system exits midway through the bar,
-    // not at the full close loss. With ~12 polls per minute, the exit catches
-    // the decline partway. Model as midpoint between entry and close premium.
+    // Live order-agent polls option quotes every 5s (~12 polls per minute).
+    // If bar 0 closes adverse, the live system catches the decline partway.
     //
-    // Only fires when:
-    //   - bar 0 close is adverse (premium declined from entry)
-    //   - bar didn't hit stop (would have been caught by Rule 1 below)
-    //   - loss at close exceeds 1% (below 1% the live system would hold)
-    if (i === 0 && currentPnl < -1.0) {
-      // Exit at midpoint: represents 5s polling catching decline partway
-      const earlyExitPremium = (entryPremium + currentPremium) / 2;
+    // Calibrated from Mar 23 live data: bar 0 loss ~4.6% at close, live exited
+    // at +0.3% within 46s (bid-ask luck on tight SPY spreads).
+    //
+    // Model: exit at 35% of bar 0 close loss. With 12 polls per minute,
+    // the average detection point is ~2.5 ticks into the decline (first few
+    // polls near entry, then decline accelerates). 35% models this curve.
+    // Threshold raised to -1.5%: the live system holds through small adverse
+    // moves (< 1.5%) on the monitor cycle, only exits on clear reversals.
+    if (i === 0 && currentPnl < -1.5) {
+      // Exit at 35% of bar 0 close loss (not 50% midpoint)
+      const earlyExitPremium = entryPremium + (currentPremium - entryPremium) * 0.35;
       return mkResult(0, 'EARLY_EXIT', earlyExitPremium);
     }
 

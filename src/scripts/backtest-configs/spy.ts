@@ -89,10 +89,23 @@ function computeLiveRegimeScore(
  *   regime <  69 breakouts: 12W/8L (60%), includes +60.0%, +59.6% TP hits
  */
 function spyShouldAllowEntry(ctx: EntryContext): boolean {
-  const { signalMode } = ctx;
+  const { signalMode, atr, currentPrice, displacementVelocity } = ctx;
 
-  // Block breakout entries in mature trending regimes.
-  // Use live-style regime score (candle direction) instead of backtest's DMI-based score.
+  // 1. Block stale-data breakouts: ATR% < 0.08 means 5m ATR collapsed during
+  //    consolidation but breakout detection still fires. These are unreliable.
+  //    Q4+Q1 data: ATR% < 0.08 was 1W/5L (17%).
+  //    Sole winner Oct 06 (+4.3%) had ATR=0.363/$672=0.054%.
+  const atrPct = currentPrice > 0 ? (atr / currentPrice) * 100 : 0;
+  if (signalMode === 'breakout' && atrPct < 0.08) return false;
+
+  // 2. Block entries with negative displacement velocity < -0.05: price is
+  //    reverting toward open, momentum is fading. Entering a breakout while
+  //    displacement is declining = chasing a fading move.
+  //    Q4+Q1 data: dvel < -0.05 was 1W/3L (25%), the 3 losses were EARLY_EXIT.
+  if (signalMode === 'breakout' && displacementVelocity < -0.05) return false;
+
+  // 3. Block breakout entries in mature trending regimes.
+  //    Use live-style regime score (candle direction) instead of backtest's DMI-based score.
   if (signalMode === 'breakout' && ctx.ltfBars) {
     const liveRegime = computeLiveRegimeScore(ctx.ltfBars, ctx.ltfVwapPriceVs ?? 0);
     if (liveRegime >= 68) return false;
