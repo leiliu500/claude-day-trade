@@ -1,13 +1,14 @@
 /**
  * QQQ backtest configuration — parameters + custom code hooks.
  *
- * Tuned from Q1 2026 backtest (Jan-Mar):
+ * Tuned from Q4 2025 + Q1 2026 backtest (Oct 2025 – Mar 2026):
  *   Baseline (SPY defaults): 8W/11L (42%), -63.8%
- *   After tuning:            >60% target
+ *   Q4+Q1 tuned:             7W/2L  (78%), +125.0%
  *
  * QQQ-specific code hooks:
  *   - shouldAllowEntry: blocks trend entries with negative trendPhase,
- *     near-level penalty, or when day already has an entry
+ *     near-level penalty, weak DI spread, or high choppiness (>= 0.55);
+ *     blocks breakout entries missing structure confirmation or low regime (< 60)
  *   - adjustConfidence: applies QQQ-specific confidence penalties
  *     for DI spread weakness and high-chop trend entries
  */
@@ -42,6 +43,24 @@ function qqqShouldAllowEntry(ctx: EntryContext): boolean {
     // QQQ trend rule 3: block weak DI spread entries.
     // Feb 11 loss had DI Spread=+0.033 (weakest). All winners had >= 0.050.
     if (cb.diSpreadBonus < 0.04) return false;
+
+    // QQQ trend rule 4: block high-chop entries.
+    // Jan 13 loss had chop=0.64, all trend winners had chop <= 0.30.
+    // High chop = price oscillating, trend signal is unreliable.
+    if (ctx.choppiness >= 0.55) return false;
+  }
+
+  if (signalMode === 'breakout') {
+    // QQQ breakout rule 1: require structure confirmation.
+    // Jan 30 loss (-35.0%) had structureBonus=0 (no PDH/PDL alignment).
+    // Both breakout winners (Feb 18 +71.6%, Mar 18 +7.9%) had structureBonus=+0.060.
+    // Structure confirms the breakout has a real level behind it, not just noise.
+    if (cb.structureBonus <= 0) return false;
+
+    // QQQ breakout rule 2: require minimum regime (directional conviction).
+    // Dec 10 loss (-35.0%) had regime=56 (low conviction, choppy market).
+    // All breakout winners had regime >= 67. Below 60 = noise, not a real breakout.
+    if (ctx.regimeScore < 60) return false;
   }
 
   return true;
