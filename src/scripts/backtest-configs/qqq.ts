@@ -25,11 +25,7 @@ import { simulateOrderAgentQqq } from '../../lib/order-agent-sim-qqq.js';
  * bad specifically for QQQ based on backtested patterns.
  */
 function qqqShouldAllowEntry(ctx: EntryContext): boolean {
-  const { signalMode, breakdown: cb, dailyEntryCount } = ctx;
-
-  // QQQ rule: max 1 entry per day — 2nd entries on same day were
-  // mostly trend losers chasing after a breakout win (Feb 18, Feb 20).
-  if (dailyEntryCount >= 1) return false;
+  const { signalMode, breakdown: cb } = ctx;
 
   // QQQ rule: block ALL modes with very low ATR% (holiday/thin volume).
   // Dec 24 F-grade had ATR%=0.059% (holiday session, $0.37 ATR on $623).
@@ -123,7 +119,7 @@ export const QQQ_CONFIG: Partial<TickerBacktestConfig> = {
   minConfidence: 0.65,
   // Filter stale/pre-market data (ATR $0.37 on $625 = 0.06%)
   minAtrPct: 0.08,
-  // QQQ: 1 entry per day — 2nd entries chase and lose
+  // QQQ: max 2 entries per day
   maxDailyEntries: 2,
   // Tighter breakout exhaustion (7.0 vs SPY 10.0)
   breakoutMaxExhaustion: 7.0,
