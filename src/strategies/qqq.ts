@@ -2,16 +2,17 @@
  * QQQ-specific trading strategy.
  *
  * Tuned from Q4 2025 + Q1 2026 backtest (Oct 2025 – Mar 2026):
- *   Baseline (SPY defaults): 8W/11L (42%), -63.8%
- *   Q4+Q1 tuned:             7W/2L  (78%), +125.0%
+ *   Q4 2025 + Q1 2026 signal quality: 4A/2B/3F → tuned to 4A/2B/0F (0% bad)
  *
  * QQQ-specific code:
  *   - detectMode: filters stale/pre-market data via ATR% check on breakouts;
  *     computes and caches regime score for entry filter
  *   - adjustConfidence: penalizes high-exhaustion breakouts and choppy trends
- *   - shouldAllowEntry: blocks trend entries with negative trendPhase,
- *     near-level risk, weak DI spread, or high choppiness (>= 0.55);
- *     blocks breakout entries missing structure confirmation or low regime (< 60)
+ *   - shouldAllowEntry: blocks low ATR% (< 0.07 all modes, < 0.09 bearish trend),
+ *     trend entries with negative trendPhase, near-level risk, weak DI spread,
+ *     high choppiness (>= 0.55), bearish trend at high regime + near-zero dvel;
+ *     blocks breakout entries missing structure confirmation, low regime (< 60),
+ *     or high choppiness (>= 0.95)
  */
 
 import type { PartialTickerStrategy, ModeDetectionResult, EntryContext } from './strategy.js';
@@ -192,6 +193,14 @@ function qqqAdjustConfidence(cb: ConfidenceBreakdown, ctx: EntryContext): Confid
 function qqqShouldAllowEntry(ctx: EntryContext): boolean {
   const { signalMode, breakdown: cb } = ctx;
 
+  // QQQ rule: block ALL modes with very low ATR% (holiday/thin volume).
+  // Dec 24 F-grade had ATR%=0.059% (holiday). Dec 31 had ATR%=0.086%.
+  // All good QQQ entries had ATR% >= 0.08%. Bearish trend needs higher floor
+  // because thin liquidity means bearish moves stall without follow-through.
+  const atrPct = ctx.currentPrice > 0 ? (ctx.atr / ctx.currentPrice) * 100 : 0;
+  if (atrPct < 0.07) return false;
+  if (ctx.direction === 'bearish' && signalMode !== 'breakout' && atrPct < 0.09) return false;
+
   if (signalMode === 'trend') {
     // QQQ trend rule 1: require trendPhase >= 0.
     // Feb 11 loss had trendPhase=-0.040. All 4 trend winners had trendPhase >= 0.
@@ -210,6 +219,13 @@ function qqqShouldAllowEntry(ctx: EntryContext): boolean {
     // Jan 13 loss had chop=0.64, all trend winners had chop <= 0.30.
     // High chop = price oscillating, trend signal is unreliable.
     if ((ctx.choppiness ?? 0) >= 0.55) return false;
+
+    // QQQ trend rule 5: block bearish trend at high regime + near-zero dvel.
+    // Dec 31 F-grade: regime=87, dvel=0.017 — bearish momentum stalling at extremes.
+    // Good bearish: Nov 4 (regime=85, dvel=0.036→B), Feb 12 (regime=89, dvel=0.218→A).
+    // Near-zero dvel at high regime = price overextended but no longer accelerating.
+    if (ctx.direction === 'bearish' && _lastRegimeScore >= 85
+        && ctx.displacementVelocity !== undefined && Math.abs(ctx.displacementVelocity) < 0.03) return false;
   }
 
   if (signalMode === 'breakout') {
@@ -230,6 +246,11 @@ function qqqShouldAllowEntry(ctx: EntryContext): boolean {
     // Dec 10 loss (-35.0%) had regime=56 (low conviction, choppy market).
     // All breakout winners had regime >= 67. Below 60 = noise, not a real breakout.
     if (_lastRegimeScore < 60) return false;
+
+    // QQQ breakout rule 5: block high-chop breakouts (>= 0.95).
+    // Mar 18 F-grade: chop=1.01 — price oscillating, not a real breakout.
+    // Good breakout Feb 18 had chop=0.35 (clean trend).
+    if ((ctx.choppiness ?? 0) >= 0.95) return false;
   }
 
   return true;

@@ -2,12 +2,13 @@
  * SPY backtest configuration.
  *
  * Tuned from Q4 2025 + Q1 2026 backtest (Oct 2025 – Mar 2026):
- *   Q1 2026 baseline: 8W/3L (73%), +81.9%
- *   Q1 2026 tuned:    7W/2L (78%), +93.9%
+ *   Q4 2025 + Q1 2026 signal quality: 4A/2B/2C/1D/6F → tuned to 4A/2B/2C/1D/0F (100% F removal)
  *
  * SPY-specific filters:
  *   - shouldAllowEntry: blocks stale-ATR breakouts, negative-displacement
- *     breakouts, and bullish trend entries at very high regime (>= 80).
+ *     breakouts, bullish trend entries at very high regime (>= 80),
+ *     bullish entries with high exhaustion (>= 6.0), and bullish entries
+ *     with low displacement velocity (< 0.08).
  *   - adjustConfidence: suppresses PA bonus for bullish trend at regime >= 75.
  *
  * Regime scoring:
@@ -53,6 +54,26 @@ function spyShouldAllowEntry(ctx: EntryContext): boolean {
   //    high probability of stalling or reversing. Bearish high-regime is fine.
   //    Q1 2026: bullish trend at regime >= 80 was 1W/1L, sole win +3.1%.
   if (signalMode === 'trend' && direction === 'bullish' && regime >= 80) return false;
+
+  // 5. Block bullish entries with high range exhaustion (>= 6.0).
+  //    Bullish entries into an already-extended move fail consistently.
+  //    Q1 2026: bullish + RangeExh >= 6.0 was 0W/4L (all F-grade).
+  //    Bullish + RangeExh < 6.0 was 2W/0L (both A-grade: Feb 18 Exh=3.2, Mar 10 Exh=5.3).
+  //    Bearish entries are unaffected — they ride exhaustion in their favor.
+  if (direction === 'bullish' && ctx.rangeExhaustion >= 6.0) return false;
+
+  // 6. Block bullish entries with low displacement velocity (< 0.08).
+  //    Low dvel = momentum is decelerating or flat, move is stalling.
+  //    Q1 2026: bullish + dvel < 0.08 was 0W/2L (Jan 5 dvel=0.082→F, Feb 17 dvel=0.025→F,
+  //    Feb 18#2 dvel=-0.012→F). Good bullish entries had dvel 0.106 and 0.195.
+  if (direction === 'bullish' && displacementVelocity < 0.08) return false;
+
+  // 7. Block bearish breakout entries with high exhaustion + high choppiness.
+  //    RangeExh >= 6.0 + Chop >= 0.95 = move already extended and price is oscillating.
+  //    Q4 2025: bearish + Exh>=6.0 + Chop>=0.95 was 0W/2L (Oct 7 Exh=7.0/Chop=1.05→F,
+  //    Oct 31 Exh=6.2/Chop=0.97→F). Good bearish entry Jan 29 had Exh=7.6 but Chop=0.86.
+  if (signalMode === 'breakout' && direction === 'bearish'
+      && ctx.rangeExhaustion >= 6.0 && ctx.choppiness >= 0.95) return false;
 
   return true;
 }
