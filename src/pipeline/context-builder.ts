@@ -148,7 +148,7 @@ export async function buildContext(ticker: string): Promise<PositionContext> {
       direction: r.direction ?? null,
       confirmationCount: r.confirmation_count,
       orchestrationConfidence: parseFloat(r.orchestration_confidence ?? '0'),
-      createdAt: r.created_at,
+      createdAt: r.created_at instanceof Date ? r.created_at.toISOString() : String(r.created_at),
       reasoning: r.reasoning ?? '',
     })),
     confirmationStreaks: streaks.rows.map(r => ({
