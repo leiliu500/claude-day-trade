@@ -15,6 +15,7 @@ import { defaultStrategy } from './strategies/default.js';
 import { qqqStrategy } from './strategies/qqq.js';
 import { spyStrategy } from './strategies/spy.js';
 import { iwmStrategy } from './strategies/iwm.js';
+import { nvdaStrategy } from './strategies/nvda.js';
 
 export interface TickerConfig {
   /** Ticker symbol (e.g. 'SPY') */
@@ -90,9 +91,17 @@ const TICKER_OVERRIDES: Record<string, Partial<Omit<TickerConfig, 'ticker' | 'st
     // Initial config — no backtest tuning yet
     minConfidence: 0.65,
     maxDailyEntries: 2,
-    maxContracts: 5,       // conservative size — new symbol
+    maxContracts: 5,
     enabled: true,
     strategy: iwmStrategy,
+  },
+  NVDA: {
+    // Tuned Q4 2025 + Q1 2026: 6B/1C/2F (67% good)
+    minConfidence: 0.65,
+    maxDailyEntries: 1,    // NVDA: 2nd entries were 0W/3L
+    maxContracts: 5,
+    enabled: true,
+    strategy: nvdaStrategy,
   },
 };
 
