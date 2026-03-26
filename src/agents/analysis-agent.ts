@@ -118,6 +118,13 @@ function computeConfidence(signal: SignalPayload, option: OptionEvaluation): Con
   if (signal.reversalOverride && alignmentBonus < 0.06) {
     alignmentBonus = 0.06;
   }
+  // Leading signal override: direction was set/confirmed by leading indicators (velocity,
+  // volume-confirmed candle). When alignment is 'mixed' because MTF/HTF DMI hasn't caught
+  // up yet, floor alignment at mtf_ltf_aligned (+0.02) — the leading indicators provide
+  // the directional conviction that MTF/HTF will eventually confirm.
+  if (signal.leadingSignalOverride && alignmentBonus < 0.02) {
+    alignmentBonus = 0.02;
+  }
 
   // TD adjustment — TERTIARY indicator with minimal weight. Late-stage confirming setups (7-9)
   // provide minor support; opposing completed setups are weak exhaustion signals. TD does NOT
@@ -948,6 +955,22 @@ function computeConfidence(signal: SignalPayload, option: OptionEvaluation): Con
     if (diSpreadBonus < 0) diSpreadBonus = 0;   // MTF/HTF show old direction's DI dominance
     if (lowVolPenalty < 0) lowVolPenalty = 0;    // low ADX = old trend weakening, expected
     if (vwapBonus === 0) vwapBonus = 0.06;       // restore VWAP bonus killed by fading diSpreadSlope
+  }
+
+  // Leading signal override adjustments: when direction was set/confirmed by leading
+  // indicators, some lagged-indicator penalties are artifacts of the OLD state (ADX hasn't
+  // risen yet, DI spread hasn't widened yet). Suppress these to avoid blocking early entries.
+  if (signal.leadingSignalOverride) {
+    // Low ADX penalty: ADX is expected to be low at the START of a move — the leading
+    // indicators caught it before ADX could rise. Halve the penalty instead of full suppress
+    // to maintain some caution.
+    if (lowVolPenalty < 0) lowVolPenalty *= 0.5;
+    // DI spread opposing: MTF/HTF DI spread still shows old direction. Cap negative spread
+    // at -0.05 instead of -0.15 — leading indicators provide the directional conviction.
+    if (diSpreadBonus < -0.05) diSpreadBonus = -0.05;
+    // Trend phase penalty: declining ADX slope is expected when the OLD trend is ending
+    // and a new one starting. Suppress if velocity confirms the new direction.
+    if (trendPhaseBonus < 0 && priceVelocityBonus > 0) trendPhaseBonus *= 0.5;
   }
 
   // DI Spread cap for aged trends: in a mature trend the DI spread reflects sustained
@@ -1807,7 +1830,20 @@ export class AnalysisAgent {
       entryCtx.breakdown = cb;
     }
 
-    const minConf = tickerCfg?.minConfidence ?? config.MIN_CONFIDENCE;
+    // Dynamic entry threshold: when leading indicators (price velocity, volume-confirmed
+    // candle patterns) have already confirmed or overridden direction, lower the threshold
+    // from 0.65 to 0.60. This lets entries happen 5-15 bars earlier — before lagged
+    // indicators (DMI/ADX) fully confirm — because the leading signals provide the
+    // conviction that lagged indicators would eventually add.
+    // Require at least one leading indicator bonus > 0 to confirm the override is active
+    // (not just a stale flag from a prior cycle).
+    const baseMinConf = tickerCfg?.minConfidence ?? config.MIN_CONFIDENCE;
+    const hasActiveLeadingSignals = (cb.candlePatternBonus > 0 || cb.priceVelocityBonus > 0 || cb.volumeSurgeBonus > 0);
+    const leadingOverrideActive = signal.leadingSignalOverride && hasActiveLeadingSignals;
+    const minConf = leadingOverrideActive ? Math.max(baseMinConf - 0.05, 0.55) : baseMinConf;
+    if (leadingOverrideActive) {
+      console.log(`[AnalysisAgent] ${signal.ticker} leading signal override: threshold ${(baseMinConf * 100).toFixed(0)}% → ${(minConf * 100).toFixed(0)}% (candle=${cb.candlePatternBonus.toFixed(3)} vel=${cb.priceVelocityBonus.toFixed(3)} vol=${cb.volumeSurgeBonus.toFixed(3)})`);
+    }
     let meetsEntryThreshold = cb.total >= minConf;
 
     // Per-symbol entry filter hook — can block entries even if confidence meets threshold

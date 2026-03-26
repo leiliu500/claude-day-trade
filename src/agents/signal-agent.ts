@@ -189,6 +189,76 @@ export class SignalAgent {
       }
     }
 
+    // ── Leading indicator direction override ──────────────────────────────────
+    // DMI majority-vote determines direction, but it lags by 14+ bars on MTF/HTF.
+    // Leading indicators (price velocity, volume-confirmed candle patterns) can
+    // detect direction changes 5-15 bars before DMI catches up.
+    //
+    // Two mechanisms:
+    // 1. DIRECTION VOTE: Price velocity + LTF DMI agree → counts as extra vote
+    //    that can outvote lagged MTF+HTF (e.g. 1 LTF DMI + velocity vs 2 HTF/MTF)
+    // 2. CANDLE OVERRIDE: Volume-confirmed engulfing pattern flips direction
+    //    even when all 3 DMI timeframes disagree
+    //
+    // Both set leadingSignalOverride=true → analysis agent lowers entry threshold.
+    let leadingSignalOverride = false;
+
+    // --- Price velocity direction vote ---
+    // Compute raw velocity on LTF bars (fastest available data, zero smoothing)
+    const ltfVelocity = computePriceVelocity(ltfBars);
+    const velDir: 'bullish' | 'bearish' | 'neutral' =
+      ltfVelocity.directionalVelocity > 0.05 ? 'bullish' :
+      ltfVelocity.directionalVelocity < -0.05 ? 'bearish' : 'neutral';
+
+    // When velocity strongly agrees with LTF DMI but opposes the majority direction,
+    // AND velocity is accelerating (not just residual momentum), count LTF+velocity
+    // as 2 votes → outvotes the 2 lagged MTF+HTF votes → flip direction.
+    if (velDir !== 'neutral' && !reversalOverride) {
+      const ltfAgrees = ltfDmi?.trend === velDir;
+      const velocityOpposesDir = velDir !== direction;
+      const accelerating = ltfVelocity.acceleration > 0.01;
+
+      if (ltfAgrees && velocityOpposesDir && accelerating && direction !== 'neutral') {
+        // LTF DMI + strong accelerating velocity vs MTF+HTF lagged DMI
+        // → leading indicators outvote lagged → flip direction
+        console.log(`[SignalAgent] Leading direction override: velocity=${ltfVelocity.directionalVelocity.toFixed(4)} accel=${ltfVelocity.acceleration.toFixed(4)} LTF_DMI=${ltfDmi?.trend} → flipping ${direction}→${velDir}`);
+        direction = velDir;
+        leadingSignalOverride = true;
+      } else if (ltfAgrees && velDir === direction && accelerating) {
+        // LTF DMI + velocity CONFIRM the existing direction with acceleration
+        // → stronger conviction, lower threshold warranted
+        leadingSignalOverride = true;
+      }
+    }
+
+    // --- Volume-confirmed candle pattern direction override ---
+    // An engulfing candle with 2x+ volume surge is an institutional signal that
+    // can flip direction even when ALL 3 DMI timeframes disagree.
+    // This catches the very first bar of a major reversal.
+    if (!reversalOverride && !leadingSignalOverride) {
+      const ltfPatterns = detectAllPatterns(ltfBars);
+      const ltfVolume = computeVolumeSurge(ltfBars);
+      const hasVolumeSurge = ltfVolume.recentVolumeRatio > 2.0;
+
+      if (hasVolumeSurge) {
+        const bullishEngulf = ltfPatterns.bullishEngulfing.present;
+        const bearishEngulf = ltfPatterns.bearishEngulfing.present;
+
+        if (bullishEngulf && direction !== 'bullish') {
+          console.log(`[SignalAgent] Candle+volume override: bullish engulfing + vol_ratio=${ltfVolume.recentVolumeRatio.toFixed(1)} → flipping ${direction}→bullish`);
+          direction = 'bullish';
+          leadingSignalOverride = true;
+        } else if (bearishEngulf && direction !== 'bearish') {
+          console.log(`[SignalAgent] Candle+volume override: bearish engulfing + vol_ratio=${ltfVolume.recentVolumeRatio.toFixed(1)} → flipping ${direction}→bearish`);
+          direction = 'bearish';
+          leadingSignalOverride = true;
+        } else if ((bullishEngulf && direction === 'bullish') || (bearishEngulf && direction === 'bearish')) {
+          // Volume-confirmed engulfing in same direction → extra conviction
+          leadingSignalOverride = true;
+        }
+      }
+    }
+
     // Second pass: build full TF indicators with direction for accurate price levels
     const tfIndicators: TimeframeIndicators[] = [
       computeTimeframeIndicators(ltfBars, ltf, direction, true),   // LTF: shorter DMI period (8) for faster detection
@@ -242,6 +312,17 @@ export class SignalAgent {
       vwapDistance = modeResult.vwapDistance;
     }
 
+    // Leading signal mode rescue: when mode detection returns 'none' because HTF ADX
+    // is still low (< 18) but leading indicators have confirmed a directional move,
+    // force trend mode. Without this, the entire pipeline stops — no confidence is
+    // computed, no entry is possible, and the leading indicator override is wasted.
+    // This is the critical bridge: leading indicators detect the move → force trend mode
+    // → trend confidence model runs with lowered threshold → entry happens before ADX rises.
+    if (signalMode === 'none' && leadingSignalOverride && direction !== 'neutral') {
+      signalMode = 'trend';
+      console.log(`[SignalAgent] Leading signal mode rescue: forced trend mode (ADX=${tfIndicators[2]?.dmi.adx.toFixed(1) ?? '?'}, dir=${direction})`);
+    }
+
     // Numeric strength score — per-symbol strategy or default
     const strengthScore = strategy
       ? strategy.computeStrength(tfIndicators)
@@ -268,6 +349,7 @@ export class SignalAgent {
       priorDayLevels,
       orb,
       reversalOverride: reversalOverride || undefined,
+      leadingSignalOverride: leadingSignalOverride || undefined,
       signalMode,
       rangeSupport,
       rangeResistance,

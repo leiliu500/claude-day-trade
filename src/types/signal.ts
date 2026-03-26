@@ -28,6 +28,11 @@ export interface SignalPayload {
   // Early reversal override: LTF crossed opposite to majority while HTF fading + range extreme.
   reversalOverride?: boolean;
 
+  // Leading signal override: direction was determined (or confirmed) by leading indicators
+  // (price velocity + volume-confirmed candle patterns) rather than lagged DMI alone.
+  // When true, the analysis agent lowers the entry threshold from 0.65 to 0.60.
+  leadingSignalOverride?: boolean;
+
   // Signal mode: trend (default), range (mean-reversion), breakout (squeeze), or vwap_reversion.
   signalMode?: 'trend' | 'range' | 'breakout' | 'vwap_reversion' | 'none';
   rangeSupport?: number;     // identified support level for range trade
