@@ -112,8 +112,10 @@ function nvdaShouldAllowEntry(ctx: EntryContext): boolean {
   // Block early-morning zero-data entries
   if (ctx.rangeExhaustion !== undefined && ctx.rangeExhaustion < 1.0) return false;
 
-  // Block low-confidence entries (< 80%) — 75-80% bracket was 1G/7F.
-  if (ctx.confidence < 0.80) return false;
+  // Block all new entries in first 30 min after open (9:30-10:00 ET / 13:30-14:00 UTC)
+  const now = new Date();
+  const utcMins = now.getUTCHours() * 60 + now.getUTCMinutes();
+  if (utcMins >= 810 && utcMins < 840) return false;
 
   if (signalMode === 'trend') {
     // Require trendPhase >= 0
