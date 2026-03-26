@@ -347,14 +347,26 @@ async function loadSignals() {
   const s = paging.signals;
   const data = await fetch(`${API}/api/signals?limit=${s.limit}&page=${s.page}&${filterQuery()}`).then(r => r.json()).catch(() => ({ signals: [] }));
   s.total = data.total ?? 0;
-  const rows = (data.signals || []).map(sig => `
+  const rows = (data.signals || []).map(sig => {
+    const ap = sig.analysis_payload || {};
+    const amc = ap.allModeConfidences || {};
+    const mode = ap.selectedMode || '—';
+    const modeColors = { trend: '#58a6ff', range: '#d29922', breakout: '#f0883e', vwap_reversion: '#a371f7', none: '#8b949e' };
+    const modeColor = modeColors[mode] || '#8b949e';
+    const modeLabel = mode === 'vwap_reversion' ? 'VWAP' : mode === 'none' ? '—' : mode.toUpperCase();
+    // Build tooltip showing all 4 mode confidences
+    const confTip = amc.trend != null
+      ? `Trend: ${(amc.trend * 100).toFixed(0)}%  Range: ${(amc.range * 100).toFixed(0)}%  Breakout: ${(amc.breakout * 100).toFixed(0)}%  VWAP Rev: ${(amc.vwap_reversion * 100).toFixed(0)}%`
+      : '';
+    return `
     <tr>
       <td>${fmtTime(sig.created_at)}</td>
       <td><b>${sig.ticker}</b></td>
       <td>${sig.profile}</td>
       <td class="${sig.direction}">${sig.direction}</td>
       <td>${sig.alignment}</td>
-      <td>${(parseFloat(sig.confidence) * 100).toFixed(0)}%</td>
+      <td><span style="color:${modeColor};font-weight:600" title="${confTip}">${modeLabel}</span></td>
+      <td title="${confTip}">${(parseFloat(sig.confidence) * 100).toFixed(0)}%</td>
       <td>${sig.confidence_meets_threshold ? '✅' : '—'}</td>
       <td>${sig.triggered_by}</td>
       <td class="${sig.selected_right ?? ''}">${sig.selected_right?.toUpperCase() ?? '—'}</td>
@@ -366,7 +378,7 @@ async function loadSignals() {
       <td>${sig.spread_pct ? fmt(sig.spread_pct, 1) + '%' : '—'}</td>
       <td>${sig.option_liquidity_ok ? '✅' : '—'}</td>
     </tr>
-  `);
+  `});
   setRows('tbl-signals', rows);
   document.getElementById('val-signals').textContent = data.total_today ?? 0;
   renderPagination('signals', loadSignals);
@@ -976,9 +988,31 @@ function renderAnalysisCard(sig) {
   const thresh  = sig.confidence_meets_threshold;
   const confPct = sig.confidence ? (parseFloat(sig.confidence) * 100).toFixed(0) : '—';
 
+  // All-mode confidence summary
+  const amc = analysis.allModeConfidences || {};
+  const selMode = analysis.selectedMode || signal.signalMode || '—';
+  const modeConfHtml = amc.trend != null ? `
+    <div class="stats-section-label">Mode Confidences</div>
+    <div class="agent-stats" style="margin-bottom:8px">
+      ${['trend', 'range', 'breakout', 'vwap_reversion'].map(m => {
+        const val = amc[m] ?? 0;
+        const pct = (val * 100).toFixed(0);
+        const isSelected = m === selMode;
+        const colors = { trend: '#58a6ff', range: '#d29922', breakout: '#f0883e', vwap_reversion: '#a371f7' };
+        const label = m === 'vwap_reversion' ? 'VWAP Rev' : m.charAt(0).toUpperCase() + m.slice(1);
+        const border = isSelected ? 'border:1px solid ' + colors[m] : 'border:1px solid transparent';
+        const bg = isSelected ? 'background:' + colors[m] + '22' : '';
+        return `<div class="agent-stat" style="text-align:center;padding:4px 8px;border-radius:6px;${border};${bg}">
+          <span class="stat-label" style="color:${colors[m]}">${label}${isSelected ? ' *' : ''}</span>
+          <span style="font-weight:${isSelected ? '700' : '400'};font-size:${isSelected ? '1.1rem' : '0.9rem'}">${pct}%</span>
+        </div>`;
+      }).join('')}
+    </div>
+  ` : '';
+
   // Confidence breakdown section
   const cbHtml = cb.total != null ? `
-    <div class="stats-section-label">Confidence Breakdown</div>
+    <div class="stats-section-label">Confidence Breakdown (${selMode === 'vwap_reversion' ? 'VWAP Rev' : selMode})</div>
     <div class="conf-breakdown">
       ${renderConfidenceBar('Base',        cb.base              ?? 0, 0.50, 'conf-bar-base')}
       ${renderConfidenceBar('DI Spread',   cb.diSpreadBonus     ?? 0, 0.25, 'conf-bar-bonus')}
@@ -1177,6 +1211,7 @@ function renderAnalysisCard(sig) {
           <span style="font-size:0.75rem;color:#8b949e">${sig.profile} · ${sig.triggered_by} · ${fmtTime(sig.created_at)}</span>
         </div>
       </div>
+      ${modeConfHtml}
       ${cbHtml}
       ${msHtml}
       ${tfHtml}

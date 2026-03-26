@@ -1525,6 +1525,17 @@ export class AnalysisAgent {
       cb = computeConfidence(signal, option);
     }
 
+    // ── Compute all 4 mode confidences for dashboard transparency ──
+    // The winning mode's confidence (cb) is already computed above.
+    // Compute the remaining 3 modes so the dashboard can show all scores.
+    const computeAll = tickerCfg?.strategy ?? { computeTrendConfidence: computeTrendConfidenceFn, computeRangeConfidence: computeRangeConfidenceFn, computeBreakoutConfidence: computeBreakoutConfidenceFn };
+    const allModeConfidences = {
+      trend: signal.signalMode === 'trend' ? cb.total : computeAll.computeTrendConfidence(signal, option).total,
+      range: signal.signalMode === 'range' ? cb.total : computeAll.computeRangeConfidence(signal).total,
+      breakout: signal.signalMode === 'breakout' ? cb.total : computeAll.computeBreakoutConfidence(signal).total,
+      vwap_reversion: signal.signalMode === 'vwap_reversion' ? cb.total : computeAll.computeRangeConfidence(signal).total,
+    };
+
     // ── Build per-symbol entry context (shared by adjustConfidence + shouldAllowEntry) ──
     // Computed from LTF bars filtered to today's regular session.
     let displacementVelocity: number | undefined;
@@ -1572,7 +1583,7 @@ export class AnalysisAgent {
     }
 
     const entryCtx = {
-      signalMode: (signal.signalMode ?? 'trend') as 'trend' | 'range' | 'breakout' | 'vwap_reversion',
+      signalMode: signal.signalMode ?? 'none',
       direction: signal.direction,
       alignment: signal.alignment,
       confidence: cb.total,
@@ -1598,6 +1609,7 @@ export class AnalysisAgent {
     // Per-symbol entry filter hook — can block entries even if confidence meets threshold
     if (meetsEntryThreshold && tickerCfg?.strategy?.shouldAllowEntry) {
       if (!tickerCfg.strategy.shouldAllowEntry(entryCtx)) {
+        console.log(`[AnalysisAgent] ${signal.ticker} entry filter blocked: mode=${entryCtx.signalMode} dir=${entryCtx.direction} conf=${(entryCtx.confidence * 100).toFixed(0)}% atrPct=${signal.currentPrice > 0 ? ((signal.atr / signal.currentPrice) * 100).toFixed(3) : '?'}% dvel=${entryCtx.displacementVelocity?.toFixed(4) ?? '?'} chop=${entryCtx.choppiness?.toFixed(2) ?? '?'} rExh=${entryCtx.rangeExhaustion?.toFixed(1) ?? '?'} trendPhase=${entryCtx.breakdown.trendPhaseBonus.toFixed(3)} struct=${entryCtx.breakdown.structureBonus.toFixed(3)} diSpread=${entryCtx.breakdown.diSpreadBonus.toFixed(3)}`);
         meetsEntryThreshold = false;
       }
     }
@@ -1622,6 +1634,8 @@ export class AnalysisAgent {
       signalId: signal.id,
       confidence: cb.total,
       confidenceBreakdown: cb,
+      allModeConfidences,
+      selectedMode: signal.signalMode ?? 'none',
       meetsEntryThreshold,
       aiExplanation,
       keyFactors,

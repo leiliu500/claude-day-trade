@@ -191,11 +191,13 @@ export class SignalAgent {
     const atm = Math.round(currentPrice);  // nearest whole-dollar ATM strike
 
     // ── Mode detection (per-symbol strategy or inline default) ────────────────
-    let signalMode: 'trend' | 'range' | 'breakout' | 'vwap_reversion' = 'trend';
+    let signalMode: 'trend' | 'range' | 'breakout' | 'vwap_reversion' | 'none' = 'none';
     let rangeSupport: number | undefined;
     let rangeResistance: number | undefined;
     let breakoutLevel: number | undefined;
     let breakoutBeyond: number | undefined;
+    let vwapReversionTarget: number | undefined;
+    let vwapDistance: number | undefined;
 
     const strategy = tickerCfg?.strategy;
     if (strategy) {
@@ -207,12 +209,15 @@ export class SignalAgent {
       rangeResistance = modeResult.rangeResistance;
       breakoutLevel = modeResult.breakoutLevel;
       breakoutBeyond = modeResult.breakoutBeyond;
+      vwapReversionTarget = modeResult.vwapReversionTarget;
+      vwapDistance = modeResult.vwapDistance;
     } else {
       // Inline fallback — uses shared parallel evaluation from default strategy
-      const { evaluateRange, evaluateBreakout, evaluateVwapReversion, resolveMode } = await import('../strategies/default.js');
+      const { evaluateTrend, evaluateRange, evaluateBreakout, evaluateVwapReversion, resolveMode } = await import('../strategies/default.js');
       const htfTf = tfIndicators[2]!;
       const ltfTf = tfIndicators[0]!;
       const modeResult = resolveMode(
+        evaluateTrend(htfTf),
         evaluateRange(htfTf, currentPrice),
         evaluateBreakout(htfTf, tfIndicators, currentPrice),
         evaluateVwapReversion(ltfTf, htfTf, currentPrice),
@@ -223,6 +228,8 @@ export class SignalAgent {
       rangeResistance = modeResult.rangeResistance;
       breakoutLevel = modeResult.breakoutLevel;
       breakoutBeyond = modeResult.breakoutBeyond;
+      vwapReversionTarget = modeResult.vwapReversionTarget;
+      vwapDistance = modeResult.vwapDistance;
     }
 
     // Numeric strength score — per-symbol strategy or default
@@ -256,6 +263,8 @@ export class SignalAgent {
       rangeResistance,
       breakoutLevel,
       breakoutBeyond,
+      vwapReversionTarget,
+      vwapDistance,
       triggeredBy: trigger,
       sessionId,
       createdAt: new Date().toISOString(),

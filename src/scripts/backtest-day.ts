@@ -31,7 +31,7 @@ import { normalizeAlpacaBars } from '../types/market.js';
 import { v4 as uuidv4 } from 'uuid';
 import { DecisionOrchestrator } from '../agents/decision-orchestrator.js';
 import type { SimResult } from '../lib/order-agent-sim.js';
-import { evaluateRange, evaluateBreakout, evaluateVwapReversion, resolveMode } from '../strategies/default.js';
+import { evaluateTrend, evaluateRange, evaluateBreakout, evaluateVwapReversion, resolveMode } from '../strategies/default.js';
 
 // ── Config ────────────────────────────────────────────────────────────────────
 
@@ -1056,7 +1056,7 @@ interface EntryRecord {
   confidence: number;
   price: number;
   strengthScore: number;
-  signalMode: 'trend' | 'range' | 'breakout' | 'vwap_reversion';
+  signalMode: 'trend' | 'range' | 'breakout' | 'vwap_reversion' | 'none';
   // Price moves after entry (from remaining bars)
   maxFavorable: number;   // max price move in signal direction ($)
   maxAdverse: number;     // max price move against signal direction ($)
@@ -1367,17 +1367,18 @@ async function main() {
     // ── Mode detection (parallel range + breakout) ────────────────────────────
     // Range and breakout are evaluated independently, then resolved by score.
     // This prevents widening one mode's thresholds from stealing ticks from the other.
-    let signalMode: 'trend' | 'range' | 'breakout' | 'vwap_reversion' = 'trend';
+    let signalMode: 'trend' | 'range' | 'breakout' | 'vwap_reversion' | 'none' = 'none';
     let rangeSupport = 0, rangeResistance = 0, rangeMidpoint = 0;
     let breakoutLevel = 0, breakoutBeyond = 0;
     const htfTfForRange = tfIndicators[2]!;
 
     {
+      const trendCandidate = evaluateTrend(htfTfForRange);
       const rangeCandidate = evaluateRange(htfTfForRange, currentPrice);
       const breakoutCandidate = evaluateBreakout(htfTfForRange, tfIndicators, currentPrice);
       const ltfTfForVwap = tfIndicators[0]!;
       const vwapRevCandidate = evaluateVwapReversion(ltfTfForVwap, htfTfForRange, currentPrice);
-      const modeResult = resolveMode(rangeCandidate, breakoutCandidate, vwapRevCandidate);
+      const modeResult = resolveMode(trendCandidate, rangeCandidate, breakoutCandidate, vwapRevCandidate);
 
       signalMode = modeResult.signalMode;
       if (modeResult.direction) {
@@ -1409,6 +1410,9 @@ async function main() {
         signal.vwapDistance = modeResult.vwapDistance;
       }
     }
+
+    // No qualifying regime — skip this bar (no default fallback)
+    if (signalMode === 'none') continue;
 
     // ── Displacement-based regime detection ─────────────────────────────────────
     // Core insight: High displacement = trend already mature = late entry risk for trend/breakout

@@ -19,7 +19,7 @@ import type { PartialTickerStrategy, ModeDetectionResult, EntryContext } from '.
 import type { ConfidenceBreakdown } from '../types/analysis.js';
 import type { TimeframeIndicators } from '../types/indicators.js';
 import type { SignalDirection } from '../types/signal.js';
-import { evaluateRange, evaluateBreakout, evaluateVwapReversion, resolveMode } from './default.js';
+import { evaluateTrend, evaluateRange, evaluateBreakout, evaluateVwapReversion, resolveMode } from './default.js';
 
 // ── Module-level state: regime score computed in detectMode, read in shouldAllowEntry ──
 // Safe because QQQ pipeline runs serially (one tick at a time per symbol).
@@ -114,7 +114,8 @@ function qqqDetectMode(
 
   const ltfTf = tfIndicators[0]!;
 
-  // Parallel evaluation — range, breakout, and VWAP reversion are independent
+  // Parallel evaluation — all 4 modes are independent, every mode earns its way in
+  const trendCandidate = evaluateTrend(htfTf);
   const rangeCandidate = evaluateRange(htfTf, currentPrice);
   let breakoutCandidate = evaluateBreakout(htfTf, tfIndicators, currentPrice);
   const vwapRevCandidate = evaluateVwapReversion(ltfTf, htfTf, currentPrice);
@@ -125,7 +126,7 @@ function qqqDetectMode(
     if (atrPct < 0.08) breakoutCandidate = null;
   }
 
-  return resolveMode(rangeCandidate, breakoutCandidate, vwapRevCandidate);
+  return resolveMode(trendCandidate, rangeCandidate, breakoutCandidate, vwapRevCandidate);
 }
 
 // ── QQQ Confidence Adjustment ────────────────────────────────────────────────

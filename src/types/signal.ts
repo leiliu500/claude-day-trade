@@ -29,7 +29,7 @@ export interface SignalPayload {
   reversalOverride?: boolean;
 
   // Signal mode: trend (default), range (mean-reversion), breakout (squeeze), or vwap_reversion.
-  signalMode?: 'trend' | 'range' | 'breakout' | 'vwap_reversion';
+  signalMode?: 'trend' | 'range' | 'breakout' | 'vwap_reversion' | 'none';
   rangeSupport?: number;     // identified support level for range trade
   rangeResistance?: number;  // identified resistance level for range trade
   breakoutLevel?: number;    // swing high/low that price broke through

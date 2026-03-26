@@ -129,6 +129,38 @@ export function evaluateBreakout(
 }
 
 /**
+ * Evaluate trend mode independently. Returns candidate or null.
+ * Qualifies when ADX shows established directional movement with positive slope.
+ * Without this, trend is a catch-all for choppy/ambiguous markets that shouldn't be traded.
+ */
+export function evaluateTrend(
+  htfTf: TimeframeIndicators,
+): ModeCandidate | null {
+  const htfAdx = htfTf.dmi.adx;
+  const adxSlope = htfTf.dmi.adxSlope;
+  const diSpread = Math.abs(htfTf.dmi.plusDI - htfTf.dmi.minusDI);
+
+  // Trend requires established directional movement
+  if (htfAdx < 18) return null;           // ADX below 18 = no trend
+  if (adxSlope <= 0) return null;          // flat/declining ADX = trend fading
+  if (diSpread < 5) return null;           // no clear directional dominance
+
+  // Direction from DI dominance
+  const direction: SignalDirection = htfTf.dmi.plusDI > htfTf.dmi.minusDI ? 'bullish' : 'bearish';
+
+  // Score: same 0.40 base + bonuses scale as other modes (0.40–0.80)
+  const adxStrength = Math.min(1, (htfAdx - 18) / 20);      // ADX 18→0, 38→1
+  const diSpreadScore = Math.min(1, diSpread / 20);           // spread 0→0, 20→1
+  const slopeScore = Math.min(1, adxSlope / 3);               // slope 0→0, 3→1
+  const score = 0.40 + 0.15 * adxStrength + 0.15 * diSpreadScore + 0.10 * slopeScore;
+
+  return {
+    result: { signalMode: 'trend', direction },
+    score,
+  };
+}
+
+/**
  * Evaluate VWAP mean reversion mode independently. Returns candidate or null.
  * Fires when price is overextended from VWAP on a low-ADX day and a reversal candle appears.
  */
@@ -193,17 +225,19 @@ export function evaluateVwapReversion(
 
 /**
  * Resolve between all mode candidates.
- * Picks the highest-scoring non-null candidate. Falls back to trend.
+ * Picks the highest-scoring non-null candidate. Returns 'none' when nothing qualifies.
+ * Every mode must earn its way in — there is no default/fallback mode.
  */
 export function resolveMode(
+  trendCandidate: ModeCandidate | null,
   rangeCandidate: ModeCandidate | null,
   breakoutCandidate: ModeCandidate | null,
   vwapRevCandidate?: ModeCandidate | null,
 ): ModeDetectionResult {
-  const candidates = [rangeCandidate, breakoutCandidate, vwapRevCandidate].filter(
+  const candidates = [trendCandidate, rangeCandidate, breakoutCandidate, vwapRevCandidate].filter(
     (c): c is ModeCandidate => c !== null && c !== undefined,
   );
-  if (candidates.length === 0) return { signalMode: 'trend' };
+  if (candidates.length === 0) return { signalMode: 'none' };
   if (candidates.length === 1) return candidates[0]!.result;
   // Multiple qualify — pick highest score
   candidates.sort((a, b) => b.score - a.score);
@@ -219,10 +253,11 @@ function defaultDetectMode(
 ): ModeDetectionResult {
   const htfTf = tfIndicators[2]!;
   const ltfTf = tfIndicators[0]!;
+  const trendCandidate = evaluateTrend(htfTf);
   const rangeCandidate = evaluateRange(htfTf, currentPrice);
   const breakoutCandidate = evaluateBreakout(htfTf, tfIndicators, currentPrice);
   const vwapRevCandidate = evaluateVwapReversion(ltfTf, htfTf, currentPrice);
-  return resolveMode(rangeCandidate, breakoutCandidate, vwapRevCandidate);
+  return resolveMode(trendCandidate, rangeCandidate, breakoutCandidate, vwapRevCandidate);
 }
 
 function defaultComputeStrength(tfIndicators: TimeframeIndicators[]): number {

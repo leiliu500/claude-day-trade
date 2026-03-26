@@ -170,7 +170,32 @@ export async function runPipeline(
       : undefined;
 
     const signal = await signalAgent.run(ticker, profile, trigger, sessionId, tickerCfg);
-    console.log(`[Pipeline] Signal: ${signal.direction} (${signal.alignment})${signal.signalMode === 'range' ? ` [RANGE mode: support=$${signal.rangeSupport?.toFixed(2)}, resist=$${signal.rangeResistance?.toFixed(2)}]` : signal.signalMode === 'breakout' ? ` [BREAKOUT mode: level=$${signal.breakoutLevel?.toFixed(2)}, beyond=${signal.breakoutBeyond?.toFixed(3)}%]` : ''}`);
+    const modeLabel = signal.signalMode === 'range'
+      ? ` [RANGE mode: support=$${signal.rangeSupport?.toFixed(2)}, resist=$${signal.rangeResistance?.toFixed(2)}]`
+      : signal.signalMode === 'breakout'
+        ? ` [BREAKOUT mode: level=$${signal.breakoutLevel?.toFixed(2)}, beyond=${signal.breakoutBeyond?.toFixed(3)}%]`
+        : signal.signalMode === 'vwap_reversion'
+          ? ` [VWAP_REV mode: target=$${signal.vwapReversionTarget?.toFixed(2)}, dist=${signal.vwapDistance?.toFixed(3)}%]`
+          : signal.signalMode === 'trend'
+            ? ' [TREND mode]'
+            : ' [NO SETUP]';
+    console.log(`[Pipeline] Signal: ${signal.direction} (${signal.alignment})${modeLabel}`);
+
+    // ── Short-circuit: no qualifying mode — skip tick ────────────────────────
+    if (signal.signalMode === 'none') {
+      console.log(`[Pipeline] No qualifying regime detected for ${ticker} — skipping tick`);
+      return {
+        ticker,
+        profile,
+        direction: signal.direction,
+        alignment: signal.alignment,
+        confidence: 0,
+        decision: 'WAIT',
+        reasoning: 'No qualifying market regime (trend/range/breakout/vwap_reversion) detected',
+        orderSubmitted: false,
+        signal,
+      };
+    }
 
     // ── Phase 4: Option Selection (contracts already prefetched if stream was warm) ──
     const prefetched = contractsPrefetch ? await contractsPrefetch : undefined;

@@ -25,10 +25,22 @@ export interface ConfidenceBreakdown {
   total: number;                   // clamped 0..1
 }
 
+/** Per-mode confidence scores — all 4 computed every tick for transparency. */
+export interface ModeConfidences {
+  trend: number;
+  range: number;
+  breakout: number;
+  vwap_reversion: number;
+}
+
 export interface AnalysisResult {
   signalId: string;
-  confidence: number;              // 0..1 deterministic
+  confidence: number;              // 0..1 deterministic (winning mode's score)
   confidenceBreakdown: ConfidenceBreakdown;
+  /** All 4 mode confidences computed independently — for dashboard transparency. */
+  allModeConfidences?: ModeConfidences;
+  /** Which mode was selected by detectMode. */
+  selectedMode?: string;
   meetsEntryThreshold: boolean;    // confidence >= 0.65
   aiExplanation: string;
   keyFactors: string[];

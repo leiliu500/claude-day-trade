@@ -82,7 +82,8 @@ export function startDashboard(port: number): void {
           `SELECT id, ticker, profile, direction, alignment, confidence,
                   confidence_meets_threshold, selected_right, selected_symbol,
                   entry_premium, stop_premium, tp_premium, risk_reward,
-                  option_liquidity_ok, spread_pct, triggered_by, created_at
+                  option_liquidity_ok, spread_pct, triggered_by, created_at,
+                  analysis_payload
            FROM trading.signal_snapshots
            ${whereClause}
            ORDER BY created_at DESC
