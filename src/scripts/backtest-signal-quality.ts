@@ -15,7 +15,7 @@ import { execSync } from 'child_process';
 const START = process.argv[2] || '2025-10-01';
 const END = process.argv[3] || '2026-03-25';
 const TICKER_ARG = process.argv[4]?.toUpperCase(); // optional: SPY, QQQ, or omit for both
-const TICKERS = TICKER_ARG ? [TICKER_ARG] : ['SPY', 'QQQ'];
+const TICKERS = TICKER_ARG ? [TICKER_ARG] : ['SPY', 'QQQ', 'IWM'];
 
 // ── Generate trading days (weekdays) in range ────────────────────────────────
 function getTradingDays(start: string, end: string): string[] {

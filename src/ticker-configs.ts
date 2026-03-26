@@ -14,6 +14,7 @@ import type { TickerStrategy, PartialTickerStrategy } from './strategies/strateg
 import { defaultStrategy } from './strategies/default.js';
 import { qqqStrategy } from './strategies/qqq.js';
 import { spyStrategy } from './strategies/spy.js';
+import { iwmStrategy } from './strategies/iwm.js';
 
 export interface TickerConfig {
   /** Ticker symbol (e.g. 'SPY') */
@@ -84,6 +85,14 @@ const TICKER_OVERRIDES: Record<string, Partial<Omit<TickerConfig, 'ticker' | 'st
     maxContracts: 5,       // smaller size — newer symbol, less data
     enabled: true,
     strategy: qqqStrategy,
+  },
+  IWM: {
+    // Initial config — no backtest tuning yet
+    minConfidence: 0.65,
+    maxDailyEntries: 2,
+    maxContracts: 5,       // conservative size — new symbol
+    enabled: true,
+    strategy: iwmStrategy,
   },
 };
 
