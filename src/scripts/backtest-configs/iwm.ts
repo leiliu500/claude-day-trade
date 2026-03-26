@@ -29,6 +29,9 @@ function iwmShouldAllowEntry(ctx: EntryContext): boolean {
   // Block stale-data entries: low ATR% means thin volume / holiday.
   const atrPct = ctx.currentPrice > 0 ? (ctx.atr / ctx.currentPrice) * 100 : 0;
   if (atrPct < 0.08) return false;
+  // IWM breakouts need higher ATR floor — thin vol breakouts fail consistently.
+  // Jan 14 F-grade: ATR%=0.112%. Good breakout Jan 20 had ATR%=0.158%.
+  if (signalMode === 'breakout' && atrPct < 0.13) return false;
 
   // 1. Block negative displacement velocity (< -0.01) for all modes.
   //    All 3 phase-change override F-grades had strongly negative dvel
@@ -67,6 +70,12 @@ function iwmShouldAllowEntry(ctx: EntryContext): boolean {
     //    Dec 9 F-grade: regime=82. Breakout at mature regime = move already happened.
     //    Good breakout Jan 20: regime=60 (fresh breakout from consolidation).
     if (ctx.regimeScore >= 75) return false;
+
+    // 4. Block breakout entries with low displacement velocity (< 0.06).
+    //    Jan 14 F-grade: dvel=0.053 — no real momentum behind the breakout.
+    //    Breakout needs directional conviction to follow through.
+    if (ctx.displacementVelocity !== undefined && ctx.displacementVelocity < 0.06
+        && ctx.displacementVelocity >= 0) return false;
   }
 
   return true;

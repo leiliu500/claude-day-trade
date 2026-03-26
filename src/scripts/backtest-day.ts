@@ -31,6 +31,7 @@ import { normalizeAlpacaBars } from '../types/market.js';
 import { v4 as uuidv4 } from 'uuid';
 import { DecisionOrchestrator } from '../agents/decision-orchestrator.js';
 import type { SimResult } from '../lib/order-agent-sim.js';
+import { evaluateRange, evaluateBreakout, resolveMode } from '../strategies/default.js';
 
 // ── Config ────────────────────────────────────────────────────────────────────
 
@@ -1276,82 +1277,41 @@ async function main() {
       triggeredBy: 'AUTO', createdAt: timeStr,
     };
 
-    // ── Range detection ──────────────────────────────────────────────────────
-    // Detect range-bound regime: low ADX, no fresh DI cross, price within swing range
+    // ── Mode detection (parallel range + breakout) ────────────────────────────
+    // Range and breakout are evaluated independently, then resolved by score.
+    // This prevents widening one mode's thresholds from stealing ticks from the other.
     let signalMode: 'trend' | 'range' | 'breakout' = 'trend';
     let rangeSupport = 0, rangeResistance = 0, rangeMidpoint = 0;
+    let breakoutLevel = 0, breakoutBeyond = 0;
     const htfTfForRange = tfIndicators[2]!;
-    const htfAdxForRange = htfTfForRange.dmi.adx;
-    const htfHasFreshCross = (htfTfForRange.dmi.crossedUp || htfTfForRange.dmi.crossedDown);
-    const htfRangePos = htfTfForRange.priceStructure.rangePosition;
-    const htfSwingHigh = htfTfForRange.priceStructure.swingHigh;
-    const htfSwingLow = htfTfForRange.priceStructure.swingLow;
-    const htfSwingRange = htfSwingHigh - htfSwingLow;
-    const htfSwingRangePct = htfSwingRange / currentPrice * 100;
 
-    if (htfAdxForRange < 22 && !htfHasFreshCross
-        && htfRangePos >= 0.05 && htfRangePos <= 0.95
-        && htfSwingRangePct >= 0.20) {
-      // Range regime detected — determine direction from position in range
-      const atResistance = htfRangePos >= 0.70;
-      const atSupport = htfRangePos <= 0.30;
-      if (atResistance || atSupport) {
-        signalMode = 'range';
-        // Use swing levels, enriched with prior day levels if nearby
-        rangeSupport = htfSwingLow;
-        rangeResistance = htfSwingHigh;
-        const { pdh, pdl } = priorDayLevels;
-        if (pdl > 0 && Math.abs(pdl - htfSwingLow) / currentPrice < 0.003) rangeSupport = Math.min(rangeSupport, pdl);
-        if (pdh > 0 && Math.abs(pdh - htfSwingHigh) / currentPrice < 0.003) rangeResistance = Math.max(rangeResistance, pdh);
-        rangeMidpoint = (rangeSupport + rangeResistance) / 2;
-        // Override direction based on range position (ignore DMI vote)
-        direction = atResistance ? 'bearish' : 'bullish';
+    {
+      const rangeCandidate = evaluateRange(htfTfForRange, currentPrice);
+      const breakoutCandidate = evaluateBreakout(htfTfForRange, tfIndicators, currentPrice);
+      const modeResult = resolveMode(rangeCandidate, breakoutCandidate);
+
+      signalMode = modeResult.signalMode;
+      if (modeResult.direction) {
+        direction = modeResult.direction;
         signal.direction = direction;
       }
-    }
 
-    // ── Breakout detection ──────────────────────────────────────────────────
-    // Detect squeeze breakout: ADX < 20 but rising, price broke swing high/low,
-    // volume confirmation. Catches transition from range to trend.
-    let breakoutLevel = 0, breakoutBeyond = 0;
-    // Relaxed: ADX < 25 (not just < 20) — on 5m bars ADX often stays 20-25 during consolidation.
-    // The rising ADX slope + level break + OBV confirmation provide sufficient filtering.
-    // Use LAGGED swing high/low (exclude last 3 bars) so the breakout level is a fixed target,
-    // not one that moves with price. This prevents the swing level from chasing price upward.
-    if (signalMode === 'trend' && htfAdxForRange < 25 && htfTfForRange.dmi.adxSlope > 0) {
-      const htfBarsForBO = htfTfForRange.bars.slice(-20, -3); // exclude last 3 bars
-      let boSwingHigh = -Infinity, boSwingLow = Infinity;
-      for (const b of htfBarsForBO) {
-        if (b.high > boSwingHigh) boSwingHigh = b.high;
-        if (b.low < boSwingLow) boSwingLow = b.low;
+      if (signalMode === 'range' && modeResult.rangeSupport !== undefined) {
+        rangeSupport = modeResult.rangeSupport;
+        rangeResistance = modeResult.rangeResistance!;
+        // Enrich with prior day levels if nearby
+        const { pdh, pdl } = priorDayLevels;
+        if (pdl > 0 && Math.abs(pdl - rangeSupport) / currentPrice < 0.003) rangeSupport = Math.min(rangeSupport, pdl);
+        if (pdh > 0 && Math.abs(pdh - rangeResistance) / currentPrice < 0.003) rangeResistance = Math.max(rangeResistance, pdh);
+        rangeMidpoint = (rangeSupport + rangeResistance) / 2;
       }
-      const boSwingRange = boSwingHigh - boSwingLow;
-      const brokeHigh = currentPrice > boSwingHigh && boSwingRange > 0;
-      const brokeLow = currentPrice < boSwingLow && boSwingRange > 0;
-      if (brokeHigh || brokeLow) {
-        const beyondPct = brokeHigh
-          ? ((currentPrice - boSwingHigh) / currentPrice) * 100
-          : ((boSwingLow - currentPrice) / currentPrice) * 100;
-        if (beyondPct > 0.02 && beyondPct < 0.40) {
-          const htfObv = tfIndicators[2]!.obv;
-          const obvConfirms = brokeHigh
-            ? htfObv.trend === 'bullish'
-            : htfObv.trend === 'bearish';
-          // OBV confirmation preferred but not required — breakout momentum often leads OBV.
-          // If OBV doesn't confirm, require a stronger DI spread slope or fresh DI cross instead.
-          const htfDiCross = brokeHigh ? htfTfForRange.dmi.crossedUp : htfTfForRange.dmi.crossedDown;
-          const diSpreadConfirms = htfTfForRange.dmi.diSpreadSlope > 1;
-          if (obvConfirms || htfDiCross || diSpreadConfirms) {
-            signalMode = 'breakout';
-            breakoutLevel = brokeHigh ? boSwingHigh : boSwingLow;
-            breakoutBeyond = beyondPct;
-            direction = brokeHigh ? 'bullish' : 'bearish';
-            signal.direction = direction;
-            signal.signalMode = 'breakout';
-            signal.breakoutLevel = breakoutLevel;
-            signal.breakoutBeyond = breakoutBeyond;
-          }
-        }
+
+      if (signalMode === 'breakout' && modeResult.breakoutLevel !== undefined) {
+        breakoutLevel = modeResult.breakoutLevel;
+        breakoutBeyond = modeResult.breakoutBeyond!;
+        signal.signalMode = 'breakout';
+        signal.breakoutLevel = breakoutLevel;
+        signal.breakoutBeyond = breakoutBeyond;
       }
     }
 

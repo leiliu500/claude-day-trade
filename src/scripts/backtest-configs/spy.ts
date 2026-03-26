@@ -43,11 +43,12 @@ function spyShouldAllowEntry(ctx: EntryContext): boolean {
   if (signalMode === 'breakout' && displacementVelocity < -0.05) return false;
 
   // 3. Block trend entries in exhausted + choppy conditions.
-  //    Exh > 7.0 + Chop >= 0.6: trend move is done, price is oscillating.
-  //    Q4+Q1 data: 0W/3L (-9.0%). Sole high-Exh trend winner had Chop=0.25.
+  //    Exh > 7.0 + Chop >= 0.55: trend move is done, price is oscillating.
+  //    Q4+Q1 data: 0W/4L. Oct 9 (Exh=8.6, Chop=0.57→F).
+  //    Sole high-Exh trend winner had Chop=0.25.
   if (signalMode === 'trend'
       && ctx.rangeExhaustion > 7.0
-      && ctx.choppiness >= 0.6) return false;
+      && ctx.choppiness >= 0.55) return false;
 
   // 4. Block bullish trend entries at very high regime (>= 80).
   //    SPY bullish momentum at this level = price already ran to the day high,
@@ -68,12 +69,30 @@ function spyShouldAllowEntry(ctx: EntryContext): boolean {
   //    Feb 18#2 dvel=-0.012→F). Good bullish entries had dvel 0.106 and 0.195.
   if (direction === 'bullish' && displacementVelocity < 0.08) return false;
 
-  // 7. Block bearish breakout entries with high exhaustion + high choppiness.
-  //    RangeExh >= 6.0 + Chop >= 0.95 = move already extended and price is oscillating.
-  //    Q4 2025: bearish + Exh>=6.0 + Chop>=0.95 was 0W/2L (Oct 7 Exh=7.0/Chop=1.05→F,
-  //    Oct 31 Exh=6.2/Chop=0.97→F). Good bearish entry Jan 29 had Exh=7.6 but Chop=0.86.
-  if (signalMode === 'breakout' && direction === 'bearish'
-      && ctx.rangeExhaustion >= 6.0 && ctx.choppiness >= 0.95) return false;
+  // 7. Block breakout entries with early-morning zero data (no meaningful intraday range).
+  //    Nov 10 F-grade: RangeExh=0.0, DispVel=0.000, Chop=0.00 — garbage signal.
+  if (signalMode === 'breakout' && ctx.rangeExhaustion < 1.0) return false;
+
+  // 8. Block breakout entries with high chop + low dvel.
+  //    Chop >= 0.90 + DispVel < 0.10 = price oscillating, breakout is noise.
+  //    F-grades: Feb 10 (0.93/0.050), Feb 19 (1.06/0.002), Mar 23 (0.97/0.090).
+  //    Good breakouts with high chop had DispVel >= 0.10: Dec 10 (0.97/0.137), Mar 10 (1.38/0.106).
+  if (signalMode === 'breakout'
+      && ctx.choppiness >= 0.90 && ctx.displacementVelocity < 0.10) return false;
+
+  // 9. Block breakout entries with low confidence (< 74%).
+  //    Jan 30 F-grade: conf=71%. All good breakouts had conf >= 74%.
+  if (signalMode === 'breakout' && ctx.confidence < 0.74) return false;
+
+  // 10. Block breakout entries with high exhaustion + high chop.
+  //     RangeExh >= 7.0 + Chop >= 1.0: extended move + oscillating price.
+  //     Oct 7 F-grade: Exh=7.0, Chop=1.05. Good breakouts at high exh had Chop < 1.0.
+  if (signalMode === 'breakout'
+      && ctx.rangeExhaustion >= 7.0 && ctx.choppiness >= 1.0) return false;
+
+  // 11. Block breakout entries with extreme chop (>= 2.0).
+  //     Mar 18 F-grade: Chop=2.25. Extreme oscillation = not a real breakout.
+  if (signalMode === 'breakout' && ctx.choppiness >= 2.0) return false;
 
   return true;
 }

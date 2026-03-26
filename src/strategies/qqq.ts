@@ -19,6 +19,7 @@ import type { PartialTickerStrategy, ModeDetectionResult, EntryContext } from '.
 import type { ConfidenceBreakdown } from '../types/analysis.js';
 import type { TimeframeIndicators } from '../types/indicators.js';
 import type { SignalDirection } from '../types/signal.js';
+import { evaluateRange, evaluateBreakout, resolveMode } from './default.js';
 
 // ── Module-level state: regime score computed in detectMode, read in shouldAllowEntry ──
 // Safe because QQQ pipeline runs serially (one tick at a time per symbol).
@@ -110,68 +111,18 @@ function qqqDetectMode(
   }
 
   const htfTf = tfIndicators[2]!;
-  const htfAdx = htfTf.dmi.adx;
-  const htfHasFreshCross = htfTf.dmi.crossedUp || htfTf.dmi.crossedDown;
-  const htfRangePos = htfTf.priceStructure.rangePosition;
-  const htfSwingHigh = htfTf.priceStructure.swingHigh;
-  const htfSwingLow = htfTf.priceStructure.swingLow;
-  const htfSwingRange = htfSwingHigh - htfSwingLow;
-  const htfSwingRangePct = htfSwingRange / currentPrice * 100;
 
-  // Range detection (same as default)
-  if (htfAdx < 22 && !htfHasFreshCross
-      && htfRangePos >= 0.05 && htfRangePos <= 0.95
-      && htfSwingRangePct >= 0.20) {
-    const atResistance = htfRangePos >= 0.70;
-    const atSupport = htfRangePos <= 0.30;
-    if (atResistance || atSupport) {
-      return {
-        signalMode: 'range',
-        direction: atResistance ? 'bearish' : 'bullish',
-        rangeSupport: htfSwingLow,
-        rangeResistance: htfSwingHigh,
-      };
-    }
+  // Parallel evaluation — range and breakout are independent
+  const rangeCandidate = evaluateRange(htfTf, currentPrice);
+  let breakoutCandidate = evaluateBreakout(htfTf, tfIndicators, currentPrice);
+
+  // QQQ-specific: filter stale/pre-market data on breakout (ATR $0.37 on $625 = 0.06%)
+  if (breakoutCandidate) {
+    const atrPct = htfTf.atr.atr / currentPrice * 100;
+    if (atrPct < 0.08) breakoutCandidate = null;
   }
 
-  // Breakout detection (QQQ-specific: ATR% stale-data filter)
-  if (htfAdx < 25 && htfTf.dmi.adxSlope > 0) {
-    const htfBarsForBO = htfTf.bars.slice(-20, -3);
-    let boSwingHigh = -Infinity, boSwingLow = Infinity;
-    for (const b of htfBarsForBO) {
-      if (b.high > boSwingHigh) boSwingHigh = b.high;
-      if (b.low < boSwingLow) boSwingLow = b.low;
-    }
-    const boSwingRange = boSwingHigh - boSwingLow;
-    const brokeHigh = currentPrice > boSwingHigh && boSwingRange > 0;
-    const brokeLow = currentPrice < boSwingLow && boSwingRange > 0;
-    if (brokeHigh || brokeLow) {
-      const beyondPct = brokeHigh
-        ? ((currentPrice - boSwingHigh) / currentPrice) * 100
-        : ((boSwingLow - currentPrice) / currentPrice) * 100;
-      if (beyondPct > 0.02 && beyondPct < 0.40) {
-        const htfObv = tfIndicators[2]!.obv;
-        const obvConfirms = brokeHigh ? htfObv.trend === 'bullish' : htfObv.trend === 'bearish';
-        const htfDiCross = brokeHigh ? htfTf.dmi.crossedUp : htfTf.dmi.crossedDown;
-        const diSpreadConfirms = htfTf.dmi.diSpreadSlope > 1;
-        if (obvConfirms || htfDiCross || diSpreadConfirms) {
-          // QQQ: filter stale/pre-market data (ATR $0.37 on $625 = 0.06%)
-          const atrPct = htfTf.atr.atr / currentPrice * 100;
-          if (atrPct < 0.08) {
-            return { signalMode: 'trend' }; // stale data — fall through to trend
-          }
-          return {
-            signalMode: 'breakout',
-            direction: brokeHigh ? 'bullish' : 'bearish',
-            breakoutLevel: brokeHigh ? boSwingHigh : boSwingLow,
-            breakoutBeyond: beyondPct,
-          };
-        }
-      }
-    }
-  }
-
-  return { signalMode: 'trend' };
+  return resolveMode(rangeCandidate, breakoutCandidate);
 }
 
 // ── QQQ Confidence Adjustment ────────────────────────────────────────────────
@@ -221,11 +172,12 @@ function qqqShouldAllowEntry(ctx: EntryContext): boolean {
     if ((ctx.choppiness ?? 0) >= 0.55) return false;
 
     // QQQ trend rule 5: block bearish trend at high regime + near-zero dvel.
-    // Dec 31 F-grade: regime=87, dvel=0.017 — bearish momentum stalling at extremes.
-    // Good bearish: Nov 4 (regime=85, dvel=0.036→B), Feb 12 (regime=89, dvel=0.218→A).
-    // Near-zero dvel at high regime = price overextended but no longer accelerating.
     if (ctx.direction === 'bearish' && _lastRegimeScore >= 85
         && ctx.displacementVelocity !== undefined && Math.abs(ctx.displacementVelocity) < 0.03) return false;
+
+    // QQQ trend rule 6: block trend entries with high exhaustion + near-zero dvel.
+    if (ctx.rangeExhaustion !== undefined && ctx.rangeExhaustion >= 7.0
+        && ctx.displacementVelocity !== undefined && ctx.displacementVelocity < 0.05) return false;
   }
 
   if (signalMode === 'breakout') {
@@ -248,9 +200,12 @@ function qqqShouldAllowEntry(ctx: EntryContext): boolean {
     if (_lastRegimeScore < 60) return false;
 
     // QQQ breakout rule 5: block high-chop breakouts (>= 0.95).
-    // Mar 18 F-grade: chop=1.01 — price oscillating, not a real breakout.
-    // Good breakout Feb 18 had chop=0.35 (clean trend).
     if ((ctx.choppiness ?? 0) >= 0.95) return false;
+
+    // QQQ breakout rule 6: block breakouts with low dvel + choppiness.
+    // |dvel| < 0.07 + chop >= 0.55 = low momentum + oscillating price.
+    if (ctx.displacementVelocity !== undefined && Math.abs(ctx.displacementVelocity) < 0.07
+        && (ctx.choppiness ?? 0) >= 0.55) return false;
   }
 
   return true;

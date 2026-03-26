@@ -62,6 +62,11 @@ function qqqShouldAllowEntry(ctx: EntryContext): boolean {
     // Near-zero dvel at high regime = price overextended but no longer accelerating.
     if (ctx.direction === 'bearish' && ctx.regimeScore >= 85
         && ctx.displacementVelocity !== undefined && Math.abs(ctx.displacementVelocity) < 0.03) return false;
+
+    // QQQ trend rule 6: block trend entries with high exhaustion + near-zero dvel.
+    // Feb 18#2 F-grade: RangeExh=7.3, DispVel=0.010 — extended move, stalling.
+    if (ctx.rangeExhaustion >= 7.0
+        && ctx.displacementVelocity !== undefined && ctx.displacementVelocity < 0.05) return false;
   }
 
   if (signalMode === 'breakout') {
@@ -76,12 +81,12 @@ function qqqShouldAllowEntry(ctx: EntryContext): boolean {
     // All breakout winners had regime >= 67. Below 60 = noise, not a real breakout.
     if (ctx.regimeScore < 60) return false;
 
-    // QQQ breakout rule 3: block breakouts with low dvel + high choppiness.
-    // Mar 18 F-grade: dvel=0.001→0.049, chop=1.02→1.01 — breakout noise, no real momentum.
+    // QQQ breakout rule 3: block breakouts with low dvel + choppiness.
+    // Oct 15 F-grade: dvel=-0.001, chop=0.65. Mar 24 F-grade: dvel=0.062, chop=0.67.
     // Good breakout Feb 18: dvel=-0.014, chop=0.35 (clean, low-chop breakout).
-    // Low |dvel| + high chop = price is oscillating, not breaking out.
-    if (ctx.displacementVelocity !== undefined && Math.abs(ctx.displacementVelocity) < 0.05
-        && ctx.choppiness !== undefined && ctx.choppiness >= 0.80) return false;
+    // |dvel| < 0.07 + chop >= 0.55 = low momentum + oscillating price.
+    if (ctx.displacementVelocity !== undefined && Math.abs(ctx.displacementVelocity) < 0.07
+        && ctx.choppiness !== undefined && ctx.choppiness >= 0.55) return false;
   }
 
   return true;

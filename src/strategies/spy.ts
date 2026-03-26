@@ -179,13 +179,11 @@ function spyShouldAllowEntry(ctx: EntryContext): boolean {
       && ctx.displacementVelocity < -0.05) return false;
 
   // Block trend entries in exhausted + choppy conditions.
-  // When intraday range > 7x ATR AND price action is choppy (flips >= 0.6),
+  // When intraday range > 7x ATR AND price action is choppy (flips >= 0.55),
   // the trend move is done and price is oscillating — entries reverse.
-  // Q4 2025 + Q1 2026: trend entries at Exh > 7.0 + Chop >= 0.6 were 0W/3L (-9.0%).
-  // The sole high-Exh trend winner (Nov 4, +4.9%) had Chop=0.25 (smooth trend).
   if (signalMode === 'trend'
       && ctx.rangeExhaustion !== undefined && ctx.rangeExhaustion > 7.0
-      && ctx.choppiness !== undefined && ctx.choppiness >= 0.6) return false;
+      && ctx.choppiness !== undefined && ctx.choppiness >= 0.55) return false;
 
   // Block bullish trend entries at very high regime (>= 80).
   // SPY bullish momentum at this level = price already ran to the day high,
@@ -213,13 +211,26 @@ function spyShouldAllowEntry(ctx: EntryContext): boolean {
   if (direction === 'bullish'
       && ctx.displacementVelocity !== undefined && ctx.displacementVelocity < 0.08) return false;
 
-  // Block bearish breakout entries with high exhaustion + high choppiness.
-  // RangeExh >= 6.0 + Chop >= 0.95 = move already extended and price is oscillating.
-  // Q4 2025: bearish breakout + Exh>=6.0 + Chop>=0.95 was 0W/2L (Oct 7, Oct 31 both F-grade).
-  // Good bearish entry Jan 29 had Exh=7.6 but Chop=0.86 (smoother trend).
-  if (signalMode === 'breakout' && direction === 'bearish'
-      && ctx.rangeExhaustion !== undefined && ctx.rangeExhaustion >= 6.0
-      && ctx.choppiness !== undefined && ctx.choppiness >= 0.95) return false;
+  // Block breakout entries with early-morning zero data (no meaningful intraday range).
+  if (signalMode === 'breakout'
+      && ctx.rangeExhaustion !== undefined && ctx.rangeExhaustion < 1.0) return false;
+
+  // Block breakout entries with high chop + low dvel (noise, not real breakout).
+  if (signalMode === 'breakout'
+      && ctx.choppiness !== undefined && ctx.choppiness >= 0.90
+      && ctx.displacementVelocity !== undefined && ctx.displacementVelocity < 0.10) return false;
+
+  // Block breakout entries with low confidence (< 74%).
+  if (signalMode === 'breakout' && ctx.confidence < 0.74) return false;
+
+  // Block breakout entries with high exhaustion + high chop.
+  if (signalMode === 'breakout'
+      && ctx.rangeExhaustion !== undefined && ctx.rangeExhaustion >= 7.0
+      && ctx.choppiness !== undefined && ctx.choppiness >= 1.0) return false;
+
+  // Block breakout entries with extreme chop (>= 2.0).
+  if (signalMode === 'breakout'
+      && ctx.choppiness !== undefined && ctx.choppiness >= 2.0) return false;
 
   return true;
 }

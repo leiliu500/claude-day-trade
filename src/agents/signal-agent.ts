@@ -208,57 +208,19 @@ export class SignalAgent {
       breakoutLevel = modeResult.breakoutLevel;
       breakoutBeyond = modeResult.breakoutBeyond;
     } else {
-      // Inline default (SPY-tuned) — kept for backward compat with backtest scripts
-      const htfTfForRange = tfIndicators[2]!;
-      const htfAdxForRange = htfTfForRange.dmi.adx;
-      const htfHasFreshCross = htfTfForRange.dmi.crossedUp || htfTfForRange.dmi.crossedDown;
-      const htfRangePos = htfTfForRange.priceStructure.rangePosition;
-      const htfSwingHigh = htfTfForRange.priceStructure.swingHigh;
-      const htfSwingLow = htfTfForRange.priceStructure.swingLow;
-      const htfSwingRange = htfSwingHigh - htfSwingLow;
-      const htfSwingRangePct = htfSwingRange / currentPrice * 100;
-
-      if (htfAdxForRange < 22 && !htfHasFreshCross
-          && htfRangePos >= 0.05 && htfRangePos <= 0.95
-          && htfSwingRangePct >= 0.20) {
-        const atResistance = htfRangePos >= 0.70;
-        const atSupport = htfRangePos <= 0.30;
-        if (atResistance || atSupport) {
-          signalMode = 'range';
-          rangeSupport = htfSwingLow;
-          rangeResistance = htfSwingHigh;
-          direction = atResistance ? 'bearish' : 'bullish';
-        }
-      }
-
-      if (signalMode === 'trend' && htfAdxForRange < 25 && htfTfForRange.dmi.adxSlope > 0) {
-        const htfBarsForBO = htfTfForRange.bars.slice(-20, -3);
-        let boSwingHigh = -Infinity, boSwingLow = Infinity;
-        for (const b of htfBarsForBO) {
-          if (b.high > boSwingHigh) boSwingHigh = b.high;
-          if (b.low < boSwingLow) boSwingLow = b.low;
-        }
-        const boSwingRange = boSwingHigh - boSwingLow;
-        const brokeHigh = currentPrice > boSwingHigh && boSwingRange > 0;
-        const brokeLow = currentPrice < boSwingLow && boSwingRange > 0;
-        if (brokeHigh || brokeLow) {
-          const beyondPct = brokeHigh
-            ? ((currentPrice - boSwingHigh) / currentPrice) * 100
-            : ((boSwingLow - currentPrice) / currentPrice) * 100;
-          if (beyondPct > 0.02 && beyondPct < 0.40) {
-            const htfObv = tfIndicators[2]!.obv;
-            const obvConfirms = brokeHigh ? htfObv.trend === 'bullish' : htfObv.trend === 'bearish';
-            const htfDiCross = brokeHigh ? htfTfForRange.dmi.crossedUp : htfTfForRange.dmi.crossedDown;
-            const diSpreadConfirms = htfTfForRange.dmi.diSpreadSlope > 1;
-            if (obvConfirms || htfDiCross || diSpreadConfirms) {
-              signalMode = 'breakout';
-              breakoutLevel = brokeHigh ? boSwingHigh : boSwingLow;
-              breakoutBeyond = beyondPct;
-              direction = brokeHigh ? 'bullish' : 'bearish';
-            }
-          }
-        }
-      }
+      // Inline fallback — uses shared parallel evaluation from default strategy
+      const { evaluateRange, evaluateBreakout, resolveMode } = await import('../strategies/default.js');
+      const htfTf = tfIndicators[2]!;
+      const modeResult = resolveMode(
+        evaluateRange(htfTf, currentPrice),
+        evaluateBreakout(htfTf, tfIndicators, currentPrice),
+      );
+      signalMode = modeResult.signalMode;
+      if (modeResult.direction) direction = modeResult.direction;
+      rangeSupport = modeResult.rangeSupport;
+      rangeResistance = modeResult.rangeResistance;
+      breakoutLevel = modeResult.breakoutLevel;
+      breakoutBeyond = modeResult.breakoutBeyond;
     }
 
     // Numeric strength score — per-symbol strategy or default
