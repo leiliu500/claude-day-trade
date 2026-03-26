@@ -203,9 +203,15 @@ function qqqShouldAllowEntry(ctx: EntryContext): boolean {
     if ((ctx.choppiness ?? 0) >= 0.95) return false;
 
     // QQQ breakout rule 6: block breakouts with low dvel + choppiness.
-    // |dvel| < 0.07 + chop >= 0.55 = low momentum + oscillating price.
     if (ctx.displacementVelocity !== undefined && Math.abs(ctx.displacementVelocity) < 0.07
         && (ctx.choppiness ?? 0) >= 0.55) return false;
+  }
+
+  if (signalMode === 'vwap_reversion') {
+    if ((ctx.choppiness ?? 0) >= 1.5) return false;
+    if (ctx.displacementVelocity !== undefined && ctx.displacementVelocity < 0) return false;
+    if (_lastRegimeScore >= 73) return false;
+    if (ctx.rangeExhaustion !== undefined && ctx.rangeExhaustion >= 14) return false;
   }
 
   return true;

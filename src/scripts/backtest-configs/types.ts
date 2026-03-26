@@ -15,7 +15,7 @@ import { simulateOrderAgent, type OHLCVBar, type SimResult, type SimConfig } fro
 // ── Entry context passed to hooks ────────────────────────────────────────────
 
 export interface EntryContext {
-  signalMode: 'trend' | 'range' | 'breakout';
+  signalMode: 'trend' | 'range' | 'breakout' | 'vwap_reversion';
   direction: SignalDirection;
   alignment: AlignmentType;
   confidence: number;

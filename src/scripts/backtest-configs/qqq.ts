@@ -89,6 +89,24 @@ function qqqShouldAllowEntry(ctx: EntryContext): boolean {
         && ctx.choppiness !== undefined && ctx.choppiness >= 0.55) return false;
   }
 
+  if (signalMode === 'vwap_reversion') {
+    // QQQ VWAP reversion rule 1: block high chop (>= 1.5).
+    // Oct 14 (1.76), Feb 13 (1.67), Mar 9 (1.57), Mar 13 (1.54) — all F-grade.
+    if (ctx.choppiness !== undefined && ctx.choppiness >= 1.5) return false;
+
+    // QQQ VWAP reversion rule 2: block negative displacement velocity.
+    // Nov 5 (-0.025), Nov 18 (-0.011), Feb 24 (-0.037) — momentum reverting away from VWAP.
+    if (ctx.displacementVelocity !== undefined && ctx.displacementVelocity < 0) return false;
+
+    // QQQ VWAP reversion rule 3: block high regime (>= 73).
+    // Feb 2 (79), Feb 23 (73), Mar 2 (74) — price trending, not reverting.
+    if (ctx.regimeScore >= 73) return false;
+
+    // QQQ VWAP reversion rule 4: block very high exhaustion (>= 14).
+    // Nov 21 (14.4) — daily range consumed, VWAP too far for reversion.
+    if (ctx.rangeExhaustion >= 14) return false;
+  }
+
   return true;
 }
 

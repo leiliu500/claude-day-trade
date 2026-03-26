@@ -31,7 +31,7 @@ import { normalizeAlpacaBars } from '../types/market.js';
 import { v4 as uuidv4 } from 'uuid';
 import { DecisionOrchestrator } from '../agents/decision-orchestrator.js';
 import type { SimResult } from '../lib/order-agent-sim.js';
-import { evaluateRange, evaluateBreakout, resolveMode } from '../strategies/default.js';
+import { evaluateRange, evaluateBreakout, evaluateVwapReversion, resolveMode } from '../strategies/default.js';
 
 // ── Config ────────────────────────────────────────────────────────────────────
 
@@ -945,6 +945,89 @@ function computeBreakoutConfidence(signal: SignalPayload): ConfidenceBreakdown {
   return { base, diSpreadBonus, adxBonus, diCrossBonus, alignmentBonus, tdAdjustment, obvBonus, vwapBonus, oiVolumeBonus, pricePositionAdjustment, adxMaturityPenalty, trendPhaseBonus, momentumAccelBonus, structureBonus, orbBonus, recentPriceActionBonus, trContractionPenalty, lowVolPenalty, moveExhaustionPenalty, consolidationPenalty, nearLevelPenalty, thetaDecayPenalty, narrowRangePenalty, total };
 }
 
+// ── VWAP reversion confidence computation ────────────────────────────────────
+
+function computeVwapReversionConfidence(signal: SignalPayload): ConfidenceBreakdown {
+  const tfs = signal.timeframes;
+  const [ltf, _mtf, htf] = tfs;
+  const empty: ConfidenceBreakdown = { base: 0.38, diSpreadBonus: 0, adxBonus: 0, diCrossBonus: 0, alignmentBonus: 0, tdAdjustment: 0, obvBonus: 0, vwapBonus: 0, oiVolumeBonus: 0, pricePositionAdjustment: 0, adxMaturityPenalty: 0, trendPhaseBonus: 0, momentumAccelBonus: 0, structureBonus: 0, orbBonus: 0, recentPriceActionBonus: 0, trContractionPenalty: 0, lowVolPenalty: 0, moveExhaustionPenalty: 0, consolidationPenalty: 0, nearLevelPenalty: 0, thetaDecayPenalty: 0, narrowRangePenalty: 0, total: 0.38 };
+  if (!ltf || !htf) return empty;
+
+  const base = 0.38;
+  const vwapPct = ltf.vwap?.priceVsVwap ?? 0;
+  const absVwapPct = Math.abs(vwapPct);
+
+  // VWAP overextension bonus (primary signal)
+  let vwapBonus = 0;
+  if (absVwapPct >= 0.50) vwapBonus = 0.12;
+  else if (absVwapPct >= 0.40) vwapBonus = 0.08;
+  else if (absVwapPct >= 0.30) vwapBonus = 0.05;
+
+  // ADX quietness (low ADX = range-bound, good for reversion) — repurpose lowVolPenalty as bonus
+  let lowVolPenalty = 0;
+  if (htf.dmi.adx < 15) lowVolPenalty = 0.06;
+  else if (htf.dmi.adx < 20) lowVolPenalty = 0.04;
+  else if (htf.dmi.adx < 25) lowVolPenalty = 0.02;
+
+  // Reversal candle quality
+  let recentPriceActionBonus = 0;
+  if (ltf.bars.length >= 3) {
+    const lastBar = ltf.bars[ltf.bars.length - 1]!;
+    const priorBars = ltf.bars.slice(-3, -1);
+    const isBullish = signal.direction === 'bullish';
+    const lastConfirms = isBullish ? lastBar.close > lastBar.open : lastBar.close < lastBar.open;
+    const priorOpposing = priorBars.filter(b => isBullish ? b.close < b.open : b.close > b.open).length;
+    if (lastConfirms && priorOpposing >= 2) recentPriceActionBonus = 0.08;
+    else if (lastConfirms && priorOpposing >= 1) recentPriceActionBonus = 0.05;
+    else if (lastConfirms) recentPriceActionBonus = 0.03;
+  }
+
+  // Price position: reward being in the half that aligns with reversion
+  let pricePositionAdjustment = 0;
+  const rp = htf.priceStructure.rangePosition;
+  if (signal.direction === 'bullish' && rp < 0.40) pricePositionAdjustment = 0.06;
+  else if (signal.direction === 'bearish' && rp > 0.60) pricePositionAdjustment = 0.06;
+  else if (signal.direction === 'bullish' && rp < 0.50) pricePositionAdjustment = 0.03;
+  else if (signal.direction === 'bearish' && rp > 0.50) pricePositionAdjustment = 0.03;
+
+  // OBV divergence confirming reversion
+  let obvBonus = 0;
+  if (signal.direction === 'bullish' && htf.obv.divergence === 'bullish') obvBonus = 0.04;
+  else if (signal.direction === 'bearish' && htf.obv.divergence === 'bearish') obvBonus = 0.04;
+  if (htf.obv.trend !== signal.direction && htf.obv.trend !== 'neutral') obvBonus += 0.02;
+  obvBonus = Math.min(0.06, obvBonus);
+
+  // Trend phase penalty: rising ADX = trend building, bad for reversion
+  let trendPhaseBonus = 0;
+  if (htf.dmi.adxSlope > 3 && htf.dmi.adx > 20) trendPhaseBonus = -0.08;
+  else if (htf.dmi.adxSlope > 1.5 && htf.dmi.adx > 18) trendPhaseBonus = -0.04;
+  else if (htf.dmi.adxSlope <= 0) trendPhaseBonus = 0.03; // declining ADX = good for reversion
+
+  // DI spread: narrowing spread = trend fading, good for reversion
+  let diSpreadBonus = 0;
+  const diSpread = signal.direction === 'bullish'
+    ? htf.dmi.minusDI - htf.dmi.plusDI  // bearish DI dominance fading
+    : htf.dmi.plusDI - htf.dmi.minusDI;  // bullish DI dominance fading
+  if (diSpread < 5) diSpreadBonus = 0.03;
+  else if (diSpread < 10) diSpreadBonus = 0.01;
+
+  const thetaDecayPenalty = simulateThetaDecay(signal.createdAt, TARGET_DATE);
+
+  // Unused fields for ConfidenceBreakdown compatibility
+  const adxBonus = 0, diCrossBonus = 0, alignmentBonus = 0, tdAdjustment = 0;
+  const oiVolumeBonus = 0, adxMaturityPenalty = 0, momentumAccelBonus = 0;
+  const structureBonus = 0, orbBonus = 0, trContractionPenalty = 0;
+  const moveExhaustionPenalty = 0, consolidationPenalty = 0, nearLevelPenalty = 0;
+  const narrowRangePenalty = 0;
+
+  let total = Math.max(0, Math.min(1, base + diSpreadBonus + adxBonus + diCrossBonus + alignmentBonus + tdAdjustment + obvBonus + vwapBonus + oiVolumeBonus + pricePositionAdjustment + adxMaturityPenalty + trendPhaseBonus + momentumAccelBonus + structureBonus + orbBonus + recentPriceActionBonus + trContractionPenalty + lowVolPenalty + moveExhaustionPenalty + consolidationPenalty + nearLevelPenalty + thetaDecayPenalty + narrowRangePenalty));
+
+  // Hard gates: rising ADX + high value = trend, not reversion
+  if (htf.dmi.adx >= 23 && htf.dmi.adxSlope > 2) total = Math.min(total, 0.55);
+
+  return { base, diSpreadBonus, adxBonus, diCrossBonus, alignmentBonus, tdAdjustment, obvBonus, vwapBonus, oiVolumeBonus, pricePositionAdjustment, adxMaturityPenalty, trendPhaseBonus, momentumAccelBonus, structureBonus, orbBonus, recentPriceActionBonus, trContractionPenalty, lowVolPenalty, moveExhaustionPenalty, consolidationPenalty, nearLevelPenalty, thetaDecayPenalty, narrowRangePenalty, total };
+}
+
 // ── Mock option evaluation (no historical option data available) ──────────────
 
 function mockOptionEval(signal: SignalPayload): OptionEvaluation {
@@ -973,7 +1056,7 @@ interface EntryRecord {
   confidence: number;
   price: number;
   strengthScore: number;
-  signalMode: 'trend' | 'range' | 'breakout';
+  signalMode: 'trend' | 'range' | 'breakout' | 'vwap_reversion';
   // Price moves after entry (from remaining bars)
   maxFavorable: number;   // max price move in signal direction ($)
   maxAdverse: number;     // max price move against signal direction ($)
@@ -1098,6 +1181,10 @@ async function main() {
   const MAX_DAILY_ENTRIES = TCFG.maxDailyEntries; // per-ticker daily cap
   let dailyEntryCount = 0;
   const RANGE_WAIT_MIN = 45;       // don't range trade in first 45 min (let day establish)
+
+  // ── VWAP reversion mode state ────────────────────────────────────────────
+  let lastVwapRevEntryTs = 0;
+  let vwapRevEntryCount = 0;
 
   // ── Breakout mode state ────────────────────────────────────────────────────
   let lastBreakoutEntryTs = 0;
@@ -1280,7 +1367,7 @@ async function main() {
     // ── Mode detection (parallel range + breakout) ────────────────────────────
     // Range and breakout are evaluated independently, then resolved by score.
     // This prevents widening one mode's thresholds from stealing ticks from the other.
-    let signalMode: 'trend' | 'range' | 'breakout' = 'trend';
+    let signalMode: 'trend' | 'range' | 'breakout' | 'vwap_reversion' = 'trend';
     let rangeSupport = 0, rangeResistance = 0, rangeMidpoint = 0;
     let breakoutLevel = 0, breakoutBeyond = 0;
     const htfTfForRange = tfIndicators[2]!;
@@ -1288,7 +1375,9 @@ async function main() {
     {
       const rangeCandidate = evaluateRange(htfTfForRange, currentPrice);
       const breakoutCandidate = evaluateBreakout(htfTfForRange, tfIndicators, currentPrice);
-      const modeResult = resolveMode(rangeCandidate, breakoutCandidate);
+      const ltfTfForVwap = tfIndicators[0]!;
+      const vwapRevCandidate = evaluateVwapReversion(ltfTfForVwap, htfTfForRange, currentPrice);
+      const modeResult = resolveMode(rangeCandidate, breakoutCandidate, vwapRevCandidate);
 
       signalMode = modeResult.signalMode;
       if (modeResult.direction) {
@@ -1312,6 +1401,12 @@ async function main() {
         signal.signalMode = 'breakout';
         signal.breakoutLevel = breakoutLevel;
         signal.breakoutBeyond = breakoutBeyond;
+      }
+
+      if (signalMode === 'vwap_reversion') {
+        signal.signalMode = 'vwap_reversion';
+        signal.vwapReversionTarget = modeResult.vwapReversionTarget;
+        signal.vwapDistance = modeResult.vwapDistance;
       }
     }
 
@@ -1390,10 +1485,12 @@ async function main() {
     )));
 
     const optionEval = mockOptionEval(signal);
-    const cbRaw = signalMode === 'range'
-      ? computeRangeConfidence(signal, rangeSupport, rangeResistance)
-      : signalMode === 'breakout'
-        ? computeBreakoutConfidence(signal)
+    const cbRaw = signalMode === 'vwap_reversion'
+      ? computeVwapReversionConfidence(signal)
+      : signalMode === 'range'
+        ? computeRangeConfidence(signal, rangeSupport, rangeResistance)
+        : signalMode === 'breakout'
+          ? computeBreakoutConfidence(signal)
         : computeConfidence(signal, optionEval);
 
     // Per-ticker confidence adjustment hook — allows QQQ etc. to apply custom penalties
@@ -1433,6 +1530,10 @@ async function main() {
       if (runningDisplacement > 0.8) effectiveThreshold += 0.06;
       else if (runningDisplacement > 0.4) effectiveThreshold += 0.03;
       if (rangeExhaustion > 1.5) effectiveThreshold += 0.04;
+    } else if (signalMode === 'vwap_reversion') {
+      // Higher displacement = more overextended = better for VWAP reversion
+      if (runningDisplacement > 0.8) effectiveThreshold -= 0.03;
+      else if (runningDisplacement > 0.4) effectiveThreshold -= 0.02;
     }
 
     // Intraday loss tracker: after losses, raise the bar
@@ -1527,7 +1628,8 @@ async function main() {
       // Simulate order-agent trailing stop on remaining bars (secondary metric)
       const sim = TCFG.simulate(currentPrice, direction, atr, allFutureBars, {
         recentBars,
-        ...(signalMode === 'range' ? { stopMult: 0.5, tpMult: 0.8 }
+        ...(signalMode === 'vwap_reversion' ? { stopMult: 0.4, tpMult: 0.6 }
+          : signalMode === 'range' ? { stopMult: 0.5, tpMult: 0.8 }
           : signalMode === 'breakout' ? { stopMult: TCFG.breakoutStopMult, tpMult: TCFG.breakoutTpMult } : {}),
       });
       return {
@@ -1710,6 +1812,37 @@ async function main() {
             dailyEntryCount++;
             if (fwd.entryGrade === 'F' || fwd.entryGrade === 'D') intradayLosses++;
           }
+        } else if (signalMode === 'vwap_reversion') {
+          // VWAP reversion entries bypass the trend confirmation gate
+          const VWAP_REV_MIN_CONF = 0.68;
+          const VWAP_REV_COOLDOWN_MIN = 15;
+          const MAX_VWAP_REV_ENTRIES = 1; // 2nd VWAP reversion entries were consistently F-grade
+          const vwapRevEarliestTs = openTime.getTime() + 45 * 60_000; // wait 45 min for VWAP to stabilize
+          const cooldownOk = (currentTs - lastVwapRevEntryTs) >= VWAP_REV_COOLDOWN_MIN * 60_000;
+          const underLimit = vwapRevEntryCount < MAX_VWAP_REV_ENTRIES;
+          const pastWaitPeriod = currentTs >= vwapRevEarliestTs;
+          // Don't fight a strong intraday trend
+          const noStrongTrend = Math.abs(intradayTrendStrength) < 4;
+          // Require VWAP bonus in confidence (confirms overextension)
+          const vwapConfirms = cb.vwapBonus >= 0.03;
+          // Low ATR = thin volume, reversal lacks follow-through
+          const vwapRevAtrOk = atr >= 0.80;
+          // High chop + non-extreme regime = reversal is noise, not real turning point
+          // (Exception: regime < 50 = strongly range-bound, chop is expected)
+          // Extreme chop (>= 2.0) always blocked regardless of regime.
+          const vwapRevChopOk = choppiness < 2.0 && !(choppiness > 0.99 && regimeScore >= 50);
+          if (cb.total >= VWAP_REV_MIN_CONF && cooldownOk && underLimit && pastWaitPeriod && noStrongTrend && vwapConfirms && vwapRevAtrOk && vwapRevChopOk) {
+            const fwd = computeForwardMoves();
+            entries.push({
+              time: timeStr, timeET, direction, alignment, confidence: cb.total,
+              price: currentPrice, strengthScore, signalMode, atr, ...fwd, breakdown: cb, ...regimeCtx,
+              gateResult: 'PASSED',
+            });
+            lastVwapRevEntryTs = currentTs;
+            vwapRevEntryCount++;
+            dailyEntryCount++;
+            if (fwd.entryGrade === 'F' || fwd.entryGrade === 'D') intradayLosses++;
+          }
         } else {
         // Trend mode: apply daily limit and cooldown
         const trendCooldownOk = (currentTs - lastTrendEntryTs) >= TREND_COOLDOWN_MIN * 60_000;
@@ -1868,7 +2001,7 @@ async function main() {
     const gateTag = e.gateResult === 'PASSED' ? '🟢 CONFIRMED'
       : e.gateResult === 'HIGH_CONV_OVERRIDE' ? '⚡ HIGH-CONV OVERRIDE'
       : '⚡ PHASE-CHANGE OVERRIDE';
-    const modeTag = e.signalMode === 'range' ? ' [RANGE]' : e.signalMode === 'breakout' ? ' [BREAKOUT]' : '';
+    const modeTag = e.signalMode === 'vwap_reversion' ? ' [VWAP_REV]' : e.signalMode === 'range' ? ' [RANGE]' : e.signalMode === 'breakout' ? ' [BREAKOUT]' : '';
     const dirTag = e.directionCorrect ? '✅' : '❌';
     console.log(`  Entry #${i + 1}: Grade ${gradeIcon} | ${gateTag}${modeTag}`);
     console.log(`    Time:       ${e.timeET} ET (${e.time.slice(11, 19)} UTC)`);

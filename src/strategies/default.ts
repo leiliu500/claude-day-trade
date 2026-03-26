@@ -129,23 +129,85 @@ export function evaluateBreakout(
 }
 
 /**
- * Resolve between range and breakout candidates.
- * When only one qualifies, returns it. When both qualify, picks higher score.
- * When neither qualifies, returns trend.
+ * Evaluate VWAP mean reversion mode independently. Returns candidate or null.
+ * Fires when price is overextended from VWAP on a low-ADX day and a reversal candle appears.
+ */
+export function evaluateVwapReversion(
+  ltfTf: TimeframeIndicators,
+  htfTf: TimeframeIndicators,
+  currentPrice: number,
+): ModeCandidate | null {
+  const htfAdx = htfTf.dmi.adx;
+  const vwapPct = ltfTf.vwap?.priceVsVwap ?? 0; // % distance from VWAP (positive = above)
+  const absVwapPct = Math.abs(vwapPct);
+  const vwapPrice = ltfTf.vwap?.vwap ?? 0;
+
+  // Must be overextended from VWAP (>= 0.30%)
+  if (absVwapPct < 0.30 || vwapPrice <= 0) return null;
+
+  // Must be low/declining ADX (< 25) — not a strong trend
+  if (htfAdx >= 25) return null;
+
+  // No fresh DI cross in extension direction (would indicate trend continuation)
+  if (vwapPct > 0 && htfTf.dmi.crossedUp) return null;
+  if (vwapPct < 0 && htfTf.dmi.crossedDown) return null;
+
+  // Reversal candle: last LTF bar turns back toward VWAP, with 2+ prior opposing bars
+  const bars = ltfTf.bars;
+  if (bars.length < 4) return null;
+  const lastBar = bars[bars.length - 1]!;
+  const priorBars = bars.slice(-3, -1);
+  const isBullishRev = vwapPct < 0 && lastBar.close > lastBar.open;
+  const isBearishRev = vwapPct > 0 && lastBar.close < lastBar.open;
+  if (!isBullishRev && !isBearishRev) return null;
+  // Require 2+ prior bars in the extension direction (confirming overextension, not just noise)
+  const priorInExtDir = priorBars.filter(b =>
+    isBullishRev ? b.close < b.open : b.close > b.open
+  ).length;
+  if (priorInExtDir < 2) return null;
+
+  // Direction: opposite to overextension
+  const direction = vwapPct > 0 ? 'bearish' : 'bullish';
+
+  // Score
+  const vwapDistScore = Math.min(1, absVwapPct / 0.60) * 0.25;
+  const adxScore = ((25 - htfAdx) / 25) * 0.15;
+  // Reversal quality: 2+ opposing prior bars = stronger signal
+  const priorOpposing = bars.slice(-3, -1).filter(b =>
+    isBullishRev ? b.close < b.open : b.close > b.open
+  ).length;
+  const reversalScore = (priorOpposing >= 2 ? 0.10 : 0.05);
+  const slopeScore = htfTf.dmi.adxSlope <= 0 ? 0.05 : 0;
+  const score = 0.40 + vwapDistScore + adxScore + reversalScore + slopeScore;
+
+  return {
+    result: {
+      signalMode: 'vwap_reversion' as const,
+      direction,
+      vwapReversionTarget: vwapPrice,
+      vwapDistance: absVwapPct,
+    },
+    score,
+  };
+}
+
+/**
+ * Resolve between all mode candidates.
+ * Picks the highest-scoring non-null candidate. Falls back to trend.
  */
 export function resolveMode(
   rangeCandidate: ModeCandidate | null,
   breakoutCandidate: ModeCandidate | null,
+  vwapRevCandidate?: ModeCandidate | null,
 ): ModeDetectionResult {
-  if (rangeCandidate && breakoutCandidate) {
-    // Both qualify — pick higher score (breakout wins ties)
-    return breakoutCandidate.score >= rangeCandidate.score
-      ? breakoutCandidate.result
-      : rangeCandidate.result;
-  }
-  if (rangeCandidate) return rangeCandidate.result;
-  if (breakoutCandidate) return breakoutCandidate.result;
-  return { signalMode: 'trend' };
+  const candidates = [rangeCandidate, breakoutCandidate, vwapRevCandidate].filter(
+    (c): c is ModeCandidate => c !== null && c !== undefined,
+  );
+  if (candidates.length === 0) return { signalMode: 'trend' };
+  if (candidates.length === 1) return candidates[0]!.result;
+  // Multiple qualify — pick highest score
+  candidates.sort((a, b) => b.score - a.score);
+  return candidates[0]!.result;
 }
 
 // ── Default mode detection (parallel) ───────────────────────────────────────
@@ -156,9 +218,11 @@ function defaultDetectMode(
   currentPrice: number,
 ): ModeDetectionResult {
   const htfTf = tfIndicators[2]!;
+  const ltfTf = tfIndicators[0]!;
   const rangeCandidate = evaluateRange(htfTf, currentPrice);
   const breakoutCandidate = evaluateBreakout(htfTf, tfIndicators, currentPrice);
-  return resolveMode(rangeCandidate, breakoutCandidate);
+  const vwapRevCandidate = evaluateVwapReversion(ltfTf, htfTf, currentPrice);
+  return resolveMode(rangeCandidate, breakoutCandidate, vwapRevCandidate);
 }
 
 function defaultComputeStrength(tfIndicators: TimeframeIndicators[]): number {

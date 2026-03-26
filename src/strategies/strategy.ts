@@ -21,7 +21,7 @@ import type { SignalDirection } from '../types/signal.js';
 // ── Entry context passed to hooks ────────────────────────────────────────────
 
 export interface EntryContext {
-  signalMode: 'trend' | 'range' | 'breakout';
+  signalMode: 'trend' | 'range' | 'breakout' | 'vwap_reversion';
   direction: SignalDirection;
   alignment: AlignmentType;
   confidence: number;
@@ -44,7 +44,7 @@ export interface EntryContext {
 // ── Mode detection result ────────────────────────────────────────────────────
 
 export interface ModeDetectionResult {
-  signalMode: 'trend' | 'range' | 'breakout';
+  signalMode: 'trend' | 'range' | 'breakout' | 'vwap_reversion';
   /** Overridden direction (e.g. range mode flips direction based on range position) */
   direction?: SignalDirection;
   /** Range mode: support/resistance levels */
@@ -53,6 +53,9 @@ export interface ModeDetectionResult {
   /** Breakout mode: level broken and how far beyond */
   breakoutLevel?: number;
   breakoutBeyond?: number;
+  /** VWAP reversion mode: VWAP target and distance */
+  vwapReversionTarget?: number;
+  vwapDistance?: number;
 }
 
 // ── Strategy interface ───────────────────────────────────────────────────────

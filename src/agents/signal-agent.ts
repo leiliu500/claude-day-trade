@@ -191,7 +191,7 @@ export class SignalAgent {
     const atm = Math.round(currentPrice);  // nearest whole-dollar ATM strike
 
     // ── Mode detection (per-symbol strategy or inline default) ────────────────
-    let signalMode: 'trend' | 'range' | 'breakout' = 'trend';
+    let signalMode: 'trend' | 'range' | 'breakout' | 'vwap_reversion' = 'trend';
     let rangeSupport: number | undefined;
     let rangeResistance: number | undefined;
     let breakoutLevel: number | undefined;
@@ -209,11 +209,13 @@ export class SignalAgent {
       breakoutBeyond = modeResult.breakoutBeyond;
     } else {
       // Inline fallback — uses shared parallel evaluation from default strategy
-      const { evaluateRange, evaluateBreakout, resolveMode } = await import('../strategies/default.js');
+      const { evaluateRange, evaluateBreakout, evaluateVwapReversion, resolveMode } = await import('../strategies/default.js');
       const htfTf = tfIndicators[2]!;
+      const ltfTf = tfIndicators[0]!;
       const modeResult = resolveMode(
         evaluateRange(htfTf, currentPrice),
         evaluateBreakout(htfTf, tfIndicators, currentPrice),
+        evaluateVwapReversion(ltfTf, htfTf, currentPrice),
       );
       signalMode = modeResult.signalMode;
       if (modeResult.direction) direction = modeResult.direction;

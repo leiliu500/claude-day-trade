@@ -43,6 +43,11 @@ function computeConfidence(signal: SignalPayload, option: OptionEvaluation): Con
   if (signal.signalMode === 'breakout') {
     return computeBreakoutConfidence(signal);
   }
+  if (signal.signalMode === 'vwap_reversion') {
+    // VWAP reversion uses the range confidence model as a base
+    // (both are mean-reversion setups, same factor structure)
+    return computeRangeConfidence(signal);
+  }
 
   const tfs = signal.timeframes;
   const [ltf, mtf, htf] = tfs;
@@ -1509,11 +1514,13 @@ export class AnalysisAgent {
     let cb: ConfidenceBreakdown;
     if (tickerCfg?.strategy) {
       const strategy = tickerCfg.strategy;
-      cb = signal.signalMode === 'range'
-        ? strategy.computeRangeConfidence(signal)
-        : signal.signalMode === 'breakout'
-          ? strategy.computeBreakoutConfidence(signal)
-          : strategy.computeTrendConfidence(signal, option);
+      cb = signal.signalMode === 'vwap_reversion'
+        ? strategy.computeRangeConfidence(signal) // VWAP reversion uses range confidence model
+        : signal.signalMode === 'range'
+          ? strategy.computeRangeConfidence(signal)
+          : signal.signalMode === 'breakout'
+            ? strategy.computeBreakoutConfidence(signal)
+            : strategy.computeTrendConfidence(signal, option);
     } else {
       cb = computeConfidence(signal, option);
     }
@@ -1565,7 +1572,7 @@ export class AnalysisAgent {
     }
 
     const entryCtx = {
-      signalMode: (signal.signalMode ?? 'trend') as 'trend' | 'range' | 'breakout',
+      signalMode: (signal.signalMode ?? 'trend') as 'trend' | 'range' | 'breakout' | 'vwap_reversion',
       direction: signal.direction,
       alignment: signal.alignment,
       confidence: cb.total,

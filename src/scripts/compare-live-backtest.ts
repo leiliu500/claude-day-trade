@@ -68,7 +68,7 @@ interface BacktestEntry {
   outcome: string;
   gateResult: string;
   stage1Conf?: number;
-  signalMode: 'trend' | 'range' | 'breakout';
+  signalMode: 'trend' | 'range' | 'breakout' | 'vwap_reversion';
 }
 
 // ── Parse backtest output ─────────────────────────────────────────────────────
@@ -90,7 +90,7 @@ function parseBacktestOutput(output: string): BacktestEntry[] {
       // Parse subsequent lines for this entry
       let timeET = '', timeUTC = '', direction = '', alignment = '', confidence = 0, price = 0;
       let maxFavorable = 0, maxAdverse = 0, stage1Conf: number | undefined;
-      let signalMode: 'trend' | 'range' | 'breakout' = gateRaw.includes('[RANGE]') ? 'range' : gateRaw.includes('[BREAKOUT]') ? 'breakout' : 'trend';
+      let signalMode: 'trend' | 'range' | 'breakout' | 'vwap_reversion' = gateRaw.includes('[RANGE]') ? 'range' : gateRaw.includes('[BREAKOUT]') ? 'breakout' : 'trend';
 
       for (let j = i + 1; j < Math.min(i + 15, lines.length); j++) {
         const l = lines[j]!;
