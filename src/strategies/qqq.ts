@@ -19,7 +19,7 @@ import type { PartialTickerStrategy, ModeDetectionResult, EntryContext } from '.
 import type { ConfidenceBreakdown } from '../types/analysis.js';
 import type { TimeframeIndicators } from '../types/indicators.js';
 import type { SignalDirection } from '../types/signal.js';
-import { evaluateRange, evaluateBreakout, resolveMode } from './default.js';
+import { evaluateRange, evaluateBreakout, evaluateVwapReversion, resolveMode } from './default.js';
 
 // ── Module-level state: regime score computed in detectMode, read in shouldAllowEntry ──
 // Safe because QQQ pipeline runs serially (one tick at a time per symbol).
@@ -112,9 +112,12 @@ function qqqDetectMode(
 
   const htfTf = tfIndicators[2]!;
 
-  // Parallel evaluation — range and breakout are independent
+  const ltfTf = tfIndicators[0]!;
+
+  // Parallel evaluation — range, breakout, and VWAP reversion are independent
   const rangeCandidate = evaluateRange(htfTf, currentPrice);
   let breakoutCandidate = evaluateBreakout(htfTf, tfIndicators, currentPrice);
+  const vwapRevCandidate = evaluateVwapReversion(ltfTf, htfTf, currentPrice);
 
   // QQQ-specific: filter stale/pre-market data on breakout (ATR $0.37 on $625 = 0.06%)
   if (breakoutCandidate) {
@@ -122,7 +125,7 @@ function qqqDetectMode(
     if (atrPct < 0.08) breakoutCandidate = null;
   }
 
-  return resolveMode(rangeCandidate, breakoutCandidate);
+  return resolveMode(rangeCandidate, breakoutCandidate, vwapRevCandidate);
 }
 
 // ── QQQ Confidence Adjustment ────────────────────────────────────────────────

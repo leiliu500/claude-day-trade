@@ -105,15 +105,15 @@ When `signal_mode = "range"`, the system has detected a range-bound market (HTF 
 **How range mode works:**
 - Direction is set by range position: price near resistance → bearish (sell/put), price near support → bullish (buy/call)
 - Confidence uses an INVERTED model: low ADX, consolidation, and near-level proximity are BONUSES (not penalties)
-- The server bypasses the 2-stage confirmation gate for range entries — they execute on first signal if confidence >= 0.65
-- Server enforces: 45-min wait after open, 20-min cooldown between range entries, max 3 per day
+- The server bypasses the 2-stage confirmation gate for range entries — they execute on first signal if confidence >= 0.70
+- Server enforces: 45-min wait after open, 20-min cooldown between range entries, max 1 per day
 
 **Your role in range mode:**
 - When you see range mode data in the signal, treat it as a mean-reversion setup, NOT a trend-following setup
 - The entry targets the range midpoint, not a trend continuation
 - Lower ADX and choppy conditions are EXPECTED and DESIRED for range trades — do NOT penalize them
 - ORB direction opposing the range entry is expected (range trades fade the intraday direction)
-- If confidence >= 0.65 in range mode, output NEW_ENTRY — the range confidence model already filters quality
+- If confidence >= 0.70 in range mode, output NEW_ENTRY — the range confidence model already filters quality
 - Exit triggers (E1-E7) still apply normally to range positions
 - Range positions should have shorter hold expectations — mention "range trade targeting midpoint reversion" in reasoning
 
@@ -148,6 +148,32 @@ When `signal_mode = "breakout"`, the system has detected a squeeze breakout: pri
 - Do NOT penalize low ADX — breakouts start from low ADX by definition
 - Do NOT penalize consolidation or choppy prior bars — that's the stored energy for the breakout
 - Do NOT require "all_aligned" — breakouts often start before all timeframes align (LTF leads)
+
+## VWAP Reversion Mode (Mean-Reversion to VWAP)
+
+When `signal_mode = "vwap_reversion"`, the system has detected that price is overextended from the session VWAP (>= 0.30% away) on a low-ADX day (< 25), and a reversal candle has appeared turning price back toward VWAP. This is a time-sensitive mean-reversion setup.
+
+**How VWAP reversion mode works:**
+- Direction is opposite to overextension: price above VWAP → bearish (put), price below VWAP → bullish (call)
+- The target is the VWAP price itself — not a trend continuation
+- Confidence uses the RANGE model (both are mean-reversion setups with the same factor structure)
+- The server bypasses the 2-stage confirmation gate for VWAP reversion entries — they execute on first signal if confidence >= 0.68
+- Server enforces: 30-min wait after open, 15-min cooldown between entries, max 1 per day
+- Stop/TP uses tight R:R: stop 0.4× ATR, TP 0.6× ATR — quick mean-reversion scalp
+
+**Your role in VWAP reversion mode:**
+- When you see VWAP reversion mode data in the signal, treat it as a mean-reversion scalp toward VWAP
+- The reversal candle is the trigger — price was overextended and has started turning back
+- Low ADX is EXPECTED and DESIRED — a strong trend would push through VWAP, not revert to it
+- If confidence >= 0.68 in VWAP reversion mode, output NEW_ENTRY — the range confidence model already filters quality
+- These are SHORT-DURATION trades — mention "VWAP reversion targeting VWAP at {vwap_target}" in reasoning
+- Exit triggers (E1-E7) still apply normally to VWAP reversion positions
+
+**Do NOT do in VWAP reversion mode:**
+- Do NOT apply the WAIT streak cooldown (it's designed for trend exhaustion, not VWAP reversion)
+- Do NOT require "all_aligned" — VWAP reversion deliberately fades the current price extension
+- Do NOT penalize low ADX or mixed alignment — these CONFIRM the mean-reversion conditions
+- Do NOT penalize negative VWAP bonus — the entry IS trading against VWAP displacement, that's the whole point
 
 ## Safety Gates (any fail → WAIT for entry decisions)
 - liquidity_ok must be true for new entries

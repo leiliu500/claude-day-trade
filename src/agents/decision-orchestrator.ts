@@ -587,6 +587,39 @@ export class DecisionOrchestrator {
         }
       }
 
+      // VWAP-reversion bypass: skip the 2-stage confirmation gate for VWAP mean-reversion entries.
+      // These are time-sensitive (reversal candle already appeared) and use the range confidence model
+      // which already filters quality. Same structure as rangeBypass: 45-min wait, cooldown, daily limit.
+      let vwapRevBypass = false;
+      if (signal.signalMode === 'vwap_reversion' && priorCount < 1) {
+        const VWAP_REV_MIN_CONF = 0.68;
+        const now = new Date();
+        const todayOpen = new Date(now);
+        todayOpen.setUTCHours(13, 30, 0, 0);
+        const minutesSinceOpen = (now.getTime() - todayOpen.getTime()) / 60_000;
+        const pastWaitPeriod = minutesSinceOpen >= 30;
+        const meetsThreshold = analysis.confidence >= VWAP_REV_MIN_CONF;
+
+        const todayStr = now.toISOString().slice(0, 10);
+        const vwapRevEntriesToday = context.recentDecisions.filter(d =>
+          d.decisionType === 'NEW_ENTRY' &&
+          d.reasoning?.includes('[VWAP_REV') &&
+          d.createdAt.startsWith(todayStr)
+        );
+        const underLimit = vwapRevEntriesToday.length < 1; // max 1 VWAP reversion entry per day — backtest showed 2nd entries were F-grade
+        const lastVwapRevEntry = vwapRevEntriesToday[0];
+        const cooldownOk = !lastVwapRevEntry ||
+          (now.getTime() - new Date(lastVwapRevEntry.createdAt).getTime()) >= 15 * 60_000; // 15-min cooldown
+
+        vwapRevBypass = meetsThreshold && pastWaitPeriod && underLimit && cooldownOk;
+        if (!vwapRevBypass) {
+          const reason = !meetsThreshold ? `conf ${analysis.confidence.toFixed(2)} < 0.68 VWAP reversion threshold` :
+            !pastWaitPeriod ? 'waiting 45min after open' :
+            !underLimit ? 'max 2 VWAP reversion entries/day reached' : '15min cooldown active';
+          console.log(`[DecisionOrchestrator] VWAP reversion bypass blocked: ${reason}`);
+        }
+      }
+
       // Global daily entry cap: max 2 entries across all modes — prevents loss-stacking on bad days.
       // Feb 5/17 and Mar 5 had triple losses; capping at 2 limits damage.
       const MAX_DAILY_ENTRIES = 2;
@@ -599,6 +632,7 @@ export class DecisionOrchestrator {
       if (allEntriesToday.length >= MAX_DAILY_ENTRIES) {
         rangeBypass = false;
         breakoutBypass = false;
+        vwapRevBypass = false;
         // Also block trend overrides/bypasses
         if (overrideOk || phaseChangeOk || strongSignalBypass) {
           console.log(`[DecisionOrchestrator] Daily entry cap reached (${allEntriesToday.length}/${MAX_DAILY_ENTRIES}) — blocking all new entries`);
@@ -606,7 +640,7 @@ export class DecisionOrchestrator {
       }
       const dailyCapOk = allEntriesToday.length < MAX_DAILY_ENTRIES;
 
-      if (!dailyCapOk || (!overrideOk && !phaseChangeOk && !strongSignalBypass && !rangeBypass && !breakoutBypass && priorCount < 1)) {
+      if (!dailyCapOk || (!overrideOk && !phaseChangeOk && !strongSignalBypass && !rangeBypass && !breakoutBypass && !vwapRevBypass && priorCount < 1)) {
         rawOutput.decision_type = 'WAIT';
         rawOutput.should_execute = false;
         const timingNote = (phaseChangeStructuralOk && !phaseChangeTimingOk)
@@ -626,6 +660,10 @@ export class DecisionOrchestrator {
         const side = signal.direction === 'bullish' ? 'CALL' : 'PUT';
         rawOutput.reasoning = `[BREAKOUT BYPASS] Squeeze breakout ${side} beyond ${signal.breakoutLevel?.toFixed(2)} (conf=${(analysis.confidence * 100).toFixed(1)}%, ADX=${htfTf?.dmi.adx.toFixed(1)}, slope=${htfTf?.dmi.adxSlope.toFixed(1)}). ${rawOutput.reasoning}`;
         console.log(`[DecisionOrchestrator] NEW_ENTRY breakout bypass — ${side} (confidence=${analysis.confidence.toFixed(2)}, breakoutLevel=${signal.breakoutLevel?.toFixed(2)}, beyond=${signal.breakoutBeyond?.toFixed(3)}%)`);
+      } else if (vwapRevBypass) {
+        const side = signal.direction === 'bullish' ? 'CALL' : 'PUT';
+        rawOutput.reasoning = `[VWAP_REV BYPASS] VWAP reversion ${side} toward ${signal.vwapReversionTarget?.toFixed(2)} (conf=${(analysis.confidence * 100).toFixed(1)}%, dist=${signal.vwapDistance?.toFixed(2)}%). ${rawOutput.reasoning}`;
+        console.log(`[DecisionOrchestrator] NEW_ENTRY VWAP reversion bypass — ${side} (confidence=${analysis.confidence.toFixed(2)}, vwapTarget=${signal.vwapReversionTarget?.toFixed(2)}, distance=${signal.vwapDistance?.toFixed(2)}%)`);
       } else if (strongSignalBypass) {
         const side = signal.direction === 'bullish' ? 'CALL' : 'PUT';
         rawOutput.reasoning = `[STRONG-SIGNAL BYPASS] Confidence ${(analysis.confidence * 100).toFixed(1)}% + all_aligned → immediate ${side} entry (no 2-stage wait). ${rawOutput.reasoning}`;
