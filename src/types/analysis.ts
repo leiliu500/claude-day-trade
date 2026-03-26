@@ -22,6 +22,9 @@ export interface ConfidenceBreakdown {
   nearLevelPenalty: number;        // -0.10..0 — penalty for buying puts near support or calls near resistance
   thetaDecayPenalty: number;       // -0.10..0 — penalty for 0DTE entries late in the day when theta accelerates
   narrowRangePenalty: number;      // -0.12..0 — penalty when intraday range is small relative to ATR (choppy/range-bound day)
+  candlePatternBonus: number;      // -0.08..+0.08 — leading: engulfing/hammer patterns at key levels (instant, no lag)
+  priceVelocityBonus: number;      // -0.06..+0.08 — leading: raw price ROC + directional velocity (no smoothing)
+  volumeSurgeBonus: number;        // 0..+0.06 — leading: volume surge detection (institutional activity)
   total: number;                   // clamped 0..1
 }
 

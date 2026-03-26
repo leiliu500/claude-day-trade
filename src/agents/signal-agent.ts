@@ -9,6 +9,8 @@ import { detectCandlePattern, detectAllPatterns } from '../indicators/candle-pat
 import { computePriceStructure } from '../indicators/price-structure.js';
 import { computeVWAP } from '../indicators/vwap.js';
 import { computePriorDayLevels, computeORB } from '../indicators/market-structure.js';
+import { computePriceVelocity } from '../indicators/price-velocity.js';
+import { computeVolumeSurge } from '../indicators/volume-surge.js';
 import { PROFILE_TIMEFRAMES, normalizeAlpacaBars } from '../types/market.js';
 import type { OHLCVBar, Timeframe, TradingProfile, AlpacaBarsResponse } from '../types/market.js';
 import type { TimeframeIndicators } from '../types/indicators.js';
@@ -78,13 +80,19 @@ async function fetchBars(
 function computeTimeframeIndicators(
   bars: OHLCVBar[],
   timeframe: Timeframe,
-  direction: 'bullish' | 'bearish' | 'neutral' = 'neutral'
+  direction: 'bullish' | 'bearish' | 'neutral' = 'neutral',
+  isLTF = false
 ): TimeframeIndicators {
   const skipGaps = timeframe !== '1d';
+  // Use shorter DMI period (8) on LTF for faster direction detection.
+  // LTF bars (1m, 2m) with 14-period Wilder's smoothing create ~30-bar lag
+  // which misses the first 30+ minutes of a move. Period 8 halves this lag
+  // while still filtering noise. HTF/MTF keep 14 for stability.
+  const dmiPeriod = isLTF ? 8 : 14;
   return {
     timeframe,
     bars,
-    dmi: computeDMI(bars, 14, skipGaps),
+    dmi: computeDMI(bars, dmiPeriod, skipGaps),
     atr: computeATR(bars, 14, skipGaps),
     obv: computeOBV(bars, 14),
     td: computeTD(bars),
@@ -92,6 +100,8 @@ function computeTimeframeIndicators(
     candlePattern: detectCandlePattern(bars),
     allCandlePatterns: detectAllPatterns(bars),
     priceStructure: computePriceStructure(bars, 20, direction),
+    priceVelocity: computePriceVelocity(bars),
+    volumeSurge: computeVolumeSurge(bars),
     currentPrice: bars[bars.length - 1]?.close ?? 0,
   };
 }
@@ -181,9 +191,9 @@ export class SignalAgent {
 
     // Second pass: build full TF indicators with direction for accurate price levels
     const tfIndicators: TimeframeIndicators[] = [
-      computeTimeframeIndicators(ltfBars, ltf, direction),
-      computeTimeframeIndicators(mtfBars, mtf, direction),
-      computeTimeframeIndicators(htfBars, htf, direction),
+      computeTimeframeIndicators(ltfBars, ltf, direction, true),   // LTF: shorter DMI period (8) for faster detection
+      computeTimeframeIndicators(mtfBars, mtf, direction, false),
+      computeTimeframeIndicators(htfBars, htf, direction, false),
     ];
     const alignment = classifyAlignment(tfIndicators, direction);
     const currentPrice = tfIndicators[0]?.currentPrice ?? 0;

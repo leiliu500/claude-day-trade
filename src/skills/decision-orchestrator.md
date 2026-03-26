@@ -237,6 +237,27 @@ The `confidence_breakdown` includes `narrow_range_penalty` (−0.12 to 0) which 
 - `narrow_range_penalty = 0`: today's range is >= 70% of prior day — normal conditions
 - When `narrow_range_penalty <= -0.08` AND `price_position_adjustment <= -0.04` (near range extreme on a tight day), confidence is hard-capped at 0.60 — price is at the edge of a tiny box and mean-reversion is almost certain.
 
+## Leading Indicators (Zero-Lag)
+The `confidence_breakdown` includes three leading indicators that detect moves BEFORE lagged indicators (DMI/ADX) confirm:
+
+### `candle_pattern_bonus` (−0.08 to +0.08)
+Engulfing and reversal candlestick patterns — instant signals with no smoothing lag.
+- Bullish engulfing at support or bearish engulfing at resistance = strong entry signal
+- Opposing engulfing = counter-signal penalty
+- Hammer at lower range / shooting star at upper range = reversal confirmation
+
+### `price_velocity_bonus` (−0.06 to +0.08)
+Raw price velocity (Rate of Change) — measures actual speed of price movement with ZERO lag.
+- Strong directional velocity aligned with signal = real-time momentum confirmation
+- Velocity opposing signal = price actively moving against the trade
+- Acceleration (velocity building) = momentum growing, not just present
+
+### `volume_surge_bonus` (−0.04 to +0.08)
+Volume spike detection — institutional activity signal that leads price.
+- Volume ratio > 2.0 with aligned price = strong institutional participation
+- Volume drying up (ratio < 0.5) = no conviction behind move (breakout mode)
+- Volume surge is especially important for breakout mode: breakouts without volume are likely false
+
 ## ATR Awareness
 Each timeframe includes `atr_pct` (ATR as % of last close).
 - HTF atr_pct > 1.5% = elevated volatility — note in risk_notes

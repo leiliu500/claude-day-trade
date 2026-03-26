@@ -21,6 +21,8 @@ import { detectCandlePattern, detectAllPatterns } from '../indicators/candle-pat
 import { computePriceStructure } from '../indicators/price-structure.js';
 import { computeVWAP } from '../indicators/vwap.js';
 import { computePriorDayLevels, computeORB } from '../indicators/market-structure.js';
+import { computePriceVelocity } from '../indicators/price-velocity.js';
+import { computeVolumeSurge } from '../indicators/volume-surge.js';
 import type { OHLCVBar, Timeframe, AlpacaBarsResponse } from '../types/market.js';
 import type { TimeframeIndicators } from '../types/indicators.js';
 import type { SignalPayload, AlignmentType, SignalDirection } from '../types/signal.js';
@@ -156,6 +158,8 @@ function computeTimeframeIndicators(
     candlePattern: detectCandlePattern(bars),
     allCandlePatterns: detectAllPatterns(bars),
     priceStructure: computePriceStructure(bars, 20, direction),
+    priceVelocity: computePriceVelocity(bars),
+    volumeSurge: computeVolumeSurge(bars),
     currentPrice: bars[bars.length - 1]?.close ?? 0,
   };
 }
@@ -198,7 +202,7 @@ function computeConfidence(signal: SignalPayload, option: OptionEvaluation): Con
   const tfs = signal.timeframes;
   const [ltf, mtf, htf] = tfs;
   if (!ltf || !mtf || !htf) {
-    return { base: 0.38, diSpreadBonus: 0, adxBonus: 0, diCrossBonus: 0, alignmentBonus: 0, tdAdjustment: 0, obvBonus: 0, vwapBonus: 0, oiVolumeBonus: 0, pricePositionAdjustment: 0, adxMaturityPenalty: 0, trendPhaseBonus: 0, momentumAccelBonus: 0, structureBonus: 0, orbBonus: 0, recentPriceActionBonus: 0, trContractionPenalty: 0, lowVolPenalty: 0, moveExhaustionPenalty: 0, consolidationPenalty: 0, nearLevelPenalty: 0, thetaDecayPenalty: 0, narrowRangePenalty: 0, total: 0.38 };
+    return { base: 0.38, diSpreadBonus: 0, adxBonus: 0, diCrossBonus: 0, alignmentBonus: 0, tdAdjustment: 0, obvBonus: 0, vwapBonus: 0, oiVolumeBonus: 0, pricePositionAdjustment: 0, adxMaturityPenalty: 0, trendPhaseBonus: 0, momentumAccelBonus: 0, structureBonus: 0, orbBonus: 0, recentPriceActionBonus: 0, trContractionPenalty: 0, lowVolPenalty: 0, moveExhaustionPenalty: 0, consolidationPenalty: 0, nearLevelPenalty: 0, thetaDecayPenalty: 0, narrowRangePenalty: 0, candlePatternBonus: 0, priceVelocityBonus: 0, volumeSurgeBonus: 0, total: 0.38 };
   }
 
   const base = 0.38;
@@ -576,7 +580,12 @@ function computeConfidence(signal: SignalPayload, option: OptionEvaluation): Con
   // momentum, not fresh signal. Cap to prevent inflated confidence on stale setups.
   if (adxMaturityPenalty <= -0.04) diSpreadBonus = Math.min(diSpreadBonus, 0.06);
 
-  let total = Math.max(0, Math.min(1, base + diSpreadBonus + adxBonus + diCrossBonus + alignmentBonus + tdAdjustment + obvBonus + vwapBonus + oiVolumeBonus + pricePositionAdjustment + adxMaturityPenalty + trendPhaseBonus + momentumAccelBonus + structureBonus + orbBonus + recentPriceActionBonus + trContractionPenalty + lowVolPenalty + moveExhaustionPenalty + consolidationPenalty + nearLevelPenalty + thetaDecayPenalty + narrowRangePenalty));
+  // Leading indicators — not computed in backtest (no bar-level velocity/volume data)
+  const candlePatternBonus = 0;
+  const priceVelocityBonus = 0;
+  const volumeSurgeBonus = 0;
+
+  let total = Math.max(0, Math.min(1, base + diSpreadBonus + adxBonus + diCrossBonus + alignmentBonus + tdAdjustment + obvBonus + vwapBonus + oiVolumeBonus + pricePositionAdjustment + adxMaturityPenalty + trendPhaseBonus + momentumAccelBonus + structureBonus + orbBonus + recentPriceActionBonus + trContractionPenalty + lowVolPenalty + moveExhaustionPenalty + consolidationPenalty + nearLevelPenalty + thetaDecayPenalty + narrowRangePenalty + candlePatternBonus + priceVelocityBonus + volumeSurgeBonus));
 
   // Hard gates
   // Pattern 3: No structure support (Structure ≤ 0) — cap confidence.
@@ -607,7 +616,7 @@ function computeConfidence(signal: SignalPayload, option: OptionEvaluation): Con
   if (narrowRangePenalty <= -0.08 && pricePositionAdjustment <= -0.04) total = Math.min(total, 0.60);
   if (thetaDecayPenalty <= -0.10) total = Math.min(total, 0.55);
 
-  return { base, diSpreadBonus, adxBonus, diCrossBonus, alignmentBonus, tdAdjustment, obvBonus, vwapBonus, oiVolumeBonus, pricePositionAdjustment, adxMaturityPenalty, trendPhaseBonus, momentumAccelBonus, structureBonus, orbBonus, recentPriceActionBonus, trContractionPenalty, lowVolPenalty, moveExhaustionPenalty, consolidationPenalty, nearLevelPenalty, thetaDecayPenalty, narrowRangePenalty, total };
+  return { base, diSpreadBonus, adxBonus, diCrossBonus, alignmentBonus, tdAdjustment, obvBonus, vwapBonus, oiVolumeBonus, pricePositionAdjustment, adxMaturityPenalty, trendPhaseBonus, momentumAccelBonus, structureBonus, orbBonus, recentPriceActionBonus, trContractionPenalty, lowVolPenalty, moveExhaustionPenalty, consolidationPenalty, nearLevelPenalty, thetaDecayPenalty, narrowRangePenalty, candlePatternBonus, priceVelocityBonus, volumeSurgeBonus, total };
 }
 
 // ── Range-bound confidence computation ────────────────────────────────────────
@@ -621,7 +630,7 @@ function computeRangeConfidence(
 ): ConfidenceBreakdown {
   const tfs = signal.timeframes;
   const [ltf, mtf, htf] = tfs;
-  const empty: ConfidenceBreakdown = { base: 0.38, diSpreadBonus: 0, adxBonus: 0, diCrossBonus: 0, alignmentBonus: 0, tdAdjustment: 0, obvBonus: 0, vwapBonus: 0, oiVolumeBonus: 0, pricePositionAdjustment: 0, adxMaturityPenalty: 0, trendPhaseBonus: 0, momentumAccelBonus: 0, structureBonus: 0, orbBonus: 0, recentPriceActionBonus: 0, trContractionPenalty: 0, lowVolPenalty: 0, moveExhaustionPenalty: 0, consolidationPenalty: 0, nearLevelPenalty: 0, thetaDecayPenalty: 0, narrowRangePenalty: 0, total: 0.38 };
+  const empty: ConfidenceBreakdown = { base: 0.38, diSpreadBonus: 0, adxBonus: 0, diCrossBonus: 0, alignmentBonus: 0, tdAdjustment: 0, obvBonus: 0, vwapBonus: 0, oiVolumeBonus: 0, pricePositionAdjustment: 0, adxMaturityPenalty: 0, trendPhaseBonus: 0, momentumAccelBonus: 0, structureBonus: 0, orbBonus: 0, recentPriceActionBonus: 0, trContractionPenalty: 0, lowVolPenalty: 0, moveExhaustionPenalty: 0, consolidationPenalty: 0, nearLevelPenalty: 0, thetaDecayPenalty: 0, narrowRangePenalty: 0, candlePatternBonus: 0, priceVelocityBonus: 0, volumeSurgeBonus: 0, total: 0.38 };
   if (!ltf || !mtf || !htf) return empty;
 
   const base = 0.38;
@@ -787,7 +796,11 @@ function computeRangeConfidence(
   const trContractionPenalty = 0;
   const thetaDecayPenalty = simulateThetaDecay(signal.createdAt, TARGET_DATE);
 
-  let total = Math.max(0, Math.min(1, base + diSpreadBonus + adxBonus + diCrossBonus + alignmentBonus + tdAdjustment + obvBonus + vwapBonus + oiVolumeBonus + pricePositionAdjustment + adxMaturityPenalty + trendPhaseBonus + momentumAccelBonus + structureBonus + orbBonus + recentPriceActionBonus + trContractionPenalty + lowVolPenalty + moveExhaustionPenalty + consolidationPenalty + nearLevelPenalty + thetaDecayPenalty + narrowRangePenalty));
+  const candlePatternBonus = 0;
+  const priceVelocityBonus = 0;
+  const volumeSurgeBonus = 0;
+
+  let total = Math.max(0, Math.min(1, base + diSpreadBonus + adxBonus + diCrossBonus + alignmentBonus + tdAdjustment + obvBonus + vwapBonus + oiVolumeBonus + pricePositionAdjustment + adxMaturityPenalty + trendPhaseBonus + momentumAccelBonus + structureBonus + orbBonus + recentPriceActionBonus + trContractionPenalty + lowVolPenalty + moveExhaustionPenalty + consolidationPenalty + nearLevelPenalty + thetaDecayPenalty + narrowRangePenalty + candlePatternBonus + priceVelocityBonus + volumeSurgeBonus));
 
   // Hard gates for range mode
   if (htf.dmi.adx >= 28) total = Math.min(total, 0.50);
@@ -817,7 +830,7 @@ function computeRangeConfidence(
     if (chopRatio >= 1.3) total = Math.min(total, 0.55);
   }
 
-  return { base, diSpreadBonus, adxBonus, diCrossBonus, alignmentBonus, tdAdjustment, obvBonus, vwapBonus, oiVolumeBonus, pricePositionAdjustment, adxMaturityPenalty, trendPhaseBonus, momentumAccelBonus, structureBonus, orbBonus, recentPriceActionBonus, trContractionPenalty, lowVolPenalty, moveExhaustionPenalty, consolidationPenalty, nearLevelPenalty, thetaDecayPenalty, narrowRangePenalty, total };
+  return { base, diSpreadBonus, adxBonus, diCrossBonus, alignmentBonus, tdAdjustment, obvBonus, vwapBonus, oiVolumeBonus, pricePositionAdjustment, adxMaturityPenalty, trendPhaseBonus, momentumAccelBonus, structureBonus, orbBonus, recentPriceActionBonus, trContractionPenalty, lowVolPenalty, moveExhaustionPenalty, consolidationPenalty, nearLevelPenalty, thetaDecayPenalty, narrowRangePenalty, candlePatternBonus, priceVelocityBonus, volumeSurgeBonus, total };
 }
 
 // ── Breakout (squeeze breakout) confidence computation ─────────────────────────
@@ -825,7 +838,7 @@ function computeRangeConfidence(
 function computeBreakoutConfidence(signal: SignalPayload): ConfidenceBreakdown {
   const tfs = signal.timeframes;
   const [ltf, mtf, htf] = tfs;
-  const empty: ConfidenceBreakdown = { base: 0.38, diSpreadBonus: 0, adxBonus: 0, diCrossBonus: 0, alignmentBonus: 0, tdAdjustment: 0, obvBonus: 0, vwapBonus: 0, oiVolumeBonus: 0, pricePositionAdjustment: 0, adxMaturityPenalty: 0, trendPhaseBonus: 0, momentumAccelBonus: 0, structureBonus: 0, orbBonus: 0, recentPriceActionBonus: 0, trContractionPenalty: 0, lowVolPenalty: 0, moveExhaustionPenalty: 0, consolidationPenalty: 0, nearLevelPenalty: 0, thetaDecayPenalty: 0, narrowRangePenalty: 0, total: 0.38 };
+  const empty: ConfidenceBreakdown = { base: 0.38, diSpreadBonus: 0, adxBonus: 0, diCrossBonus: 0, alignmentBonus: 0, tdAdjustment: 0, obvBonus: 0, vwapBonus: 0, oiVolumeBonus: 0, pricePositionAdjustment: 0, adxMaturityPenalty: 0, trendPhaseBonus: 0, momentumAccelBonus: 0, structureBonus: 0, orbBonus: 0, recentPriceActionBonus: 0, trContractionPenalty: 0, lowVolPenalty: 0, moveExhaustionPenalty: 0, consolidationPenalty: 0, nearLevelPenalty: 0, thetaDecayPenalty: 0, narrowRangePenalty: 0, candlePatternBonus: 0, priceVelocityBonus: 0, volumeSurgeBonus: 0, total: 0.38 };
   if (!ltf || !mtf || !htf || !signal.breakoutLevel) return empty;
 
   const base = 0.38;
@@ -935,14 +948,18 @@ function computeBreakoutConfidence(signal: SignalPayload): ConfidenceBreakdown {
   const nearLevelPenalty = 0;
   const thetaDecayPenalty = simulateThetaDecay(signal.createdAt, TARGET_DATE);
 
-  let total = Math.max(0, Math.min(1, base + diSpreadBonus + adxBonus + diCrossBonus + alignmentBonus + tdAdjustment + obvBonus + vwapBonus + oiVolumeBonus + pricePositionAdjustment + adxMaturityPenalty + trendPhaseBonus + momentumAccelBonus + structureBonus + orbBonus + recentPriceActionBonus + trContractionPenalty + lowVolPenalty + moveExhaustionPenalty + consolidationPenalty + nearLevelPenalty + thetaDecayPenalty + narrowRangePenalty));
+  const candlePatternBonus = 0;
+  const priceVelocityBonus = 0;
+  const volumeSurgeBonus = 0;
+
+  let total = Math.max(0, Math.min(1, base + diSpreadBonus + adxBonus + diCrossBonus + alignmentBonus + tdAdjustment + obvBonus + vwapBonus + oiVolumeBonus + pricePositionAdjustment + adxMaturityPenalty + trendPhaseBonus + momentumAccelBonus + structureBonus + orbBonus + recentPriceActionBonus + trContractionPenalty + lowVolPenalty + moveExhaustionPenalty + consolidationPenalty + nearLevelPenalty + thetaDecayPenalty + narrowRangePenalty + candlePatternBonus + priceVelocityBonus + volumeSurgeBonus));
 
   // Hard gates
   if (htf.dmi.adx >= 25) total = Math.min(total, 0.60);
   if (recentPriceActionBonus <= -0.06) total = Math.min(total, 0.58);
   if (beyondPct > 0.35) total = Math.min(total, 0.58);
 
-  return { base, diSpreadBonus, adxBonus, diCrossBonus, alignmentBonus, tdAdjustment, obvBonus, vwapBonus, oiVolumeBonus, pricePositionAdjustment, adxMaturityPenalty, trendPhaseBonus, momentumAccelBonus, structureBonus, orbBonus, recentPriceActionBonus, trContractionPenalty, lowVolPenalty, moveExhaustionPenalty, consolidationPenalty, nearLevelPenalty, thetaDecayPenalty, narrowRangePenalty, total };
+  return { base, diSpreadBonus, adxBonus, diCrossBonus, alignmentBonus, tdAdjustment, obvBonus, vwapBonus, oiVolumeBonus, pricePositionAdjustment, adxMaturityPenalty, trendPhaseBonus, momentumAccelBonus, structureBonus, orbBonus, recentPriceActionBonus, trContractionPenalty, lowVolPenalty, moveExhaustionPenalty, consolidationPenalty, nearLevelPenalty, thetaDecayPenalty, narrowRangePenalty, candlePatternBonus, priceVelocityBonus, volumeSurgeBonus, total };
 }
 
 // ── VWAP reversion confidence computation ────────────────────────────────────
@@ -950,7 +967,7 @@ function computeBreakoutConfidence(signal: SignalPayload): ConfidenceBreakdown {
 function computeVwapReversionConfidence(signal: SignalPayload): ConfidenceBreakdown {
   const tfs = signal.timeframes;
   const [ltf, _mtf, htf] = tfs;
-  const empty: ConfidenceBreakdown = { base: 0.38, diSpreadBonus: 0, adxBonus: 0, diCrossBonus: 0, alignmentBonus: 0, tdAdjustment: 0, obvBonus: 0, vwapBonus: 0, oiVolumeBonus: 0, pricePositionAdjustment: 0, adxMaturityPenalty: 0, trendPhaseBonus: 0, momentumAccelBonus: 0, structureBonus: 0, orbBonus: 0, recentPriceActionBonus: 0, trContractionPenalty: 0, lowVolPenalty: 0, moveExhaustionPenalty: 0, consolidationPenalty: 0, nearLevelPenalty: 0, thetaDecayPenalty: 0, narrowRangePenalty: 0, total: 0.38 };
+  const empty: ConfidenceBreakdown = { base: 0.38, diSpreadBonus: 0, adxBonus: 0, diCrossBonus: 0, alignmentBonus: 0, tdAdjustment: 0, obvBonus: 0, vwapBonus: 0, oiVolumeBonus: 0, pricePositionAdjustment: 0, adxMaturityPenalty: 0, trendPhaseBonus: 0, momentumAccelBonus: 0, structureBonus: 0, orbBonus: 0, recentPriceActionBonus: 0, trContractionPenalty: 0, lowVolPenalty: 0, moveExhaustionPenalty: 0, consolidationPenalty: 0, nearLevelPenalty: 0, thetaDecayPenalty: 0, narrowRangePenalty: 0, candlePatternBonus: 0, priceVelocityBonus: 0, volumeSurgeBonus: 0, total: 0.38 };
   if (!ltf || !htf) return empty;
 
   const base = 0.38;
@@ -1020,12 +1037,16 @@ function computeVwapReversionConfidence(signal: SignalPayload): ConfidenceBreakd
   const moveExhaustionPenalty = 0, consolidationPenalty = 0, nearLevelPenalty = 0;
   const narrowRangePenalty = 0;
 
-  let total = Math.max(0, Math.min(1, base + diSpreadBonus + adxBonus + diCrossBonus + alignmentBonus + tdAdjustment + obvBonus + vwapBonus + oiVolumeBonus + pricePositionAdjustment + adxMaturityPenalty + trendPhaseBonus + momentumAccelBonus + structureBonus + orbBonus + recentPriceActionBonus + trContractionPenalty + lowVolPenalty + moveExhaustionPenalty + consolidationPenalty + nearLevelPenalty + thetaDecayPenalty + narrowRangePenalty));
+  const candlePatternBonus = 0;
+  const priceVelocityBonus = 0;
+  const volumeSurgeBonus = 0;
+
+  let total = Math.max(0, Math.min(1, base + diSpreadBonus + adxBonus + diCrossBonus + alignmentBonus + tdAdjustment + obvBonus + vwapBonus + oiVolumeBonus + pricePositionAdjustment + adxMaturityPenalty + trendPhaseBonus + momentumAccelBonus + structureBonus + orbBonus + recentPriceActionBonus + trContractionPenalty + lowVolPenalty + moveExhaustionPenalty + consolidationPenalty + nearLevelPenalty + thetaDecayPenalty + narrowRangePenalty + candlePatternBonus + priceVelocityBonus + volumeSurgeBonus));
 
   // Hard gates: rising ADX + high value = trend, not reversion
   if (htf.dmi.adx >= 23 && htf.dmi.adxSlope > 2) total = Math.min(total, 0.55);
 
-  return { base, diSpreadBonus, adxBonus, diCrossBonus, alignmentBonus, tdAdjustment, obvBonus, vwapBonus, oiVolumeBonus, pricePositionAdjustment, adxMaturityPenalty, trendPhaseBonus, momentumAccelBonus, structureBonus, orbBonus, recentPriceActionBonus, trContractionPenalty, lowVolPenalty, moveExhaustionPenalty, consolidationPenalty, nearLevelPenalty, thetaDecayPenalty, narrowRangePenalty, total };
+  return { base, diSpreadBonus, adxBonus, diCrossBonus, alignmentBonus, tdAdjustment, obvBonus, vwapBonus, oiVolumeBonus, pricePositionAdjustment, adxMaturityPenalty, trendPhaseBonus, momentumAccelBonus, structureBonus, orbBonus, recentPriceActionBonus, trContractionPenalty, lowVolPenalty, moveExhaustionPenalty, consolidationPenalty, nearLevelPenalty, thetaDecayPenalty, narrowRangePenalty, candlePatternBonus, priceVelocityBonus, volumeSurgeBonus, total };
 }
 
 // ── Mock option evaluation (no historical option data available) ──────────────

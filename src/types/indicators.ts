@@ -1,5 +1,7 @@
 import type { OHLCVBar, Timeframe } from './market.js';
 import type { AllCandlePatterns } from '../indicators/candle-patterns.js';
+import type { PriceVelocityResult } from '../indicators/price-velocity.js';
+import type { VolumeSurgeResult } from '../indicators/volume-surge.js';
 
 export interface DMIResult {
   plusDI: number;
@@ -93,6 +95,8 @@ export interface TimeframeIndicators {
   candlePattern: CandlePattern;
   allCandlePatterns: AllCandlePatterns;  // all 4 patterns checked independently
   priceStructure: PriceStructure;
+  priceVelocity: PriceVelocityResult;   // leading: raw price ROC + velocity (no smoothing)
+  volumeSurge: VolumeSurgeResult;       // leading: volume spike detection
   currentPrice: number;
 }
 
