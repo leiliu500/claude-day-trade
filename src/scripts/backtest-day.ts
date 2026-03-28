@@ -1435,6 +1435,14 @@ async function main() {
   const filterBlockedEntries: FilterBlockedEntry[] = [];
   const allTicks: { time: string; timeET: string; price: number; direction: SignalDirection; alignment: AlignmentType; confidence: number; meetsThreshold: boolean }[] = [];
 
+  // ── Leading override momentum persistence ────────────────────────────────
+  // Once a leading override flips direction, persist that direction as long as LTF DMI agrees.
+  // This prevents a single-bar spike from being detected at the moment of impact but lost on
+  // the next bar when velocity decays below threshold, even though LTF DMI still confirms.
+  // Expires after 10 minutes to prevent stale overrides from affecting later signals.
+  let leadingOverrideDir: SignalDirection | null = null;
+  let leadingOverrideTs = 0;
+
   // ── Trend persistence state ───────────────────────────────────────────────
   // Tracks recent signal direction+alignment for trend persistence bonus (mirrors live DB query)
   const signalHistory: Array<{ direction: SignalDirection; alignment: AlignmentType }> = [];
@@ -1628,8 +1636,31 @@ async function main() {
       if (ltfAgrees && velocityOpposesDir && accelerating && direction !== 'neutral') {
         direction = velDir;
         leadingSignalOverride = true;
+        leadingOverrideDir = velDir;
+        leadingOverrideTs = currentTs;
       } else if (ltfAgrees && velDir === direction && accelerating) {
         leadingSignalOverride = true;
+        // Persist confirmed direction too — if reversal override just flipped us,
+        // this ensures the new direction survives when the reversal override stops firing.
+        if (direction === 'bullish' || direction === 'bearish') {
+          leadingOverrideDir = direction;
+          leadingOverrideTs = currentTs;
+        }
+      }
+    }
+
+    // Momentum persistence: if a prior leading override set a direction and LTF DMI still agrees,
+    // maintain that direction even after velocity decays below the threshold.
+    // Expires after 15 minutes to prevent stale overrides from affecting later signals.
+    const PERSIST_MAX_MS = 15 * 60_000;
+    if (!leadingSignalOverride && !reversalOverride && leadingOverrideDir !== null) {
+      if (currentTs - leadingOverrideTs > PERSIST_MAX_MS) {
+        leadingOverrideDir = null; // expired
+      } else if (ltfDmi?.trend === leadingOverrideDir) {
+        if (leadingOverrideDir !== direction) direction = leadingOverrideDir;
+        leadingSignalOverride = true; // protect from mode evaluator overwrite
+      } else {
+        leadingOverrideDir = null; // LTF DMI no longer agrees — clear
       }
     }
 
@@ -1697,7 +1728,9 @@ async function main() {
       const modeResult = resolveMode(trendCandidate, rangeCandidate, breakoutCandidate, vwapRevCandidate);
 
       signalMode = modeResult.signalMode;
-      if (modeResult.direction) {
+      // Only apply mode evaluator's direction when leading override hasn't already set a faster direction.
+      // Leading indicators (velocity + LTF DMI) detect direction changes 5-15 bars before HTF DI catches up.
+      if (modeResult.direction && !leadingSignalOverride) {
         direction = modeResult.direction;
         signal.direction = direction;
       }

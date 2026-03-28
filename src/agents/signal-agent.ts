@@ -123,6 +123,13 @@ function classifyAlignment(tfs: TimeframeIndicators[], direction: SignalDirectio
   return 'mixed';
 }
 
+// ── Leading override momentum persistence (per-ticker) ──────────────────────
+// Once a leading override flips direction, persist that direction as long as LTF DMI agrees.
+// This prevents a single-bar spike from being detected at the moment of impact but lost on
+// the next bar when velocity decays below threshold, even though LTF DMI still confirms.
+const _leadingOverrideDir = new Map<string, 'bullish' | 'bearish'>();
+const _leadingOverrideTs = new Map<string, number>();
+
 export class SignalAgent {
   async run(
     ticker: string,
@@ -224,10 +231,18 @@ export class SignalAgent {
         console.log(`[SignalAgent] Leading direction override: velocity=${ltfVelocity.directionalVelocity.toFixed(4)} accel=${ltfVelocity.acceleration.toFixed(4)} LTF_DMI=${ltfDmi?.trend} → flipping ${direction}→${velDir}`);
         direction = velDir;
         leadingSignalOverride = true;
+        _leadingOverrideDir.set(ticker, velDir);
+        _leadingOverrideTs.set(ticker, Date.now());
       } else if (ltfAgrees && velDir === direction && accelerating) {
         // LTF DMI + velocity CONFIRM the existing direction with acceleration
         // → stronger conviction, lower threshold warranted
         leadingSignalOverride = true;
+        // Persist confirmed direction — if reversal override just flipped us,
+        // this ensures the new direction survives when the reversal override stops firing.
+        if (direction === 'bullish' || direction === 'bearish') {
+          _leadingOverrideDir.set(ticker, direction);
+          _leadingOverrideTs.set(ticker, Date.now());
+        }
       }
     }
 
@@ -259,6 +274,29 @@ export class SignalAgent {
       }
     }
 
+    // Momentum persistence: if a prior leading override set a direction and LTF DMI still agrees,
+    // maintain that direction even after velocity decays below the threshold.
+    // Also protect existing matching direction from being overwritten by the mode evaluator.
+    // Momentum persistence: expires after 15 minutes
+    const PERSIST_MAX_MS = 15 * 60_000;
+    if (!leadingSignalOverride && !reversalOverride) {
+      const persistedDir = _leadingOverrideDir.get(ticker);
+      const persistedTs = _leadingOverrideTs.get(ticker) ?? 0;
+      if (persistedDir && Date.now() - persistedTs > PERSIST_MAX_MS) {
+        _leadingOverrideDir.delete(ticker);
+        _leadingOverrideTs.delete(ticker);
+      } else if (persistedDir && ltfDmi?.trend === persistedDir) {
+        if (persistedDir !== direction) {
+          console.log(`[SignalAgent] Leading momentum persistence: LTF DMI still ${persistedDir}, flipping ${direction}→${persistedDir}`);
+          direction = persistedDir;
+        }
+        leadingSignalOverride = true; // protect from mode evaluator overwrite
+      } else if (persistedDir && ltfDmi?.trend !== persistedDir) {
+        _leadingOverrideDir.delete(ticker);
+        _leadingOverrideTs.delete(ticker);
+      }
+    }
+
     // Second pass: build full TF indicators with direction for accurate price levels
     const tfIndicators: TimeframeIndicators[] = [
       computeTimeframeIndicators(ltfBars, ltf, direction, true),   // LTF: shorter DMI period (8) for faster detection
@@ -284,7 +322,9 @@ export class SignalAgent {
       // Use per-symbol strategy for mode detection
       const modeResult = strategy.detectMode(tfIndicators, direction, currentPrice);
       signalMode = modeResult.signalMode;
-      if (modeResult.direction) direction = modeResult.direction;
+      // Only apply mode evaluator's direction when leading override hasn't already set a faster direction.
+      // Leading indicators (velocity + LTF DMI) detect direction changes 5-15 bars before HTF DI catches up.
+      if (modeResult.direction && !leadingSignalOverride) direction = modeResult.direction;
       rangeSupport = modeResult.rangeSupport;
       rangeResistance = modeResult.rangeResistance;
       breakoutLevel = modeResult.breakoutLevel;
@@ -303,7 +343,7 @@ export class SignalAgent {
         evaluateVwapReversion(ltfTf, htfTf, currentPrice),
       );
       signalMode = modeResult.signalMode;
-      if (modeResult.direction) direction = modeResult.direction;
+      if (modeResult.direction && !leadingSignalOverride) direction = modeResult.direction;
       rangeSupport = modeResult.rangeSupport;
       rangeResistance = modeResult.rangeResistance;
       breakoutLevel = modeResult.breakoutLevel;
