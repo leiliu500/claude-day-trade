@@ -142,8 +142,12 @@ export function evaluateTrend(
 
   // Trend requires established directional movement
   if (htfAdx < 18) return null;           // ADX below 18 = no trend
-  if (adxSlope <= 0) return null;          // flat/declining ADX = trend fading
   if (diSpread < 5) return null;           // no clear directional dominance
+  // Mature trend: ADX >= 25 with strong DI spread (>= 10) qualifies even with flat/declining ADX.
+  // This prevents a dead zone after spikes where ADX stays elevated but slope turns negative,
+  // simultaneously blocking range/breakout/vwap (ADX too high) and trend (slope <= 0).
+  const matureTrend = htfAdx >= 25 && diSpread >= 10;
+  if (adxSlope <= 0 && !matureTrend) return null; // fading ADX without strong directional dominance
 
   // Direction from DI dominance
   const direction: SignalDirection = htfTf.dmi.plusDI > htfTf.dmi.minusDI ? 'bullish' : 'bearish';
