@@ -44,6 +44,12 @@ async function fetchBarsRest(
   url.searchParams.set('limit', String(limit));
   url.searchParams.set('adjustment', 'raw');
   url.searchParams.set('feed', 'sip'); // SIP consolidated tape (Algo Trader Plus)
+  // Alpaca requires explicit start for daily bars — without it, returns null
+  if (timeframe === '1d') {
+    const start = new Date();
+    start.setDate(start.getDate() - (limit + 4) * 1.5); // extra padding for weekends/holidays
+    url.searchParams.set('start', start.toISOString().slice(0, 10) + 'T00:00:00Z');
+  }
 
   const res = await fetch(url.toString(), { headers, signal: AbortSignal.timeout(20_000) });
   if (!res.ok) {
