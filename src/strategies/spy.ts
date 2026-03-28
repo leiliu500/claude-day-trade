@@ -173,7 +173,8 @@ function spyShouldAllowEntry(ctx: EntryContext): true | string {
 
   if (signalMode === 'trend' && atr < 0.70) return `trend atr ${atr.toFixed(3)} < 0.70`;
 
-  if (signalMode === 'trend' && _lastRegimeScore >= 80) return `trend regime ${_lastRegimeScore} >= 80`;
+  // trend_regime >= 80 removed: Q4+Q1 counterfactual net +12 costly (97 good missed vs 85 bad avoided).
+  // trend_exhausted_reverting (rExh>7 + dvel<0) and trend_exhausted_choppy already catch actual reversals.
 
   if (signalMode === 'trend'
       && ctx.rangeExhaustion !== undefined && ctx.rangeExhaustion > 7.0
@@ -206,7 +207,8 @@ function spyShouldAllowEntry(ctx: EntryContext): true | string {
 
   if (signalMode === 'breakout' && _lastRegimeScore >= 80) return `breakout regime ${_lastRegimeScore} >= 80`;
 
-  if (signalMode === 'breakout' && atr < 0.80) return `breakout atr ${atr.toFixed(3)} < 0.80`;
+  // breakout_atr < 0.80 removed: Q4+Q1 counterfactual net +9 costly (13 good vs 4 bad).
+  // breakout_atrPct < 0.08% and trend_atr < 0.70 already catch genuinely low-volatility cases.
 
   if (signalMode === 'breakout' && direction === 'bullish'
       && ctx.rangeExhaustion !== undefined && ctx.rangeExhaustion >= 4.5

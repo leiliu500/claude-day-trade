@@ -17,9 +17,9 @@ function nvdaShouldAllowEntry(ctx: EntryContext): true | string {
 
   const atrPct = ctx.currentPrice > 0 ? (ctx.atr / ctx.currentPrice) * 100 : 0;
   if (atrPct < 0.08) return `atrPct ${atrPct.toFixed(3)}% < 0.08%`;
-  if (ctx.displacementVelocity < -0.003) return `dvel ${ctx.displacementVelocity.toFixed(4)} < -0.003`;
+  // dvel < -0.003 removed: Q4+Q1 net +48 costly
   if (ctx.rangeExhaustion < 1.0) return `rangeExhaustion ${ctx.rangeExhaustion.toFixed(1)} < 1.0 (early morning)`;
-  if (ctx.confidence < 0.80) return `confidence ${(ctx.confidence * 100).toFixed(0)}% < 80%`;
+  // confidence < 80% removed: Q4+Q1 net +148 costly (498 good vs 350 bad)
 
   if (signalMode === 'trend') {
     if (cb.trendPhaseBonus < 0) return `trend trendPhase ${cb.trendPhaseBonus.toFixed(3)} < 0`;
@@ -55,10 +55,8 @@ export const NVDA_CONFIG: Partial<TickerBacktestConfig> = {
   breakoutMinConfidence: 0,
   breakoutStopMult: 0.7,
   breakoutTpMult: 1.8,
-  // NVDA: lower trend exhaustion from 12.0 → 9.0.
-  // Jan 13 (Exh=10.9→F). Good trend entries at high exh: Nov 21 (10.3→A), Dec 23 (10.3→A).
-  // But those had strength >= 52. Keep 9.0 for safety.
-  trendMaxExhaustion: 9.0,
+  // trendMaxExhaustion disabled: Q4+Q1 counterfactual net +4 costly (6 good vs 2 bad)
+  trendMaxExhaustion: 999,
 
   shouldAllowEntry: nvdaShouldAllowEntry,
   adjustConfidence: nvdaAdjustConfidence,

@@ -50,10 +50,10 @@ function qqqShouldAllowEntry(ctx: EntryContext): true | string {
   }
 
   if (signalMode === 'vwap_reversion') {
-    if (ctx.choppiness !== undefined && ctx.choppiness >= 1.5) return `vwap_reversion choppiness ${ctx.choppiness.toFixed(2)} >= 1.5`;
+    // vwap_reversion choppiness >= 1.5 removed: Q4+Q1 net +2 costly
     if (ctx.displacementVelocity !== undefined && ctx.displacementVelocity < 0) return `vwap_reversion dvel ${ctx.displacementVelocity.toFixed(4)} < 0`;
     if (ctx.regimeScore >= 73) return `vwap_reversion regime ${ctx.regimeScore} >= 73`;
-    if (ctx.rangeExhaustion >= 14) return `vwap_reversion rangeExhaustion ${ctx.rangeExhaustion.toFixed(1)} >= 14`;
+    // vwap_reversion rangeExhaustion >= 14 removed: Q4+Q1 net +9 costly
   }
 
   return true;
@@ -105,7 +105,8 @@ export const QQQ_CONFIG: Partial<TickerBacktestConfig> = {
   breakoutMinConfidence: 0.72,
   breakoutStopMult: 0.7,
   breakoutTpMult: 1.8,
-  trendMaxExhaustion: 12.0,
+  // trendMaxExhaustion disabled: Q4+Q1 counterfactual net +3 costly (22 good vs 19 bad)
+  trendMaxExhaustion: 999,
 
   // ── QQQ code hooks ──
   shouldAllowEntry: qqqShouldAllowEntry,

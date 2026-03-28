@@ -35,7 +35,7 @@ function spyShouldAllowEntry(ctx: EntryContext): true | string {
   if (signalMode === 'breakout' && atrPct < 0.08) return `breakout atrPct ${atrPct.toFixed(3)}% < 0.08%`;
   if (signalMode === 'breakout' && displacementVelocity < -0.05) return `breakout dvel ${displacementVelocity.toFixed(4)} < -0.05`;
   if (signalMode === 'trend' && atr < 0.70) return `trend atr ${atr.toFixed(3)} < 0.70`;
-  if (signalMode === 'trend' && regime >= 80) return `trend regime ${regime} >= 80`;
+  // trend_regime >= 80 removed: Q4+Q1 counterfactual net +12 costly
   if (signalMode === 'trend'
       && ctx.rangeExhaustion > 7.0
       && ctx.choppiness >= 0.55) return `trend exhausted+choppy rExh=${ctx.rangeExhaustion.toFixed(1)} chop=${ctx.choppiness.toFixed(2)}`;
@@ -50,7 +50,7 @@ function spyShouldAllowEntry(ctx: EntryContext): true | string {
   if (signalMode === 'breakout' && ctx.choppiness >= 2.0) return `breakout extremeChop ${ctx.choppiness.toFixed(2)} >= 2.0`;
   if (signalMode === 'breakout' && ctx.rangeExhaustion >= 9.0) return `breakout extremeExhaustion ${ctx.rangeExhaustion.toFixed(1)} >= 9.0`;
   if (signalMode === 'breakout' && regime >= 80) return `breakout regime ${regime} >= 80`;
-  if (signalMode === 'breakout' && atr < 0.80) return `breakout atr ${atr.toFixed(3)} < 0.80`;
+  // breakout_atr < 0.80 removed: Q4+Q1 counterfactual net +9 costly
   if (signalMode === 'breakout' && direction === 'bullish'
       && ctx.rangeExhaustion >= 4.5 && regime >= 65) return `bullish breakout highExh+regime rExh=${ctx.rangeExhaustion.toFixed(1)} regime=${regime}`;
 
@@ -75,10 +75,9 @@ function spyAdjustConfidence(breakdown: ConfidenceBreakdown, ctx: EntryContext):
 }
 
 export const SPY_CONFIG: Partial<TickerBacktestConfig> = {
-  // Trend: lower exhaustion cap from 12.0 → 10.0.
-  // Trend entries at >10x ATR consumed were 0W/2L across Q4+Q1:
-  //   Nov 4 entry 2 (Exh=10.5, -33.3%), Nov 24 (Exh=10.4, -9.3%).
-  trendMaxExhaustion: 10.0,
+  // trendMaxExhaustion effectively disabled: Q4+Q1 counterfactual net +9 costly (14 good vs 5 bad).
+  // Entries at rExh 20-30 were 10 good, 0 bad. trend_exhausted_reverting (dvel<0) catches actual reversals.
+  trendMaxExhaustion: 999,
 
   // SPY: max 2 entries per day.
   // Q4 2025: 2nd entries on losing days compound losses, but trade-off is

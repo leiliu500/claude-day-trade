@@ -117,7 +117,9 @@ function iwmShouldAllowEntry(ctx: EntryContext): true | string {
   if (atrPct < 0.08) return `atrPct ${atrPct.toFixed(3)}% < 0.08%`;
   if (signalMode === 'breakout' && atrPct < 0.13) return `breakout atrPct ${atrPct.toFixed(3)}% < 0.13%`;
 
-  if (ctx.displacementVelocity !== undefined && ctx.displacementVelocity < -0.003) return `dvel ${ctx.displacementVelocity.toFixed(4)} < -0.003`;
+  // dvel threshold relaxed from -0.003 to -0.02: Q4+Q1 counterfactual -0.003 to -0.02 range was net -6 helpful,
+  // but < -0.02 was net +35 costly. New threshold keeps the helpful range blocked.
+  if (ctx.displacementVelocity !== undefined && ctx.displacementVelocity < -0.02) return `dvel ${ctx.displacementVelocity.toFixed(4)} < -0.02`;
 
   if (signalMode === 'trend') {
     if (cb.trendPhaseBonus < 0) return `trend trendPhase ${cb.trendPhaseBonus.toFixed(3)} < 0`;
@@ -127,10 +129,10 @@ function iwmShouldAllowEntry(ctx: EntryContext): true | string {
   }
 
   if (signalMode === 'breakout') {
-    if (cb.structureBonus <= 0) return `breakout structureBonus ${cb.structureBonus.toFixed(3)} <= 0`;
+    // breakout structureBonus <= 0 removed: Q4+Q1 counterfactual net +8 costly (43 good vs 35 bad)
     if (_lastRegimeScore < 60) return `breakout regime ${_lastRegimeScore} < 60`;
     if ((ctx.choppiness ?? 0) >= 0.95) return `breakout choppiness ${(ctx.choppiness ?? 0).toFixed(2)} >= 0.95`;
-    if (_lastRegimeScore >= 75) return `breakout regime ${_lastRegimeScore} >= 75`;
+    // breakout regime >= 75 removed: Q4+Q1 counterfactual net +5 costly (22 good vs 17 bad)
     if (ctx.displacementVelocity !== undefined && ctx.displacementVelocity < 0.06
         && ctx.displacementVelocity >= 0) return `breakout lowDvel ${ctx.displacementVelocity.toFixed(4)} < 0.06`;
   }

@@ -105,7 +105,8 @@ function nvdaShouldAllowEntry(ctx: EntryContext): true | string {
   const atrPct = ctx.currentPrice > 0 ? (ctx.atr / ctx.currentPrice) * 100 : 0;
   if (atrPct < 0.08) return `atrPct ${atrPct.toFixed(3)}% < 0.08%`;
 
-  if (ctx.displacementVelocity !== undefined && ctx.displacementVelocity < -0.003) return `dvel ${ctx.displacementVelocity.toFixed(4)} < -0.003`;
+  // dvel < -0.003 removed: Q4+Q1 counterfactual net +48 costly (261 good vs 213 bad).
+  // All dvel brackets below -0.003 were net costly for NVDA.
 
   if (ctx.rangeExhaustion !== undefined && ctx.rangeExhaustion < 1.0) return `rangeExhaustion ${ctx.rangeExhaustion.toFixed(1)} < 1.0 (early morning)`;
 

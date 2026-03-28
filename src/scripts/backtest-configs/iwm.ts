@@ -30,7 +30,8 @@ function iwmShouldAllowEntry(ctx: EntryContext): true | string {
   if (atrPct < 0.08) return `atrPct ${atrPct.toFixed(3)}% < 0.08%`;
   if (signalMode === 'breakout' && atrPct < 0.13) return `breakout atrPct ${atrPct.toFixed(3)}% < 0.13%`;
 
-  if (ctx.displacementVelocity < -0.003) return `dvel ${ctx.displacementVelocity.toFixed(4)} < -0.003`;
+  // dvel threshold relaxed from -0.003 to -0.02: Q4+Q1 net +29 costly
+  if (ctx.displacementVelocity < -0.02) return `dvel ${ctx.displacementVelocity.toFixed(4)} < -0.02`;
 
   if (signalMode === 'trend') {
     if (cb.trendPhaseBonus < 0) return `trend trendPhase ${cb.trendPhaseBonus.toFixed(3)} < 0`;
@@ -39,10 +40,10 @@ function iwmShouldAllowEntry(ctx: EntryContext): true | string {
   }
 
   if (signalMode === 'breakout') {
-    if (cb.structureBonus <= 0) return `breakout structureBonus ${cb.structureBonus.toFixed(3)} <= 0`;
+    // breakout structureBonus <= 0 removed: Q4+Q1 net +8 costly
     if (ctx.regimeScore < 60) return `breakout regime ${ctx.regimeScore} < 60`;
     if (ctx.choppiness >= 0.95) return `breakout choppiness ${ctx.choppiness.toFixed(2)} >= 0.95`;
-    if (ctx.regimeScore >= 75) return `breakout regime ${ctx.regimeScore} >= 75`;
+    // breakout regime >= 75 removed: Q4+Q1 net +5 costly
     if (ctx.displacementVelocity !== undefined && ctx.displacementVelocity < 0.06
         && ctx.displacementVelocity >= 0) return `breakout lowDvel ${ctx.displacementVelocity.toFixed(4)} < 0.06`;
   }
@@ -68,8 +69,8 @@ export const IWM_CONFIG: Partial<TickerBacktestConfig> = {
   breakoutMinConfidence: 0,
   breakoutStopMult: 0.7,
   breakoutTpMult: 1.8,
-  // Lower from 12.0 → 9.0: trend entries at Exh >= 9.0 were 0W/3L (Dec 22, Jan 8, Feb 23).
-  trendMaxExhaustion: 9.0,
+  // trendMaxExhaustion disabled: Q4+Q1 counterfactual net +19 costly (45 good vs 26 bad)
+  trendMaxExhaustion: 999,
 
   shouldAllowEntry: iwmShouldAllowEntry,
   adjustConfidence: iwmAdjustConfidence,

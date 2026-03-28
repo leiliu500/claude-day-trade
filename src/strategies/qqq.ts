@@ -174,10 +174,10 @@ function qqqShouldAllowEntry(ctx: EntryContext): true | string {
   }
 
   if (signalMode === 'vwap_reversion') {
-    if ((ctx.choppiness ?? 0) >= 1.5) return `vwap_reversion choppiness ${(ctx.choppiness ?? 0).toFixed(2)} >= 1.5`;
+    // vwap_reversion choppiness >= 1.5 removed: Q4+Q1 counterfactual net +2 costly (2 good, 0 bad)
     if (ctx.displacementVelocity !== undefined && ctx.displacementVelocity < 0) return `vwap_reversion dvel ${ctx.displacementVelocity.toFixed(4)} < 0`;
     if (_lastRegimeScore >= 73) return `vwap_reversion regime ${_lastRegimeScore} >= 73`;
-    if (ctx.rangeExhaustion !== undefined && ctx.rangeExhaustion >= 14) return `vwap_reversion rangeExhaustion ${ctx.rangeExhaustion.toFixed(1)} >= 14`;
+    // vwap_reversion rangeExhaustion >= 14 removed: Q4+Q1 counterfactual net +9 costly (9 good, 0 bad)
   }
 
   return true;
