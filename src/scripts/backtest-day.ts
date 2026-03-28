@@ -1261,6 +1261,57 @@ function mockOptionEval(signal: SignalPayload): OptionEvaluation {
   };
 }
 
+// ── Filter-blocked entry tracking (counterfactual analysis) ───────────────────
+
+interface FilterBlockedEntry {
+  time: string;
+  timeET: string;
+  direction: SignalDirection;
+  signalMode: 'trend' | 'range' | 'breakout' | 'vwap_reversion' | 'none';
+  confidence: number;
+  price: number;
+  filterRule: string;          // e.g. "trend regime 86 >= 80", "breakout confidence 68% < 74%"
+  filterCategory: string;      // normalized prefix for grouping: "trend_regime", "breakout_confidence", etc.
+  // Forward move metrics (same as EntryRecord)
+  mfePct: number;
+  maePct: number;
+  mfeOverMae: number;
+  entryGrade: 'A' | 'B' | 'C' | 'D' | 'F';
+  outcome: 'GOOD' | 'BAD' | 'MARGINAL';
+  // Context
+  regimeScore?: number;
+  rangeExhaustion?: number;
+  displacementVelocity?: number;
+  choppiness?: number;
+}
+
+/** Normalize a filter reason string into a grouping category */
+function filterCategory(reason: string): string {
+  // shouldAllowEntry reasons: "trend regime 86 >= 80", "breakout confidence 68% < 74%", etc.
+  // Inline backtest reasons: "trend_exhausted_reverting", "trend_max_exhaustion", "entry_window", etc.
+  if (reason.startsWith('trend regime')) return 'trend_regime';
+  if (reason.startsWith('trend atr')) return 'trend_atr';
+  if (reason.startsWith('trend exhausted+choppy')) return 'trend_exhausted_choppy';
+  if (reason.startsWith('breakout confidence')) return 'breakout_confidence';
+  if (reason.startsWith('breakout atrPct')) return 'breakout_atrPct';
+  if (reason.startsWith('breakout dvel')) return 'breakout_dvel';
+  if (reason.startsWith('breakout rangeExhaustion')) return 'breakout_rangeExhaustion';
+  if (reason.startsWith('breakout chop+lowDvel')) return 'breakout_chop_lowDvel';
+  if (reason.startsWith('breakout highExh+highChop')) return 'breakout_highExh_highChop';
+  if (reason.startsWith('breakout extremeChop')) return 'breakout_extremeChop';
+  if (reason.startsWith('breakout extremeExhaustion')) return 'breakout_extremeExhaustion';
+  if (reason.startsWith('breakout regime')) return 'breakout_regime';
+  if (reason.startsWith('breakout atr')) return 'breakout_atr';
+  if (reason.startsWith('bullish rangeExhaustion')) return 'bullish_rangeExhaustion';
+  if (reason.startsWith('bullish dvel')) return 'bullish_dvel';
+  if (reason.startsWith('bullish breakout')) return 'bullish_breakout_highExh_regime';
+  // Inline backtest filters
+  if (reason.startsWith('trend_exhausted_reverting')) return 'trend_exhausted_reverting';
+  if (reason.startsWith('trend_max_exhaustion')) return 'trend_max_exhaustion';
+  if (reason.startsWith('entry_window')) return 'entry_window';
+  return reason.replace(/[^a-zA-Z_]/g, '').slice(0, 40);
+}
+
 // ── Price tracking for entry quality analysis ─────────────────────────────────
 
 interface EntryRecord {
@@ -1381,6 +1432,7 @@ async function main() {
 
   // ── Step 2: Walk through market hours in 1-min intervals ──────────────────
   const entries: EntryRecord[] = [];
+  const filterBlockedEntries: FilterBlockedEntry[] = [];
   const allTicks: { time: string; timeET: string; price: number; direction: SignalDirection; alignment: AlignmentType; confidence: number; meetsThreshold: boolean }[] = [];
 
   // ── Trend persistence state ───────────────────────────────────────────────
@@ -1935,6 +1987,18 @@ async function main() {
     // Regime context snapshot for entry records
     const regimeCtx = { regimeScore, rangeExhaustion, displacementVelocity, choppiness, intradayTrendStrength };
 
+    /** Push a filter-blocked entry with forward-move counterfactual analysis */
+    const pushFilterBlocked = (filterRule: string) => {
+      const fwd = computeForwardMoves();
+      filterBlockedEntries.push({
+        time: timeStr, timeET, direction, signalMode, confidence: cb.total,
+        price: currentPrice, filterRule, filterCategory: filterCategory(filterRule),
+        mfePct: fwd.mfePct, maePct: fwd.maePct, mfeOverMae: fwd.mfeOverMae,
+        entryGrade: fwd.entryGrade, outcome: fwd.outcome,
+        ...regimeCtx,
+      });
+    };
+
     if (USE_AI && orchestrator) {
       // ── AI Orchestrator path ──────────────────────────────────────────────
       // Call the real DecisionOrchestrator for every tick that meets threshold
@@ -2036,11 +2100,17 @@ async function main() {
       // Per-ticker entry filter hook — allows QQQ etc. to block entries with custom logic
       const tickerAllowsResult = !meetsThreshold || TCFG.shouldAllowEntry(entryCtx);
       const tickerAllows = tickerAllowsResult === true;
+      if (meetsThreshold && !tickerAllows && typeof tickerAllowsResult === 'string') {
+        pushFilterBlocked(tickerAllowsResult);
+      }
 
       // Entry time window — only allow new entries within configured window
       const minutesSinceOpenForWindow = (currentTs - openTime.getTime()) / 60_000;
       const inEntryWindow = minutesSinceOpenForWindow >= TCFG.entryWindowStartMin
                          && minutesSinceOpenForWindow <= TCFG.entryWindowEndMin;
+      if (meetsThreshold && tickerAllows && !inEntryWindow) {
+        pushFilterBlocked(`entry_window: ${minutesSinceOpenForWindow.toFixed(0)}m outside [${TCFG.entryWindowStartMin}-${TCFG.entryWindowEndMin}]`);
+      }
 
       if (meetsThreshold && atrOk && tickerAllows && inEntryWindow && direction !== 'neutral' && dailyEntryCount < MAX_DAILY_ENTRIES) {
         // Range entries bypass the trend confirmation gate — quality is in the range confidence model
@@ -2149,12 +2219,11 @@ async function main() {
         if (!trendCooldownOk || !trendUnderLimit) {
           // Over daily trend limit or in cooldown — skip
         } else if (rangeExhaustion > 7.0 && displacementVelocity < 0) {
+          pushFilterBlocked(`trend_exhausted_reverting: rExh=${rangeExhaustion.toFixed(1)} dvel=${displacementVelocity?.toFixed(4)}`);
           // Late exhausted trend: daily range consumed >7x ATR and momentum reverting — skip.
-          // All March trend winners had positive DispVel at high exhaustion; this loser pattern
-          // catches trend entries where the move is already done and starting to pull back.
         } else if (rangeExhaustion > TCFG.trendMaxExhaustion) {
-          // Extremely extended day: >12x ATR consumed. Regardless of displacement velocity,
-          // a move this large has exhausted the daily range. Feb+Mar: 0 winners, 2 losers at >12x.
+          pushFilterBlocked(`trend_max_exhaustion: rExh=${rangeExhaustion.toFixed(1)}>${TCFG.trendMaxExhaustion}`);
+          // Extremely extended day: >12x ATR consumed.
         } else {
         // Determine gate result
         const htfTf = tfIndicators[2] ?? tfIndicators[0];
@@ -2446,6 +2515,71 @@ async function main() {
       const bFactorStr = bFactors.map(f => `${f.name}=${f.val >= 0 ? '+' : ''}${f.val.toFixed(3)}`).join(', ');
       console.log(`     ${blocked.timeET} ET ${blocked.direction} ${blockTag} → ${outcomeIcon} ${gradeIcon} (conf=${(blocked.confidence * 100).toFixed(1)}%, MFE=${blocked.mfePct.toFixed(2)}% MAE=${blocked.maePct.toFixed(2)}%)`);
       console.log(`       Factors: base=0.380, ${bFactorStr}`);
+    }
+  }
+
+  // ── Filter Counterfactual Analysis (what filter-blocked entries would have done) ──
+  if (filterBlockedEntries.length > 0) {
+    // Deduplicate: within 5-min windows of same direction, keep best grade
+    const dedupedFiltered: FilterBlockedEntry[] = [];
+    for (const fb of filterBlockedEntries) {
+      const prev = dedupedFiltered[dedupedFiltered.length - 1];
+      if (prev && prev.direction === fb.direction) {
+        const prevTs = new Date(prev.time).getTime();
+        const currTs = new Date(fb.time).getTime();
+        if (currTs - prevTs < 5 * 60_000) {
+          // Keep higher confidence / better grade within same window
+          const gradeRank = { A: 5, B: 4, C: 3, D: 2, F: 1 };
+          if (gradeRank[fb.entryGrade] > gradeRank[prev.entryGrade] || (gradeRank[fb.entryGrade] === gradeRank[prev.entryGrade] && fb.confidence > prev.confidence)) {
+            dedupedFiltered[dedupedFiltered.length - 1] = fb;
+          }
+          continue;
+        }
+      }
+      dedupedFiltered.push(fb);
+    }
+
+    const fbGood = dedupedFiltered.filter(e => e.outcome === 'GOOD').length;
+    const fbBad = dedupedFiltered.filter(e => e.outcome === 'BAD').length;
+    const fbMarginal = dedupedFiltered.length - fbGood - fbBad;
+    console.log(`\n  ── Filter Counterfactual Analysis ──`);
+    console.log(`  ${dedupedFiltered.length} filter-blocked entries (from ${filterBlockedEntries.length} raw ticks)`);
+    console.log(`  Would have been: ${fbGood} good (A/B) | ${fbBad} bad (F) | ${fbMarginal} marginal (C/D)`);
+
+    // Per-filter category stats
+    const categoryStats = new Map<string, { count: number; good: number; bad: number; marginal: number; avgMfe: number; avgMae: number; entries: FilterBlockedEntry[] }>();
+    for (const fb of dedupedFiltered) {
+      const cat = fb.filterCategory;
+      if (!categoryStats.has(cat)) categoryStats.set(cat, { count: 0, good: 0, bad: 0, marginal: 0, avgMfe: 0, avgMae: 0, entries: [] });
+      const s = categoryStats.get(cat)!;
+      s.count++;
+      if (fb.outcome === 'GOOD') s.good++;
+      else if (fb.outcome === 'BAD') s.bad++;
+      else s.marginal++;
+      s.avgMfe += fb.mfePct;
+      s.avgMae += fb.maePct;
+      s.entries.push(fb);
+    }
+
+    console.log(`\n  Per-filter breakdown:`);
+    console.log(`  ${'Filter Rule'.padEnd(35)} Count  Good  Bad  Marg  AvgMFE  AvgMAE  Net Value`);
+    console.log(`  ${'─'.repeat(95)}`);
+
+    for (const [cat, s] of [...categoryStats.entries()].sort((a, b) => b[1].good - a[1].good)) {
+      const avgMfe = s.avgMfe / s.count;
+      const avgMae = s.avgMae / s.count;
+      // Net value: positive = filter is costing money (blocking good entries), negative = filter is saving money
+      const netValue = s.good - s.bad;
+      const netIcon = netValue > 0 ? '⚠️  COSTLY' : netValue < 0 ? '✅ HELPFUL' : '── NEUTRAL';
+      console.log(`  ${cat.padEnd(35)} ${String(s.count).padStart(5)}  ${String(s.good).padStart(4)}  ${String(s.bad).padStart(3)}  ${String(s.marginal).padStart(4)}  ${avgMfe.toFixed(3)}%  ${avgMae.toFixed(3)}%  ${netValue >= 0 ? '+' : ''}${netValue} ${netIcon}`);
+    }
+
+    // Detail: show each deduped blocked entry
+    console.log(`\n  Filter-blocked entries (deduped):`);
+    for (const fb of dedupedFiltered) {
+      const gradeIcon = { A: '🟢A', B: '🔵B', C: '🟡C', D: '🟠D', F: '🔴F' }[fb.entryGrade];
+      const outcomeIcon = fb.outcome === 'GOOD' ? '⚠️  MISSED' : fb.outcome === 'BAD' ? '✅ AVOIDED' : '── MARGINAL';
+      console.log(`     ${fb.timeET} ET ${fb.direction} [${fb.signalMode}] conf=${(fb.confidence * 100).toFixed(0)}% → ${outcomeIcon} ${gradeIcon} MFE=${fb.mfePct.toFixed(2)}% MAE=${fb.maePct.toFixed(2)}% | ${fb.filterRule}`);
     }
   }
 
