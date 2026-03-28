@@ -46,6 +46,8 @@ export interface AnalysisResult {
   /** Which mode was selected by detectMode. */
   selectedMode?: string;
   meetsEntryThreshold: boolean;    // confidence >= 0.65
+  /** Why entry was blocked — set when meetsEntryThreshold is false despite confidence >= threshold. */
+  entryBlockReason?: string;
   aiExplanation: string;
   keyFactors: string[];
   risks: string[];

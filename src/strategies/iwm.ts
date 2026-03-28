@@ -110,51 +110,29 @@ function iwmDetectMode(
 
 // ── IWM Entry Filter ────────────────────────────────────────────────────────
 
-function iwmShouldAllowEntry(ctx: EntryContext): boolean {
+function iwmShouldAllowEntry(ctx: EntryContext): true | string {
   const { signalMode, breakdown: cb } = ctx;
 
-  // Block stale-data entries: low ATR% means thin volume / pre-market data.
   const atrPct = ctx.currentPrice > 0 ? (ctx.atr / ctx.currentPrice) * 100 : 0;
-  if (atrPct < 0.08) return false;
-  // IWM breakouts need higher ATR floor — thin vol breakouts fail consistently.
-  if (signalMode === 'breakout' && atrPct < 0.13) return false;
+  if (atrPct < 0.08) return `atrPct ${atrPct.toFixed(3)}% < 0.08%`;
+  if (signalMode === 'breakout' && atrPct < 0.13) return `breakout atrPct ${atrPct.toFixed(3)}% < 0.13%`;
 
-  // Block negative displacement velocity (< -0.003) for all modes.
-  // All 3 phase-change override F-grades had strongly negative dvel.
-  // Also catches confirmed F-grades with reverting momentum.
-  // Good entries had dvel >= -0.002.
-  if (ctx.displacementVelocity !== undefined && ctx.displacementVelocity < -0.003) return false;
+  if (ctx.displacementVelocity !== undefined && ctx.displacementVelocity < -0.003) return `dvel ${ctx.displacementVelocity.toFixed(4)} < -0.003`;
 
   if (signalMode === 'trend') {
-    // Require trendPhase >= 0
-    if (cb.trendPhaseBonus < 0) return false;
-
-    // Block high-chop trend entries
-    if ((ctx.choppiness ?? 0) >= 0.55) return false;
-
-    // Block trend entries with high exhaustion + low dvel.
-    // RangeExh >= 7.0 + dvel < 0.10: move is extended and decelerating.
-    // Good entries at high exh had dvel >= 0.10.
+    if (cb.trendPhaseBonus < 0) return `trend trendPhase ${cb.trendPhaseBonus.toFixed(3)} < 0`;
+    if ((ctx.choppiness ?? 0) >= 0.55) return `trend choppiness ${(ctx.choppiness ?? 0).toFixed(2)} >= 0.55`;
     if (ctx.rangeExhaustion !== undefined && ctx.rangeExhaustion >= 7.0
-        && ctx.displacementVelocity !== undefined && ctx.displacementVelocity < 0.10) return false;
+        && ctx.displacementVelocity !== undefined && ctx.displacementVelocity < 0.10) return `trend exhausted+lowDvel rExh=${ctx.rangeExhaustion.toFixed(1)} dvel=${ctx.displacementVelocity.toFixed(4)}`;
   }
 
   if (signalMode === 'breakout') {
-    // Require structure confirmation
-    if (cb.structureBonus <= 0) return false;
-
-    // Require minimum regime
-    if (_lastRegimeScore < 60) return false;
-
-    // Block high-chop breakouts
-    if ((ctx.choppiness ?? 0) >= 0.95) return false;
-
-    // Block breakout entries at high regime (>= 75).
-    if (_lastRegimeScore >= 75) return false;
-
-    // Block breakout entries with low displacement velocity (< 0.06).
+    if (cb.structureBonus <= 0) return `breakout structureBonus ${cb.structureBonus.toFixed(3)} <= 0`;
+    if (_lastRegimeScore < 60) return `breakout regime ${_lastRegimeScore} < 60`;
+    if ((ctx.choppiness ?? 0) >= 0.95) return `breakout choppiness ${(ctx.choppiness ?? 0).toFixed(2)} >= 0.95`;
+    if (_lastRegimeScore >= 75) return `breakout regime ${_lastRegimeScore} >= 75`;
     if (ctx.displacementVelocity !== undefined && ctx.displacementVelocity < 0.06
-        && ctx.displacementVelocity >= 0) return false;
+        && ctx.displacementVelocity >= 0) return `breakout lowDvel ${ctx.displacementVelocity.toFixed(4)} < 0.06`;
   }
 
   return true;

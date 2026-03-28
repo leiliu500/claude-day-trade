@@ -69,12 +69,12 @@ export interface TickerBacktestConfig {
 
   /**
    * Custom entry filter — called after all standard filters pass.
-   * Return true to allow entry, false to block.
+   * Return `true` to allow entry, or a string describing the block reason.
    * Use this for ticker-specific logic that doesn't fit into parameters.
    *
    * Default: always returns true (no additional filtering).
    */
-  shouldAllowEntry: (ctx: EntryContext) => boolean;
+  shouldAllowEntry: (ctx: EntryContext) => true | string;
 
   /**
    * Custom confidence adjustment — called after the shared confidence model.

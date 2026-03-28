@@ -24,87 +24,36 @@ import { simulateOrderAgentQqq } from '../../lib/order-agent-sim-qqq.js';
  * Blocks entries that pass the shared SPY-tuned gates but are
  * bad specifically for QQQ based on backtested patterns.
  */
-function qqqShouldAllowEntry(ctx: EntryContext): boolean {
+function qqqShouldAllowEntry(ctx: EntryContext): true | string {
   const { signalMode, breakdown: cb } = ctx;
 
-  // QQQ rule: block ALL modes with very low ATR% (holiday/thin volume).
-  // Dec 24 F-grade had ATR%=0.059% (holiday session, $0.37 ATR on $623).
-  // Dec 31 F-grade had ATR%=0.086% (holiday session, $0.53 ATR on $617).
-  // All good QQQ entries had ATR% >= 0.08% (Jan 9) or >= 0.13%.
-  // Bearish trend entries need slightly higher ATR floor — thin liquidity
-  // means bearish moves stall without follow-through.
   const atrPct = ctx.currentPrice > 0 ? (ctx.atr / ctx.currentPrice) * 100 : 0;
-  if (atrPct < 0.07) return false;
-  if (ctx.direction === 'bearish' && ctx.signalMode !== 'breakout' && atrPct < 0.09) return false;
+  if (atrPct < 0.07) return `atrPct ${atrPct.toFixed(3)}% < 0.07%`;
+  if (ctx.direction === 'bearish' && ctx.signalMode !== 'breakout' && atrPct < 0.09) return `bearish ${signalMode} atrPct ${atrPct.toFixed(3)}% < 0.09%`;
 
   if (signalMode === 'trend') {
-    // QQQ trend rule 1: require trendPhase >= 0.
-    // Feb 11 loss had trendPhase=-0.040. All 4 trend winners had trendPhase >= 0.
-    if (cb.trendPhaseBonus < 0) return false;
-
-    // QQQ trend rule 2: block entries near strong S/R levels.
-    // Jan 13 loss had nearLevelPenalty=-0.100 (price right at a level, reversed).
-    // No trend winner had nearLevelPenalty below -0.050.
-    if (cb.nearLevelPenalty < -0.05) return false;
-
-    // QQQ trend rule 3: block weak DI spread entries.
-    // Feb 11 loss had DI Spread=+0.033 (weakest). All winners had >= 0.050.
-    if (cb.diSpreadBonus < 0.04) return false;
-
-    // QQQ trend rule 4: block high-chop entries.
-    // Jan 13 loss had chop=0.64, all trend winners had chop <= 0.30.
-    // High chop = price oscillating, trend signal is unreliable.
-    if (ctx.choppiness >= 0.55) return false;
-
-    // QQQ trend rule 5: block bearish trend at high regime + near-zero dvel.
-    // Dec 31 F-grade: regime=87, dvel=0.017 — bearish momentum stalling at extremes.
-    // Good bearish at high regime: Nov 4 (regime=85, dvel=0.036→B), Feb 12 (regime=89, dvel=0.218→A).
-    // Near-zero dvel at high regime = price overextended but no longer accelerating.
+    if (cb.trendPhaseBonus < 0) return `trend trendPhase ${cb.trendPhaseBonus.toFixed(3)} < 0`;
+    if (cb.nearLevelPenalty < -0.05) return `trend nearLevelPenalty ${cb.nearLevelPenalty.toFixed(3)} < -0.05`;
+    if (cb.diSpreadBonus < 0.04) return `trend diSpread ${cb.diSpreadBonus.toFixed(3)} < 0.04`;
+    if (ctx.choppiness >= 0.55) return `trend choppiness ${ctx.choppiness.toFixed(2)} >= 0.55`;
     if (ctx.direction === 'bearish' && ctx.regimeScore >= 85
-        && ctx.displacementVelocity !== undefined && Math.abs(ctx.displacementVelocity) < 0.03) return false;
-
-    // QQQ trend rule 6: block trend entries with high exhaustion + near-zero dvel.
-    // Feb 18#2 F-grade: RangeExh=7.3, DispVel=0.010 — extended move, stalling.
+        && ctx.displacementVelocity !== undefined && Math.abs(ctx.displacementVelocity) < 0.03) return `bearish trend regime ${ctx.regimeScore} >= 85 + dvel ${ctx.displacementVelocity.toFixed(4)} near zero`;
     if (ctx.rangeExhaustion >= 7.0
-        && ctx.displacementVelocity !== undefined && ctx.displacementVelocity < 0.05) return false;
+        && ctx.displacementVelocity !== undefined && ctx.displacementVelocity < 0.05) return `trend exhausted+lowDvel rExh=${ctx.rangeExhaustion.toFixed(1)} dvel=${ctx.displacementVelocity.toFixed(4)}`;
   }
 
   if (signalMode === 'breakout') {
-    // QQQ breakout rule 1: require structure confirmation.
-    // Jan 30 loss (-35.0%) had structureBonus=0 (no PDH/PDL alignment).
-    // Both breakout winners (Feb 18 +71.6%, Mar 18 +7.9%) had structureBonus=+0.060.
-    // Structure confirms the breakout has a real level behind it, not just noise.
-    if (cb.structureBonus <= 0) return false;
-
-    // QQQ breakout rule 2: require minimum regime (directional conviction).
-    // Dec 10 loss (-35.0%) had regime=56 (low conviction, choppy market).
-    // All breakout winners had regime >= 67. Below 60 = noise, not a real breakout.
-    if (ctx.regimeScore < 60) return false;
-
-    // QQQ breakout rule 3: block breakouts with low dvel + choppiness.
-    // Oct 15 F-grade: dvel=-0.001, chop=0.65. Mar 24 F-grade: dvel=0.062, chop=0.67.
-    // Good breakout Feb 18: dvel=-0.014, chop=0.35 (clean, low-chop breakout).
-    // |dvel| < 0.07 + chop >= 0.55 = low momentum + oscillating price.
+    if (cb.structureBonus <= 0) return `breakout structureBonus ${cb.structureBonus.toFixed(3)} <= 0`;
+    if (ctx.regimeScore < 60) return `breakout regime ${ctx.regimeScore} < 60`;
     if (ctx.displacementVelocity !== undefined && Math.abs(ctx.displacementVelocity) < 0.07
-        && ctx.choppiness !== undefined && ctx.choppiness >= 0.55) return false;
+        && ctx.choppiness !== undefined && ctx.choppiness >= 0.55) return `breakout lowDvel+chop dvel=${ctx.displacementVelocity.toFixed(4)} chop=${ctx.choppiness.toFixed(2)}`;
   }
 
   if (signalMode === 'vwap_reversion') {
-    // QQQ VWAP reversion rule 1: block high chop (>= 1.5).
-    // Oct 14 (1.76), Feb 13 (1.67), Mar 9 (1.57), Mar 13 (1.54) — all F-grade.
-    if (ctx.choppiness !== undefined && ctx.choppiness >= 1.5) return false;
-
-    // QQQ VWAP reversion rule 2: block negative displacement velocity.
-    // Nov 5 (-0.025), Nov 18 (-0.011), Feb 24 (-0.037) — momentum reverting away from VWAP.
-    if (ctx.displacementVelocity !== undefined && ctx.displacementVelocity < 0) return false;
-
-    // QQQ VWAP reversion rule 3: block high regime (>= 73).
-    // Feb 2 (79), Feb 23 (73), Mar 2 (74) — price trending, not reverting.
-    if (ctx.regimeScore >= 73) return false;
-
-    // QQQ VWAP reversion rule 4: block very high exhaustion (>= 14).
-    // Nov 21 (14.4) — daily range consumed, VWAP too far for reversion.
-    if (ctx.rangeExhaustion >= 14) return false;
+    if (ctx.choppiness !== undefined && ctx.choppiness >= 1.5) return `vwap_reversion choppiness ${ctx.choppiness.toFixed(2)} >= 1.5`;
+    if (ctx.displacementVelocity !== undefined && ctx.displacementVelocity < 0) return `vwap_reversion dvel ${ctx.displacementVelocity.toFixed(4)} < 0`;
+    if (ctx.regimeScore >= 73) return `vwap_reversion regime ${ctx.regimeScore} >= 73`;
+    if (ctx.rangeExhaustion >= 14) return `vwap_reversion rangeExhaustion ${ctx.rangeExhaustion.toFixed(1)} >= 14`;
   }
 
   return true;

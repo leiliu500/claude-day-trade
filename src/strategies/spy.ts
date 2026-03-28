@@ -162,91 +162,55 @@ function spyAdjustConfidence(breakdown: ConfidenceBreakdown, ctx: EntryContext):
 
 // ── SPY Entry Filter ────────────────────────────────────────────────────────
 
-function spyShouldAllowEntry(ctx: EntryContext): boolean {
+function spyShouldAllowEntry(ctx: EntryContext): true | string {
   const { signalMode, direction, atr, currentPrice } = ctx;
 
-  // Block stale-data breakouts: ATR% < 0.08 means 5m ATR collapsed during
-  // consolidation but breakout detection still fires. These are unreliable.
-  // Q4+Q1 data: ATR% < 0.08 breakouts were 1W/5L (17%).
   const atrPct = currentPrice > 0 ? (atr / currentPrice) * 100 : 0;
-  if (signalMode === 'breakout' && atrPct < 0.08) return false;
+  if (signalMode === 'breakout' && atrPct < 0.08) return `breakout atrPct ${atrPct.toFixed(3)}% < 0.08%`;
 
-  // Block breakout entries with negative displacement velocity: price is
-  // reverting toward open, momentum is fading. Entering a breakout while
-  // displacement is declining = chasing a fading move.
-  // Q4+Q1 data: dvel < -0.05 was 1W/3L (25%), the 3 losses were EARLY_EXIT.
   if (signalMode === 'breakout' && ctx.displacementVelocity !== undefined
-      && ctx.displacementVelocity < -0.05) return false;
+      && ctx.displacementVelocity < -0.05) return `breakout dvel ${ctx.displacementVelocity.toFixed(4)} < -0.05`;
 
-  // Block trend entries with low ATR (< 0.70).
-  // Q4+Q1: trend + ATR < 0.70 was 0W/4L (all F-grade). Winners had ATR >= 0.881.
-  if (signalMode === 'trend' && atr < 0.70) return false;
+  if (signalMode === 'trend' && atr < 0.70) return `trend atr ${atr.toFixed(3)} < 0.70`;
 
-  // Block trend entries at regime >= 80 (any direction).
-  // Q4+Q1: trend + regime >= 80 was 0W/4L. Winners had regime 73-75.
-  if (signalMode === 'trend' && _lastRegimeScore >= 80) return false;
+  if (signalMode === 'trend' && _lastRegimeScore >= 80) return `trend regime ${_lastRegimeScore} >= 80`;
 
-  // Block trend entries in exhausted + choppy conditions.
   if (signalMode === 'trend'
       && ctx.rangeExhaustion !== undefined && ctx.rangeExhaustion > 7.0
-      && ctx.choppiness !== undefined && ctx.choppiness >= 0.55) return false;
+      && ctx.choppiness !== undefined && ctx.choppiness >= 0.55) return `trend exhausted+choppy rExh=${ctx.rangeExhaustion.toFixed(1)} chop=${ctx.choppiness.toFixed(2)}`;
 
-  // Block bullish entries with high range exhaustion (>= 6.0).
-  // Bullish entries into an already-extended intraday move fail consistently.
-  // Q1 2026: bullish + RangeExh >= 6.0 was 0W/4L (all F-grade).
-  // Bullish + RangeExh < 6.0 was 2W/0L (both A-grade: Feb 18 Exh=3.2, Mar 10 Exh=5.3).
-  // Bearish entries are unaffected — they ride exhaustion in their favor.
   if (direction === 'bullish'
-      && ctx.rangeExhaustion !== undefined && ctx.rangeExhaustion >= 6.0) return false;
+      && ctx.rangeExhaustion !== undefined && ctx.rangeExhaustion >= 6.0) return `bullish rangeExhaustion ${ctx.rangeExhaustion.toFixed(1)} >= 6.0`;
 
-  // Block bullish entries with low displacement velocity (< 0.08).
-  // Low dvel = momentum is decelerating or flat, move is stalling.
-  // Q1 2026: bullish + dvel < 0.08 was 0W/3L (all F-grade).
-  // Good bullish entries had dvel 0.106 and 0.195.
   if (direction === 'bullish'
-      && ctx.displacementVelocity !== undefined && ctx.displacementVelocity < 0.08) return false;
+      && ctx.displacementVelocity !== undefined && ctx.displacementVelocity < 0.08) return `bullish dvel ${ctx.displacementVelocity.toFixed(4)} < 0.08`;
 
-  // Block breakout entries with early-morning zero data (no meaningful intraday range).
   if (signalMode === 'breakout'
-      && ctx.rangeExhaustion !== undefined && ctx.rangeExhaustion < 1.0) return false;
+      && ctx.rangeExhaustion !== undefined && ctx.rangeExhaustion < 1.0) return `breakout rangeExhaustion ${ctx.rangeExhaustion.toFixed(1)} < 1.0 (early morning)`;
 
-  // Block breakout entries with high chop + low dvel (noise, not real breakout).
   if (signalMode === 'breakout'
       && ctx.choppiness !== undefined && ctx.choppiness >= 0.90
-      && ctx.displacementVelocity !== undefined && ctx.displacementVelocity < 0.10) return false;
+      && ctx.displacementVelocity !== undefined && ctx.displacementVelocity < 0.10) return `breakout chop+lowDvel chop=${ctx.choppiness.toFixed(2)} dvel=${ctx.displacementVelocity.toFixed(4)}`;
 
-  // Block breakout entries with low confidence (< 74%).
-  if (signalMode === 'breakout' && ctx.confidence < 0.74) return false;
+  if (signalMode === 'breakout' && ctx.confidence < 0.74) return `breakout confidence ${(ctx.confidence * 100).toFixed(0)}% < 74%`;
 
-  // Block breakout entries with high exhaustion + high chop.
   if (signalMode === 'breakout'
       && ctx.rangeExhaustion !== undefined && ctx.rangeExhaustion >= 7.0
-      && ctx.choppiness !== undefined && ctx.choppiness >= 1.0) return false;
+      && ctx.choppiness !== undefined && ctx.choppiness >= 1.0) return `breakout highExh+highChop rExh=${ctx.rangeExhaustion.toFixed(1)} chop=${ctx.choppiness.toFixed(2)}`;
 
-  // Block breakout entries with extreme chop (>= 2.0).
   if (signalMode === 'breakout'
-      && ctx.choppiness !== undefined && ctx.choppiness >= 2.0) return false;
+      && ctx.choppiness !== undefined && ctx.choppiness >= 2.0) return `breakout extremeChop ${ctx.choppiness.toFixed(2)} >= 2.0`;
 
-  // Block breakout entries with extreme range exhaustion (>= 9.0).
   if (signalMode === 'breakout'
-      && ctx.rangeExhaustion !== undefined && ctx.rangeExhaustion >= 9.0) return false;
+      && ctx.rangeExhaustion !== undefined && ctx.rangeExhaustion >= 9.0) return `breakout extremeExhaustion ${ctx.rangeExhaustion.toFixed(1)} >= 9.0`;
 
-  // Block breakout entries at high regime (>= 80).
-  // High regime = price already trending strongly, "breakout" is chasing.
-  // Feb+Mar: regime >= 80 breakouts were 0W/3L.
-  if (signalMode === 'breakout' && _lastRegimeScore >= 80) return false;
+  if (signalMode === 'breakout' && _lastRegimeScore >= 80) return `breakout regime ${_lastRegimeScore} >= 80`;
 
-  // Block breakout entries with low ATR (< 0.80).
-  // Low ATR = thin/compressed market, breakout lacks follow-through.
-  // Feb 10 F-grade: ATR=0.573. All breakout winners had ATR >= 0.899.
-  if (signalMode === 'breakout' && atr < 0.80) return false;
+  if (signalMode === 'breakout' && atr < 0.80) return `breakout atr ${atr.toFixed(3)} < 0.80`;
 
-  // Block bullish breakout entries at high exhaustion + regime.
-  // Mar 24 F-grade: RangeExh=5.3, regime=74. Mar 23 F-grade: RangeExh=4.6, regime=79.
-  // All bullish breakout winners had RangeExh < 4.5 OR regime < 65.
   if (signalMode === 'breakout' && direction === 'bullish'
       && ctx.rangeExhaustion !== undefined && ctx.rangeExhaustion >= 4.5
-      && _lastRegimeScore >= 65) return false;
+      && _lastRegimeScore >= 65) return `bullish breakout highExh+regime rExh=${ctx.rangeExhaustion.toFixed(1)} regime=${_lastRegimeScore}`;
 
   return true;
 }

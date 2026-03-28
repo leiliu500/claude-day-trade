@@ -23,59 +23,28 @@ import { simulateOrderAgentIwm } from '../../lib/order-agent-sim-iwm.js';
 /**
  * IWM entry filter — applies after all shared filters pass.
  */
-function iwmShouldAllowEntry(ctx: EntryContext): boolean {
+function iwmShouldAllowEntry(ctx: EntryContext): true | string {
   const { signalMode, breakdown: cb } = ctx;
 
-  // Block stale-data entries: low ATR% means thin volume / holiday.
   const atrPct = ctx.currentPrice > 0 ? (ctx.atr / ctx.currentPrice) * 100 : 0;
-  if (atrPct < 0.08) return false;
-  // IWM breakouts need higher ATR floor — thin vol breakouts fail consistently.
-  // Jan 14 F-grade: ATR%=0.112%. Good breakout Jan 20 had ATR%=0.158%.
-  if (signalMode === 'breakout' && atrPct < 0.13) return false;
+  if (atrPct < 0.08) return `atrPct ${atrPct.toFixed(3)}% < 0.08%`;
+  if (signalMode === 'breakout' && atrPct < 0.13) return `breakout atrPct ${atrPct.toFixed(3)}% < 0.13%`;
 
-  // 1. Block negative displacement velocity (< -0.01) for all modes.
-  //    All 3 phase-change override F-grades had strongly negative dvel
-  //    (Jan 29 -0.023, Feb 4 -0.478, Feb 20 -0.517). Also catches
-  //    Dec 29 (-0.005→F) and Feb 25 (-0.117→F).
-  //    Good entries had dvel >= -0.002. Threshold -0.003 catches Dec 29 (dvel=-0.005→F)
-  //    while keeping Jan 5#1 (dvel=-0.002→A) safe.
-  if (ctx.displacementVelocity < -0.003) return false;
+  if (ctx.displacementVelocity < -0.003) return `dvel ${ctx.displacementVelocity.toFixed(4)} < -0.003`;
 
   if (signalMode === 'trend') {
-    // Require trendPhase >= 0
-    if (cb.trendPhaseBonus < 0) return false;
-
-    // Block high-chop trend entries
-    if (ctx.choppiness >= 0.55) return false;
-
-    // 2. Block trend entries with high exhaustion + low dvel.
-    //    RangeExh >= 7.0 + dvel < 0.10: move is extended and decelerating.
-    //    Jan 12#2 (Exh=7.2, dvel=0.067→F) caught.
-    //    Good entries at high exh had dvel >= 0.10: Jan 15 (8.9, 0.108→A),
-    //    Jan 5#2 (6.2, 0.122→A), Feb 12 (7.6, 0.142→A).
-    if (ctx.rangeExhaustion >= 7.0 && ctx.displacementVelocity < 0.10) return false;
+    if (cb.trendPhaseBonus < 0) return `trend trendPhase ${cb.trendPhaseBonus.toFixed(3)} < 0`;
+    if (ctx.choppiness >= 0.55) return `trend choppiness ${ctx.choppiness.toFixed(2)} >= 0.55`;
+    if (ctx.rangeExhaustion >= 7.0 && ctx.displacementVelocity < 0.10) return `trend exhausted+lowDvel rExh=${ctx.rangeExhaustion.toFixed(1)} dvel=${ctx.displacementVelocity.toFixed(4)}`;
   }
 
   if (signalMode === 'breakout') {
-    // Require structure confirmation
-    if (cb.structureBonus <= 0) return false;
-
-    // Require minimum regime
-    if (ctx.regimeScore < 60) return false;
-
-    // Block high-chop breakouts
-    if (ctx.choppiness >= 0.95) return false;
-
-    // 3. Block breakout entries at high regime (>= 75).
-    //    Dec 9 F-grade: regime=82. Breakout at mature regime = move already happened.
-    //    Good breakout Jan 20: regime=60 (fresh breakout from consolidation).
-    if (ctx.regimeScore >= 75) return false;
-
-    // 4. Block breakout entries with low displacement velocity (< 0.06).
-    //    Jan 14 F-grade: dvel=0.053 — no real momentum behind the breakout.
-    //    Breakout needs directional conviction to follow through.
+    if (cb.structureBonus <= 0) return `breakout structureBonus ${cb.structureBonus.toFixed(3)} <= 0`;
+    if (ctx.regimeScore < 60) return `breakout regime ${ctx.regimeScore} < 60`;
+    if (ctx.choppiness >= 0.95) return `breakout choppiness ${ctx.choppiness.toFixed(2)} >= 0.95`;
+    if (ctx.regimeScore >= 75) return `breakout regime ${ctx.regimeScore} >= 75`;
     if (ctx.displacementVelocity !== undefined && ctx.displacementVelocity < 0.06
-        && ctx.displacementVelocity >= 0) return false;
+        && ctx.displacementVelocity >= 0) return `breakout lowDvel ${ctx.displacementVelocity.toFixed(4)} < 0.06`;
   }
 
   return true;

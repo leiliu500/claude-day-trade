@@ -99,44 +99,30 @@ function nvdaDetectMode(
 
 // ── NVDA Entry Filter ───────────────────────────────────────────────────────
 
-function nvdaShouldAllowEntry(ctx: EntryContext): boolean {
+function nvdaShouldAllowEntry(ctx: EntryContext): true | string {
   const { signalMode, breakdown: cb } = ctx;
 
-  // Block stale-data entries
   const atrPct = ctx.currentPrice > 0 ? (ctx.atr / ctx.currentPrice) * 100 : 0;
-  if (atrPct < 0.08) return false;
+  if (atrPct < 0.08) return `atrPct ${atrPct.toFixed(3)}% < 0.08%`;
 
-  // Block negative displacement velocity (reverting momentum)
-  if (ctx.displacementVelocity !== undefined && ctx.displacementVelocity < -0.003) return false;
+  if (ctx.displacementVelocity !== undefined && ctx.displacementVelocity < -0.003) return `dvel ${ctx.displacementVelocity.toFixed(4)} < -0.003`;
 
-  // Block early-morning zero-data entries
-  if (ctx.rangeExhaustion !== undefined && ctx.rangeExhaustion < 1.0) return false;
+  if (ctx.rangeExhaustion !== undefined && ctx.rangeExhaustion < 1.0) return `rangeExhaustion ${ctx.rangeExhaustion.toFixed(1)} < 1.0 (early morning)`;
 
-  // Block all new entries in first 30 min after open (9:30-10:00 ET / 13:30-14:00 UTC)
   const now = new Date();
   const utcMins = now.getUTCHours() * 60 + now.getUTCMinutes();
-  if (utcMins >= 810 && utcMins < 840) return false;
+  if (utcMins >= 810 && utcMins < 840) return `first 30min after open (${utcMins} UTC mins)`;
 
   if (signalMode === 'trend') {
-    // Require trendPhase >= 0
-    if (cb.trendPhaseBonus < 0) return false;
-
-    // Block high-chop trend entries
-    if ((ctx.choppiness ?? 0) >= 0.55) return false;
+    if (cb.trendPhaseBonus < 0) return `trend trendPhase ${cb.trendPhaseBonus.toFixed(3)} < 0`;
+    if ((ctx.choppiness ?? 0) >= 0.55) return `trend choppiness ${(ctx.choppiness ?? 0).toFixed(2)} >= 0.55`;
   }
 
   if (signalMode === 'breakout') {
-    // Require structure confirmation
-    if (cb.structureBonus <= 0) return false;
-
-    // Require minimum regime
-    if (_lastRegimeScore < 60) return false;
-
-    // Block high-chop breakouts
-    if ((ctx.choppiness ?? 0) >= 0.95) return false;
-
-    // Block early-morning breakouts with no intraday range established
-    if (ctx.rangeExhaustion !== undefined && ctx.rangeExhaustion < 1.0) return false;
+    if (cb.structureBonus <= 0) return `breakout structureBonus ${cb.structureBonus.toFixed(3)} <= 0`;
+    if (_lastRegimeScore < 60) return `breakout regime ${_lastRegimeScore} < 60`;
+    if ((ctx.choppiness ?? 0) >= 0.95) return `breakout choppiness ${(ctx.choppiness ?? 0).toFixed(2)} >= 0.95`;
+    if (ctx.rangeExhaustion !== undefined && ctx.rangeExhaustion < 1.0) return `breakout rangeExhaustion ${ctx.rangeExhaustion.toFixed(1)} < 1.0 (early morning)`;
   }
 
   return true;

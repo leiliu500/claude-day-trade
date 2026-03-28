@@ -1887,6 +1887,11 @@ export class AnalysisAgent {
       console.log(`[AnalysisAgent] ${signal.ticker} leading signal override: threshold ${(baseMinConf * 100).toFixed(0)}% → ${(minConf * 100).toFixed(0)}% (candle=${cb.candlePatternBonus.toFixed(3)} vel=${cb.priceVelocityBonus.toFixed(3)} vol=${cb.volumeSurgeBonus.toFixed(3)})`);
     }
     let meetsEntryThreshold = cb.total >= minConf;
+    let entryBlockReason: string | undefined;
+
+    if (!meetsEntryThreshold) {
+      entryBlockReason = `confidence ${(cb.total * 100).toFixed(0)}% < ${(minConf * 100).toFixed(0)}% threshold`;
+    }
 
     // Per-symbol entry time window — block entries outside configured window
     if (meetsEntryThreshold && tickerCfg) {
@@ -1898,15 +1903,18 @@ export class AnalysisAgent {
       const etMin = parseInt(etParts.find(p => p.type === 'minute')!.value, 10);
       const minsSinceOpen = (etHour * 60 + etMin) - (9 * 60 + 30);
       if (minsSinceOpen < tickerCfg.entryWindowStartMin || minsSinceOpen > tickerCfg.entryWindowEndMin) {
-        console.log(`[AnalysisAgent] ${signal.ticker} entry window blocked: ${etHour}:${String(etMin).padStart(2, '0')} ET (${minsSinceOpen}m since open) outside [${tickerCfg.entryWindowStartMin}-${tickerCfg.entryWindowEndMin}]`);
+        entryBlockReason = `entry window blocked: ${etHour}:${String(etMin).padStart(2, '0')} ET (${minsSinceOpen}m since open) outside [${tickerCfg.entryWindowStartMin}-${tickerCfg.entryWindowEndMin}]`;
+        console.log(`[AnalysisAgent] ${signal.ticker} ${entryBlockReason}`);
         meetsEntryThreshold = false;
       }
     }
 
     // Per-symbol entry filter hook — can block entries even if confidence meets threshold
     if (meetsEntryThreshold && tickerCfg?.strategy?.shouldAllowEntry) {
-      if (!tickerCfg.strategy.shouldAllowEntry(entryCtx)) {
-        console.log(`[AnalysisAgent] ${signal.ticker} entry filter blocked: mode=${entryCtx.signalMode} dir=${entryCtx.direction} conf=${(entryCtx.confidence * 100).toFixed(0)}% atrPct=${signal.currentPrice > 0 ? ((signal.atr / signal.currentPrice) * 100).toFixed(3) : '?'}% dvel=${entryCtx.displacementVelocity?.toFixed(4) ?? '?'} chop=${entryCtx.choppiness?.toFixed(2) ?? '?'} rExh=${entryCtx.rangeExhaustion?.toFixed(1) ?? '?'} trendPhase=${entryCtx.breakdown.trendPhaseBonus.toFixed(3)} struct=${entryCtx.breakdown.structureBonus.toFixed(3)} diSpread=${entryCtx.breakdown.diSpreadBonus.toFixed(3)}`);
+      const filterResult = tickerCfg.strategy.shouldAllowEntry(entryCtx);
+      if (filterResult !== true) {
+        entryBlockReason = filterResult;
+        console.log(`[AnalysisAgent] ${signal.ticker} entry filter blocked: ${filterResult} | mode=${entryCtx.signalMode} dir=${entryCtx.direction} conf=${(entryCtx.confidence * 100).toFixed(0)}% atrPct=${signal.currentPrice > 0 ? ((signal.atr / signal.currentPrice) * 100).toFixed(3) : '?'}% dvel=${entryCtx.displacementVelocity?.toFixed(4) ?? '?'} chop=${entryCtx.choppiness?.toFixed(2) ?? '?'} rExh=${entryCtx.rangeExhaustion?.toFixed(1) ?? '?'} trendPhase=${entryCtx.breakdown.trendPhaseBonus.toFixed(3)} struct=${entryCtx.breakdown.structureBonus.toFixed(3)} diSpread=${entryCtx.breakdown.diSpreadBonus.toFixed(3)}`);
         meetsEntryThreshold = false;
       }
     }
@@ -1934,6 +1942,7 @@ export class AnalysisAgent {
       allModeConfidences,
       selectedMode: signal.signalMode ?? 'none',
       meetsEntryThreshold,
+      entryBlockReason,
       aiExplanation,
       keyFactors,
       risks,

@@ -2034,7 +2034,8 @@ async function main() {
       }
 
       // Per-ticker entry filter hook — allows QQQ etc. to block entries with custom logic
-      const tickerAllows = !meetsThreshold || TCFG.shouldAllowEntry(entryCtx);
+      const tickerAllowsResult = !meetsThreshold || TCFG.shouldAllowEntry(entryCtx);
+      const tickerAllows = tickerAllowsResult === true;
 
       // Entry time window — only allow new entries within configured window
       const minutesSinceOpenForWindow = (currentTs - openTime.getTime()) / 60_000;

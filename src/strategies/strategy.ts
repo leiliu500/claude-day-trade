@@ -107,11 +107,11 @@ export interface TickerStrategy {
 
   /**
    * Custom entry filter — called before the orchestrator decides on an entry.
-   * Return true to allow, false to block.
+   * Return `true` to allow, or a string describing the block reason.
    * Use for ticker-specific rules that don't fit into parameters.
    * Default: always returns true.
    */
-  shouldAllowEntry: (ctx: EntryContext) => boolean;
+  shouldAllowEntry: (ctx: EntryContext) => true | string;
 }
 
 /**

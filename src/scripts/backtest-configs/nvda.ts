@@ -12,33 +12,24 @@ import type { TickerBacktestConfig, EntryContext } from './types.js';
 import type { ConfidenceBreakdown } from '../../types/analysis.js';
 import { simulateOrderAgentNvda } from '../../lib/order-agent-sim-nvda.js';
 
-function nvdaShouldAllowEntry(ctx: EntryContext): boolean {
+function nvdaShouldAllowEntry(ctx: EntryContext): true | string {
   const { signalMode, breakdown: cb } = ctx;
 
   const atrPct = ctx.currentPrice > 0 ? (ctx.atr / ctx.currentPrice) * 100 : 0;
-  if (atrPct < 0.08) return false;
-
-  // Block negative displacement velocity
-  if (ctx.displacementVelocity < -0.003) return false;
-
-  // Block early-morning zero-data entries (RangeExh=0, 09:30 open garbage).
-  // Mar 9 F-grade: RangeExh=0.0. Good entry Mar 11 at 09:31 had RangeExh=5.2.
-  if (ctx.rangeExhaustion < 1.0) return false;
-
-  // Block low-confidence entries (< 80%) for NVDA.
-  // 75-80% bracket was 1 good / 7 bad. 80%+ was 7 good / 3 bad.
-  // Applied in shouldAllowEntry (not minConfidence) to preserve gate behavior.
-  if (ctx.confidence < 0.80) return false;
+  if (atrPct < 0.08) return `atrPct ${atrPct.toFixed(3)}% < 0.08%`;
+  if (ctx.displacementVelocity < -0.003) return `dvel ${ctx.displacementVelocity.toFixed(4)} < -0.003`;
+  if (ctx.rangeExhaustion < 1.0) return `rangeExhaustion ${ctx.rangeExhaustion.toFixed(1)} < 1.0 (early morning)`;
+  if (ctx.confidence < 0.80) return `confidence ${(ctx.confidence * 100).toFixed(0)}% < 80%`;
 
   if (signalMode === 'trend') {
-    if (cb.trendPhaseBonus < 0) return false;
-    if (ctx.choppiness >= 0.55) return false;
+    if (cb.trendPhaseBonus < 0) return `trend trendPhase ${cb.trendPhaseBonus.toFixed(3)} < 0`;
+    if (ctx.choppiness >= 0.55) return `trend choppiness ${ctx.choppiness.toFixed(2)} >= 0.55`;
   }
 
   if (signalMode === 'breakout') {
-    if (cb.structureBonus <= 0) return false;
-    if (ctx.regimeScore < 60) return false;
-    if (ctx.choppiness >= 0.95) return false;
+    if (cb.structureBonus <= 0) return `breakout structureBonus ${cb.structureBonus.toFixed(3)} <= 0`;
+    if (ctx.regimeScore < 60) return `breakout regime ${ctx.regimeScore} < 60`;
+    if (ctx.choppiness >= 0.95) return `breakout choppiness ${ctx.choppiness.toFixed(2)} >= 0.95`;
   }
 
   return true;

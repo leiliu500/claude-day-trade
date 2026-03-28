@@ -145,77 +145,39 @@ function qqqAdjustConfidence(cb: ConfidenceBreakdown, ctx: EntryContext): Confid
 
 // ── QQQ Entry Filter ─────────────────────────────────────────────────────────
 
-function qqqShouldAllowEntry(ctx: EntryContext): boolean {
+function qqqShouldAllowEntry(ctx: EntryContext): true | string {
   const { signalMode, breakdown: cb } = ctx;
 
-  // QQQ rule: block ALL modes with very low ATR% (holiday/thin volume).
-  // Dec 24 F-grade had ATR%=0.059% (holiday). Dec 31 had ATR%=0.086%.
-  // All good QQQ entries had ATR% >= 0.08%. Bearish trend needs higher floor
-  // because thin liquidity means bearish moves stall without follow-through.
   const atrPct = ctx.currentPrice > 0 ? (ctx.atr / ctx.currentPrice) * 100 : 0;
-  if (atrPct < 0.07) return false;
-  if (ctx.direction === 'bearish' && signalMode !== 'breakout' && atrPct < 0.09) return false;
+  if (atrPct < 0.07) return `atrPct ${atrPct.toFixed(3)}% < 0.07%`;
+  if (ctx.direction === 'bearish' && signalMode !== 'breakout' && atrPct < 0.09) return `bearish ${signalMode} atrPct ${atrPct.toFixed(3)}% < 0.09%`;
 
   if (signalMode === 'trend') {
-    // QQQ trend rule 1: require trendPhase >= 0.
-    // Feb 11 loss had trendPhase=-0.040. All 4 trend winners had trendPhase >= 0.
-    if (cb.trendPhaseBonus < 0) return false;
-
-    // QQQ trend rule 2: block entries near strong S/R levels.
-    // Jan 13 loss had nearLevelPenalty=-0.100 (price at level, reversed).
-    // No trend winner had nearLevelPenalty below -0.050.
-    if (cb.nearLevelPenalty < -0.05) return false;
-
-    // QQQ trend rule 3: block weak DI spread entries.
-    // Feb 11 loss had DI Spread=+0.033 (weakest). All winners >= 0.050.
-    if (cb.diSpreadBonus < 0.04) return false;
-
-    // QQQ trend rule 4: block high-chop entries.
-    // Jan 13 loss had chop=0.64, all trend winners had chop <= 0.30.
-    // High chop = price oscillating, trend signal is unreliable.
-    if ((ctx.choppiness ?? 0) >= 0.55) return false;
-
-    // QQQ trend rule 5: block bearish trend at high regime + near-zero dvel.
+    if (cb.trendPhaseBonus < 0) return `trend trendPhase ${cb.trendPhaseBonus.toFixed(3)} < 0`;
+    if (cb.nearLevelPenalty < -0.05) return `trend nearLevelPenalty ${cb.nearLevelPenalty.toFixed(3)} < -0.05`;
+    if (cb.diSpreadBonus < 0.04) return `trend diSpread ${cb.diSpreadBonus.toFixed(3)} < 0.04`;
+    if ((ctx.choppiness ?? 0) >= 0.55) return `trend choppiness ${(ctx.choppiness ?? 0).toFixed(2)} >= 0.55`;
     if (ctx.direction === 'bearish' && _lastRegimeScore >= 85
-        && ctx.displacementVelocity !== undefined && Math.abs(ctx.displacementVelocity) < 0.03) return false;
-
-    // QQQ trend rule 6: block trend entries with high exhaustion + near-zero dvel.
+        && ctx.displacementVelocity !== undefined && Math.abs(ctx.displacementVelocity) < 0.03) return `bearish trend regime ${_lastRegimeScore} >= 85 + dvel ${ctx.displacementVelocity.toFixed(4)} near zero`;
     if (ctx.rangeExhaustion !== undefined && ctx.rangeExhaustion >= 7.0
-        && ctx.displacementVelocity !== undefined && ctx.displacementVelocity < 0.05) return false;
+        && ctx.displacementVelocity !== undefined && ctx.displacementVelocity < 0.05) return `trend exhausted+lowDvel rExh=${ctx.rangeExhaustion.toFixed(1)} dvel=${ctx.displacementVelocity.toFixed(4)}`;
   }
 
   if (signalMode === 'breakout') {
-    // QQQ breakout rule 1: no strongSignal bypass for negative trendPhase.
-    // SPY allows conf >= 0.75 to bypass trendPhase check; QQQ doesn't —
-    // breakout losers at 76-78% conf with neg trendPhase always failed.
-    if (cb.trendPhaseBonus < 0) return false;
-
-    // QQQ breakout rule 2: minimum confidence 72%.
-    if (ctx.confidence < 0.72) return false;
-
-    // QQQ breakout rule 3: require structure confirmation (PDH/PDL alignment).
-    // Jan 30 loss (-35.0%) had structureBonus=0 (no real level behind breakout).
-    // Both breakout winners (Feb 18 +71.6%, Mar 18 +7.9%) had structureBonus=+0.060.
-    if (cb.structureBonus <= 0) return false;
-
-    // QQQ breakout rule 4: require minimum regime (directional conviction).
-    // Dec 10 loss (-35.0%) had regime=56 (low conviction, choppy market).
-    // All breakout winners had regime >= 67. Below 60 = noise, not a real breakout.
-    if (_lastRegimeScore < 60) return false;
-
-    // QQQ breakout rule 5: block high-chop breakouts (>= 0.95).
-    if ((ctx.choppiness ?? 0) >= 0.95) return false;
-
-    // QQQ breakout rule 6: block breakouts with low dvel + choppiness.
+    if (cb.trendPhaseBonus < 0) return `breakout trendPhase ${cb.trendPhaseBonus.toFixed(3)} < 0`;
+    if (ctx.confidence < 0.72) return `breakout confidence ${(ctx.confidence * 100).toFixed(0)}% < 72%`;
+    if (cb.structureBonus <= 0) return `breakout structureBonus ${cb.structureBonus.toFixed(3)} <= 0`;
+    if (_lastRegimeScore < 60) return `breakout regime ${_lastRegimeScore} < 60`;
+    if ((ctx.choppiness ?? 0) >= 0.95) return `breakout choppiness ${(ctx.choppiness ?? 0).toFixed(2)} >= 0.95`;
     if (ctx.displacementVelocity !== undefined && Math.abs(ctx.displacementVelocity) < 0.07
-        && (ctx.choppiness ?? 0) >= 0.55) return false;
+        && (ctx.choppiness ?? 0) >= 0.55) return `breakout lowDvel+chop dvel=${ctx.displacementVelocity.toFixed(4)} chop=${(ctx.choppiness ?? 0).toFixed(2)}`;
   }
 
   if (signalMode === 'vwap_reversion') {
-    if ((ctx.choppiness ?? 0) >= 1.5) return false;
-    if (ctx.displacementVelocity !== undefined && ctx.displacementVelocity < 0) return false;
-    if (_lastRegimeScore >= 73) return false;
-    if (ctx.rangeExhaustion !== undefined && ctx.rangeExhaustion >= 14) return false;
+    if ((ctx.choppiness ?? 0) >= 1.5) return `vwap_reversion choppiness ${(ctx.choppiness ?? 0).toFixed(2)} >= 1.5`;
+    if (ctx.displacementVelocity !== undefined && ctx.displacementVelocity < 0) return `vwap_reversion dvel ${ctx.displacementVelocity.toFixed(4)} < 0`;
+    if (_lastRegimeScore >= 73) return `vwap_reversion regime ${_lastRegimeScore} >= 73`;
+    if (ctx.rangeExhaustion !== undefined && ctx.rangeExhaustion >= 14) return `vwap_reversion rangeExhaustion ${ctx.rangeExhaustion.toFixed(1)} >= 14`;
   }
 
   return true;
