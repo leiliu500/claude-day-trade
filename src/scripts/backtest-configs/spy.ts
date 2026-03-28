@@ -42,7 +42,20 @@ function spyShouldAllowEntry(ctx: EntryContext): boolean {
   //    Q4+Q1 data: dvel < -0.05 was 1W/3L (25%), the 3 losses were EARLY_EXIT.
   if (signalMode === 'breakout' && displacementVelocity < -0.05) return false;
 
-  // 3. Block trend entries in exhausted + choppy conditions.
+  // 3. Block trend entries with low ATR (< 0.70).
+  //    Low ATR = compressed/thin market, trend signal unreliable.
+  //    Q4+Q1 data: trend + ATR < 0.70 was 0W/4L (Oct 7 ATR=0.632, Oct 9 ATR=0.534,
+  //    Nov 3 ATR=0.651, Dec 31 ATR=0.441 — all F-grade).
+  //    Trend winners had ATR >= 0.881.
+  if (signalMode === 'trend' && atr < 0.70) return false;
+
+  // 4. Block trend entries at regime >= 80 (any direction).
+  //    Q4+Q1: trend + regime >= 80 was 0W/4L (Oct 7 regime=86, Nov 3 regime=80,
+  //    Dec 12#2 regime=87, Dec 31 regime=80 — all F-grade).
+  //    Trend winners had regime 73 and 75.
+  if (signalMode === 'trend' && regime >= 80) return false;
+
+  // 5. Block trend entries in exhausted + choppy conditions.
   //    Exh > 7.0 + Chop >= 0.55: trend move is done, price is oscillating.
   //    Q4+Q1 data: 0W/4L. Oct 9 (Exh=8.6, Chop=0.57→F).
   //    Sole high-Exh trend winner had Chop=0.25.
@@ -50,13 +63,7 @@ function spyShouldAllowEntry(ctx: EntryContext): boolean {
       && ctx.rangeExhaustion > 7.0
       && ctx.choppiness >= 0.55) return false;
 
-  // 4. Block bullish trend entries at very high regime (>= 80).
-  //    SPY bullish momentum at this level = price already ran to the day high,
-  //    high probability of stalling or reversing. Bearish high-regime is fine.
-  //    Q1 2026: bullish trend at regime >= 80 was 1W/1L, sole win +3.1%.
-  if (signalMode === 'trend' && direction === 'bullish' && regime >= 80) return false;
-
-  // 5. Block bullish entries with high range exhaustion (>= 6.0).
+  // 6. Block bullish entries with high range exhaustion (>= 6.0).
   //    Bullish entries into an already-extended move fail consistently.
   //    Q1 2026: bullish + RangeExh >= 6.0 was 0W/4L (all F-grade).
   //    Bullish + RangeExh < 6.0 was 2W/0L (both A-grade: Feb 18 Exh=3.2, Mar 10 Exh=5.3).
@@ -94,6 +101,32 @@ function spyShouldAllowEntry(ctx: EntryContext): boolean {
   //     Mar 18 F-grade: Chop=2.25. Extreme oscillation = not a real breakout.
   if (signalMode === 'breakout' && ctx.choppiness >= 2.0) return false;
 
+  // 12. Block breakout entries with extreme range exhaustion (>= 9.0).
+  //     Daily range consumed > 9x ATR = move is fully extended.
+  //     Q4+Q1: breakout + RangeExh >= 9.0 was 0W/1L (Feb 23 Exh=9.5→F).
+  //     Best breakout winner at high exh: Feb 3 (Exh=8.9→A).
+  if (signalMode === 'breakout' && ctx.rangeExhaustion >= 9.0) return false;
+
+  // 13. Block breakout entries at high regime (>= 80).
+  //     High regime = price already trending strongly, "breakout" is chasing.
+  //     Feb+Mar: regime >= 80 breakouts were 0W/3L (Feb 10 regime=88→F, Feb 23 regime=81→F).
+  //     Good breakouts had regime 64-78.
+  if (signalMode === 'breakout' && regime >= 80) return false;
+
+  // 15. Block breakout entries with low ATR (< 0.80).
+  //     Low ATR = thin/compressed market, breakout lacks follow-through.
+  //     Feb 10 F-grade: ATR=0.573. All breakout winners had ATR >= 0.899.
+  if (signalMode === 'breakout' && atr < 0.80) return false;
+
+  // 16. Block bullish breakout entries at high exhaustion + regime.
+  //     Late bullish breakouts reverse into close consistently.
+  //     Mar 24 F-grade: 14:40 ET (RangeExh=5.3, regime=74).
+  //     Mar 23 F-grade: 11:03 ET (RangeExh=4.6, regime=79).
+  //     All bullish breakout winners had RangeExh < 5.0 OR regime < 70.
+  //     Breakout at RangeExh >= 4.5 + regime >= 65 + bullish = chasing an extended move.
+  if (signalMode === 'breakout' && direction === 'bullish'
+      && ctx.rangeExhaustion >= 4.5 && regime >= 65) return false;
+
   return true;
 }
 
@@ -127,6 +160,10 @@ export const SPY_CONFIG: Partial<TickerBacktestConfig> = {
 
   // Strict trend phase for breakouts: require trendPhase >= 0, NO high-conf bypass.
   breakoutStrictTrendPhase: true,
+
+  // Entry window: block first 30 min after open + last 30 min before close
+  entryWindowStartMin: 30,
+  entryWindowEndMin: 360,
 
   // SPY-specific confidence adjustment (suppress PA at high bullish regime)
   adjustConfidence: spyAdjustConfidence,

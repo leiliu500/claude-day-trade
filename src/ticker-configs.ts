@@ -47,6 +47,12 @@ export interface TickerConfig {
   /** Skip entry when LTF ATR% exceeds this (volatility spike filter) */
   maxLtfAtrPct: number;
 
+  // ── Entry Window ───────────────────────────────────────────────────────────
+  /** Earliest entry in minutes since market open (default 0 = 9:30 AM ET) */
+  entryWindowStartMin: number;
+  /** Latest entry in minutes since market open (default 390 = 4:00 PM ET) */
+  entryWindowEndMin: number;
+
   // ── Per-symbol strategy (code-level overrides) ─────────────────────────────
   /** Resolved strategy — merged with defaults at startup. Do not set directly. */
   strategy: TickerStrategy;
@@ -66,6 +72,8 @@ export const DEFAULT_TICKER_CONFIG: Omit<TickerConfig, 'ticker'> = {
   dailyLossLimitPct: 0.02,
   maxEntryDriftPct: 0.05,
   maxLtfAtrPct: 0.25,
+  entryWindowStartMin: 0,
+  entryWindowEndMin: 390,
   strategy: defaultStrategy,
 };
 
@@ -77,6 +85,9 @@ const TICKER_OVERRIDES: Record<string, Partial<Omit<TickerConfig, 'ticker' | 'st
   SPY: {
     // Tuned Q4 2025 + Q1 2026: blocks breakout entries in mature trending regimes
     strategy: spyStrategy,
+    // Entry window: block first 30 min after open + last 30 min before close
+    entryWindowStartMin: 30,
+    entryWindowEndMin: 360,
   },
   QQQ: {
     // Tuned from Q1 2026 backtest: 6W/3L (67%), +63.5% P&L

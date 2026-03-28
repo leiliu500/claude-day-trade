@@ -178,23 +178,18 @@ function spyShouldAllowEntry(ctx: EntryContext): boolean {
   if (signalMode === 'breakout' && ctx.displacementVelocity !== undefined
       && ctx.displacementVelocity < -0.05) return false;
 
+  // Block trend entries with low ATR (< 0.70).
+  // Q4+Q1: trend + ATR < 0.70 was 0W/4L (all F-grade). Winners had ATR >= 0.881.
+  if (signalMode === 'trend' && atr < 0.70) return false;
+
+  // Block trend entries at regime >= 80 (any direction).
+  // Q4+Q1: trend + regime >= 80 was 0W/4L. Winners had regime 73-75.
+  if (signalMode === 'trend' && _lastRegimeScore >= 80) return false;
+
   // Block trend entries in exhausted + choppy conditions.
-  // When intraday range > 7x ATR AND price action is choppy (flips >= 0.55),
-  // the trend move is done and price is oscillating — entries reverse.
   if (signalMode === 'trend'
       && ctx.rangeExhaustion !== undefined && ctx.rangeExhaustion > 7.0
       && ctx.choppiness !== undefined && ctx.choppiness >= 0.55) return false;
-
-  // Block bullish trend entries at very high regime (>= 80).
-  // SPY bullish momentum at this level = price already ran to the day high,
-  // high probability of stalling or reversing. Bearish entries at high regime
-  // are fine — panic selling accelerates, doesn't stall.
-  //
-  // Q1 2026 data — bullish trend entries at regime >= 80:
-  //   Jan 5:  regime 80 → +3.1%  (small win, only $0.37 MFE)
-  //   Feb 20: regime 82 → -5.8%  (loss, price reversed immediately)
-  //   1W/1L, net -2.7%, not worth the risk
-  if (signalMode === 'trend' && direction === 'bullish' && _lastRegimeScore >= 80) return false;
 
   // Block bullish entries with high range exhaustion (>= 6.0).
   // Bullish entries into an already-extended intraday move fail consistently.
@@ -231,6 +226,27 @@ function spyShouldAllowEntry(ctx: EntryContext): boolean {
   // Block breakout entries with extreme chop (>= 2.0).
   if (signalMode === 'breakout'
       && ctx.choppiness !== undefined && ctx.choppiness >= 2.0) return false;
+
+  // Block breakout entries with extreme range exhaustion (>= 9.0).
+  if (signalMode === 'breakout'
+      && ctx.rangeExhaustion !== undefined && ctx.rangeExhaustion >= 9.0) return false;
+
+  // Block breakout entries at high regime (>= 80).
+  // High regime = price already trending strongly, "breakout" is chasing.
+  // Feb+Mar: regime >= 80 breakouts were 0W/3L.
+  if (signalMode === 'breakout' && _lastRegimeScore >= 80) return false;
+
+  // Block breakout entries with low ATR (< 0.80).
+  // Low ATR = thin/compressed market, breakout lacks follow-through.
+  // Feb 10 F-grade: ATR=0.573. All breakout winners had ATR >= 0.899.
+  if (signalMode === 'breakout' && atr < 0.80) return false;
+
+  // Block bullish breakout entries at high exhaustion + regime.
+  // Mar 24 F-grade: RangeExh=5.3, regime=74. Mar 23 F-grade: RangeExh=4.6, regime=79.
+  // All bullish breakout winners had RangeExh < 4.5 OR regime < 65.
+  if (signalMode === 'breakout' && direction === 'bullish'
+      && ctx.rangeExhaustion !== undefined && ctx.rangeExhaustion >= 4.5
+      && _lastRegimeScore >= 65) return false;
 
   return true;
 }

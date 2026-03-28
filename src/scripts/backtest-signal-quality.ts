@@ -80,7 +80,7 @@ function parseEntries(output: string): EntryDetail[] {
 
     const timeM = block.match(/(\d{2}:\d{2}) ET/);
     const dirM = block.match(/Direction:\s+(BULLISH|BEARISH)/i);
-    const modeM = block.match(/\[(TREND|RANGE|BREAKOUT)\]/);
+    const modeM = block.match(/\[(TREND|RANGE|BREAKOUT|VWAP_REV)\]/);
     const confM = block.match(/Confidence:\s+([\d.]+)%/);
     const priceM = block.match(/Price:\s+\$([\d.]+)/);
 

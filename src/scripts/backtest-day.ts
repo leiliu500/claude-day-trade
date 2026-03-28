@@ -145,12 +145,14 @@ function computeTimeframeIndicators(
   bars: OHLCVBar[],
   timeframe: Timeframe,
   direction: 'bullish' | 'bearish' | 'neutral' = 'neutral',
+  isLTF = false,
 ): TimeframeIndicators {
   const skipGaps = timeframe !== '1d';
+  const dmiPeriod = isLTF ? 8 : 14;
   return {
     timeframe,
     bars,
-    dmi: computeDMI(bars, 14, skipGaps),
+    dmi: computeDMI(bars, dmiPeriod, skipGaps),
     atr: computeATR(bars, 14, skipGaps),
     obv: computeOBV(bars, 14),
     td: computeTD(bars),
@@ -202,7 +204,7 @@ function computeConfidence(signal: SignalPayload, option: OptionEvaluation): Con
   const tfs = signal.timeframes;
   const [ltf, mtf, htf] = tfs;
   if (!ltf || !mtf || !htf) {
-    return { base: 0.38, diSpreadBonus: 0, adxBonus: 0, diCrossBonus: 0, alignmentBonus: 0, tdAdjustment: 0, obvBonus: 0, vwapBonus: 0, oiVolumeBonus: 0, pricePositionAdjustment: 0, adxMaturityPenalty: 0, trendPhaseBonus: 0, momentumAccelBonus: 0, structureBonus: 0, orbBonus: 0, recentPriceActionBonus: 0, trContractionPenalty: 0, lowVolPenalty: 0, moveExhaustionPenalty: 0, consolidationPenalty: 0, nearLevelPenalty: 0, thetaDecayPenalty: 0, narrowRangePenalty: 0, candlePatternBonus: 0, priceVelocityBonus: 0, volumeSurgeBonus: 0, total: 0.38 };
+    return { base: 0.38, diSpreadBonus: 0, adxBonus: 0, diCrossBonus: 0, alignmentBonus: 0, tdAdjustment: 0, obvBonus: 0, vwapBonus: 0, oiVolumeBonus: 0, pricePositionAdjustment: 0, adxMaturityPenalty: 0, trendPhaseBonus: 0, momentumAccelBonus: 0, structureBonus: 0, orbBonus: 0, recentPriceActionBonus: 0, trContractionPenalty: 0, lowVolPenalty: 0, moveExhaustionPenalty: 0, consolidationPenalty: 0, nearLevelPenalty: 0, thetaDecayPenalty: 0, narrowRangePenalty: 0, candlePatternBonus: 0, priceVelocityBonus: 0, volumeSurgeBonus: 0, trendPersistenceBonus: 0, total: 0.38 };
   }
 
   const base = 0.38;
@@ -240,6 +242,7 @@ function computeConfidence(signal: SignalPayload, option: OptionEvaluation): Con
   const alignmentBonusMap: Record<string, number> = { all_aligned: 0.06, htf_mtf_aligned: 0.03, mtf_ltf_aligned: 0.02, mixed: 0 };
   let alignmentBonus = alignmentBonusMap[signal.alignment] ?? 0;
   if (signal.reversalOverride && alignmentBonus < 0.06) alignmentBonus = 0.06;
+  if (signal.leadingSignalOverride && alignmentBonus < 0.02) alignmentBonus = 0.02;
 
   let tdAdjustment = 0;
   for (const tf of tfs) {
@@ -580,10 +583,70 @@ function computeConfidence(signal: SignalPayload, option: OptionEvaluation): Con
   // momentum, not fresh signal. Cap to prevent inflated confidence on stale setups.
   if (adxMaturityPenalty <= -0.04) diSpreadBonus = Math.min(diSpreadBonus, 0.06);
 
-  // Leading indicators — not computed in backtest (no bar-level velocity/volume data)
-  const candlePatternBonus = 0;
-  const priceVelocityBonus = 0;
-  const volumeSurgeBonus = 0;
+  // ── Leading indicators (mirrors analysis-agent.ts) ──
+  let candlePatternBonus = 0;
+  if (signal.direction !== 'neutral') {
+    const isBull = signal.direction === 'bullish';
+    for (let i = 0; i < tfs.length; i++) {
+      const tf = tfs[i]!;
+      const cp = tf.allCandlePatterns;
+      const weight = i === 2 ? 0.06 : i === 1 ? 0.04 : 0.02;
+      if (isBull && cp.bullishEngulfing.present) candlePatternBonus += weight;
+      if (!isBull && cp.bearishEngulfing.present) candlePatternBonus += weight;
+      if (isBull && cp.bearishEngulfing.present) candlePatternBonus -= weight;
+      if (!isBull && cp.bullishEngulfing.present) candlePatternBonus -= weight;
+    }
+    const htfCp = htf.allCandlePatterns;
+    const rp = htf.priceStructure.rangePosition;
+    if (isBull && htfCp.hammer.present && rp <= 0.35) candlePatternBonus += 0.04;
+    if (!isBull && htfCp.shootingStar.present && rp >= 0.65) candlePatternBonus += 0.04;
+    if (isBull && htfCp.shootingStar.present && rp >= 0.75) candlePatternBonus -= 0.03;
+    if (!isBull && htfCp.hammer.present && rp <= 0.25) candlePatternBonus -= 0.03;
+    candlePatternBonus = Math.max(-0.08, Math.min(0.08, candlePatternBonus));
+  }
+
+  let priceVelocityBonus = 0;
+  if (signal.direction !== 'neutral' && ltf) {
+    const pv = ltf.priceVelocity;
+    const isBull = signal.direction === 'bullish';
+    const dirVel = pv.directionalVelocity;
+    const aligned = isBull ? dirVel > 0 : dirVel < 0;
+    const absVel = Math.abs(dirVel);
+    if (aligned) {
+      if (absVel > 0.08) priceVelocityBonus += 0.06;
+      else if (absVel > 0.04) priceVelocityBonus += 0.03;
+      if (pv.acceleration > 0.02) priceVelocityBonus += 0.02;
+    } else if (absVel > 0.04) {
+      if (absVel > 0.08) priceVelocityBonus -= 0.06;
+      else priceVelocityBonus -= 0.04;
+    }
+    if (isExhaustingTrend && priceVelocityBonus > 0 && moveExhaustionPenalty <= -0.10) {
+      priceVelocityBonus = 0;
+    }
+    priceVelocityBonus = Math.max(-0.06, Math.min(0.08, priceVelocityBonus));
+  }
+
+  let volumeSurgeBonus = 0;
+  if (signal.direction !== 'neutral' && ltf) {
+    const vs = ltf.volumeSurge;
+    const isBull = signal.direction === 'bullish';
+    const lastBar = ltf.bars[ltf.bars.length - 1];
+    const priceConfirms = lastBar
+      ? (isBull ? lastBar.close > lastBar.open : lastBar.close < lastBar.open)
+      : false;
+    if (vs.recentVolumeRatio > 2.0 && priceConfirms) volumeSurgeBonus = 0.06;
+    else if (vs.recentVolumeRatio > 1.5 && priceConfirms) volumeSurgeBonus = 0.04;
+    else if (vs.recentVolumeRatio > 1.3 && vs.volumeTrend === 'increasing') volumeSurgeBonus = 0.02;
+    else if (vs.recentVolumeRatio < 0.5) volumeSurgeBonus = -0.02;
+    volumeSurgeBonus = Math.max(-0.02, Math.min(0.06, volumeSurgeBonus));
+  }
+
+  // Leading signal override penalty suppression
+  if (signal.leadingSignalOverride) {
+    if (lowVolPenalty < 0) lowVolPenalty *= 0.5;
+    if (diSpreadBonus < -0.05) diSpreadBonus = -0.05;
+    if (trendPhaseBonus < 0 && priceVelocityBonus > 0) trendPhaseBonus *= 0.5;
+  }
 
   let total = Math.max(0, Math.min(1, base + diSpreadBonus + adxBonus + diCrossBonus + alignmentBonus + tdAdjustment + obvBonus + vwapBonus + oiVolumeBonus + pricePositionAdjustment + adxMaturityPenalty + trendPhaseBonus + momentumAccelBonus + structureBonus + orbBonus + recentPriceActionBonus + trContractionPenalty + lowVolPenalty + moveExhaustionPenalty + consolidationPenalty + nearLevelPenalty + thetaDecayPenalty + narrowRangePenalty + candlePatternBonus + priceVelocityBonus + volumeSurgeBonus));
 
@@ -609,14 +672,46 @@ function computeConfidence(signal: SignalPayload, option: OptionEvaluation): Con
   if (adxMaturityPenalty <= -0.08 && moveExhaustionPenalty <= -0.06) total = Math.min(total, 0.62);
   // Very severe ADX maturity (post-halving still >= 7%): trend ran 20+ bars above ADX 25.
   // Even with all_aligned halving, this much aging means the easy money is gone.
-  if (adxMaturityPenalty <= -0.07) total = Math.min(total, 0.64);
+  // Exception: active strong trends (ADX > 30, slope > 0, all_aligned) with confirming
+  // leading indicators — the trend is mature but still accelerating, don't gate.
+  {
+    const activeTrendExempt = signal.alignment === 'all_aligned' && htf.dmi.adx > 30
+      && htf.dmi.adxSlope > 0 && (candlePatternBonus > 0 || priceVelocityBonus > 0 || volumeSurgeBonus > 0);
+    if (adxMaturityPenalty <= -0.07 && !activeTrendExempt) total = Math.min(total, 0.64);
+  }
   // Aged trend stalling without price confirmation — high reversal probability.
   if (adxMaturityPenalty <= -0.06 && consolidationPenalty <= -0.04 && recentPriceActionBonus <= 0) total = Math.min(total, 0.64);
   { const rp = htf.priceStructure.rangePosition; const strongActiveTrend = htf.dmi.adx > 25 && htf.dmi.adxSlope > 0; const extremeGateApplies = !strongActiveTrend && htf.dmi.adx >= 15; const atExtreme = (signal.direction === 'bullish' && rp >= 0.85) || (signal.direction === 'bearish' && rp <= 0.15); if (atExtreme && extremeGateApplies && !(signal.alignment === 'all_aligned' && htf.dmi.adx >= 20)) total = Math.min(total, 0.62); const nearExtreme = (signal.direction === 'bullish' && rp >= 0.75) || (signal.direction === 'bearish' && rp <= 0.25); if (nearExtreme && htf.dmi.diSpreadSlope < -3 && htf.dmi.adx >= 15) total = Math.min(total, 0.64); }
   if (narrowRangePenalty <= -0.08 && pricePositionAdjustment <= -0.04) total = Math.min(total, 0.60);
   if (thetaDecayPenalty <= -0.10) total = Math.min(total, 0.55);
 
-  return { base, diSpreadBonus, adxBonus, diCrossBonus, alignmentBonus, tdAdjustment, obvBonus, vwapBonus, oiVolumeBonus, pricePositionAdjustment, adxMaturityPenalty, trendPhaseBonus, momentumAccelBonus, structureBonus, orbBonus, recentPriceActionBonus, trContractionPenalty, lowVolPenalty, moveExhaustionPenalty, consolidationPenalty, nearLevelPenalty, thetaDecayPenalty, narrowRangePenalty, candlePatternBonus, priceVelocityBonus, volumeSurgeBonus, total };
+  // Hard gate: exhausted trend with reverting momentum.
+  // If intraday range consumed > 7x ATR AND displacement is decelerating,
+  // the trend is done. >12x ATR = exhausted regardless of velocity.
+  if (ltf && htf) {
+    // Use only today's bars for intraday range exhaustion — ltf.bars spans multi-day cache
+    const todayPrefix = signal.createdAt.slice(0, 10);
+    const todayLtfBars = ltf.bars.filter(b => b.timestamp.startsWith(todayPrefix));
+    const htfAtr = htf.atr.atr;
+    if (todayLtfBars.length >= 20 && htfAtr > 0) {
+      let dayHigh = -Infinity, dayLow = Infinity;
+      for (const b of todayLtfBars) { if (b.high > dayHigh) dayHigh = b.high; if (b.low < dayLow) dayLow = b.low; }
+      const rangeExhaustion = (dayHigh - dayLow) / htfAtr;
+      if (rangeExhaustion > 12.0) {
+        total = Math.min(total, 0.55);
+      } else if (rangeExhaustion > 7.0 && todayLtfBars.length >= 10) {
+        const dayOpen = todayLtfBars[0]!.open;
+        const recent5 = todayLtfBars.slice(-5);
+        const prior5 = todayLtfBars.slice(-10, -5);
+        const avgRecent = recent5.reduce((s, b) => s + Math.abs(b.close - dayOpen) / dayOpen * 100, 0) / 5;
+        const avgPrior = prior5.reduce((s, b) => s + Math.abs(b.close - dayOpen) / dayOpen * 100, 0) / 5;
+        const dispVelocity = avgRecent - avgPrior;
+        if (dispVelocity < 0) total = Math.min(total, 0.55);
+      }
+    }
+  }
+
+  return { base, diSpreadBonus, adxBonus, diCrossBonus, alignmentBonus, tdAdjustment, obvBonus, vwapBonus, oiVolumeBonus, pricePositionAdjustment, adxMaturityPenalty, trendPhaseBonus, momentumAccelBonus, structureBonus, orbBonus, recentPriceActionBonus, trContractionPenalty, lowVolPenalty, moveExhaustionPenalty, consolidationPenalty, nearLevelPenalty, thetaDecayPenalty, narrowRangePenalty, candlePatternBonus, priceVelocityBonus, volumeSurgeBonus, trendPersistenceBonus: 0, total };
 }
 
 // ── Range-bound confidence computation ────────────────────────────────────────
@@ -630,7 +725,7 @@ function computeRangeConfidence(
 ): ConfidenceBreakdown {
   const tfs = signal.timeframes;
   const [ltf, mtf, htf] = tfs;
-  const empty: ConfidenceBreakdown = { base: 0.38, diSpreadBonus: 0, adxBonus: 0, diCrossBonus: 0, alignmentBonus: 0, tdAdjustment: 0, obvBonus: 0, vwapBonus: 0, oiVolumeBonus: 0, pricePositionAdjustment: 0, adxMaturityPenalty: 0, trendPhaseBonus: 0, momentumAccelBonus: 0, structureBonus: 0, orbBonus: 0, recentPriceActionBonus: 0, trContractionPenalty: 0, lowVolPenalty: 0, moveExhaustionPenalty: 0, consolidationPenalty: 0, nearLevelPenalty: 0, thetaDecayPenalty: 0, narrowRangePenalty: 0, candlePatternBonus: 0, priceVelocityBonus: 0, volumeSurgeBonus: 0, total: 0.38 };
+  const empty: ConfidenceBreakdown = { base: 0.38, diSpreadBonus: 0, adxBonus: 0, diCrossBonus: 0, alignmentBonus: 0, tdAdjustment: 0, obvBonus: 0, vwapBonus: 0, oiVolumeBonus: 0, pricePositionAdjustment: 0, adxMaturityPenalty: 0, trendPhaseBonus: 0, momentumAccelBonus: 0, structureBonus: 0, orbBonus: 0, recentPriceActionBonus: 0, trContractionPenalty: 0, lowVolPenalty: 0, moveExhaustionPenalty: 0, consolidationPenalty: 0, nearLevelPenalty: 0, thetaDecayPenalty: 0, narrowRangePenalty: 0, candlePatternBonus: 0, priceVelocityBonus: 0, volumeSurgeBonus: 0, trendPersistenceBonus: 0, total: 0.38 };
   if (!ltf || !mtf || !htf) return empty;
 
   const base = 0.38;
@@ -796,9 +891,38 @@ function computeRangeConfidence(
   const trContractionPenalty = 0;
   const thetaDecayPenalty = simulateThetaDecay(signal.createdAt, TARGET_DATE);
 
-  const candlePatternBonus = 0;
-  const priceVelocityBonus = 0;
-  const volumeSurgeBonus = 0;
+  // ── Leading indicators for range mode ──
+  let candlePatternBonus = 0;
+  if (signal.direction !== 'neutral') {
+    const isBull = signal.direction === 'bullish';
+    const htfCp = htf.allCandlePatterns;
+    if (isBull && htfCp.hammer.present && rangePos <= 0.25) candlePatternBonus = 0.06;
+    else if (isBull && htfCp.bullishEngulfing.present && rangePos <= 0.35) candlePatternBonus = 0.06;
+    else if (!isBull && htfCp.shootingStar.present && rangePos >= 0.75) candlePatternBonus = 0.06;
+    else if (!isBull && htfCp.bearishEngulfing.present && rangePos >= 0.65) candlePatternBonus = 0.06;
+    if (isBull && htfCp.bearishEngulfing.present) candlePatternBonus -= 0.04;
+    if (!isBull && htfCp.bullishEngulfing.present) candlePatternBonus -= 0.04;
+    candlePatternBonus = Math.max(-0.04, Math.min(0.06, candlePatternBonus));
+  }
+
+  let priceVelocityBonus = 0;
+  if (signal.direction !== 'neutral' && ltf) {
+    const pv = ltf.priceVelocity;
+    const isBull = signal.direction === 'bullish';
+    const dirVel = pv.directionalVelocity;
+    const aligned = isBull ? dirVel > 0 : dirVel < 0;
+    if (aligned && Math.abs(dirVel) > 0.04) priceVelocityBonus = 0.04;
+    else if (aligned && Math.abs(dirVel) > 0.02) priceVelocityBonus = 0.02;
+    priceVelocityBonus = Math.max(0, Math.min(0.04, priceVelocityBonus));
+  }
+
+  let volumeSurgeBonus = 0;
+  if (signal.direction !== 'neutral' && ltf) {
+    const vs = ltf.volumeSurge;
+    if (vs.recentVolumeRatio > 1.5 && vs.surgeConfirmsDirection) volumeSurgeBonus = 0.04;
+    else if (vs.recentVolumeRatio > 1.3 && vs.volumeTrend === 'increasing') volumeSurgeBonus = 0.02;
+    volumeSurgeBonus = Math.max(0, Math.min(0.04, volumeSurgeBonus));
+  }
 
   let total = Math.max(0, Math.min(1, base + diSpreadBonus + adxBonus + diCrossBonus + alignmentBonus + tdAdjustment + obvBonus + vwapBonus + oiVolumeBonus + pricePositionAdjustment + adxMaturityPenalty + trendPhaseBonus + momentumAccelBonus + structureBonus + orbBonus + recentPriceActionBonus + trContractionPenalty + lowVolPenalty + moveExhaustionPenalty + consolidationPenalty + nearLevelPenalty + thetaDecayPenalty + narrowRangePenalty + candlePatternBonus + priceVelocityBonus + volumeSurgeBonus));
 
@@ -830,7 +954,7 @@ function computeRangeConfidence(
     if (chopRatio >= 1.3) total = Math.min(total, 0.55);
   }
 
-  return { base, diSpreadBonus, adxBonus, diCrossBonus, alignmentBonus, tdAdjustment, obvBonus, vwapBonus, oiVolumeBonus, pricePositionAdjustment, adxMaturityPenalty, trendPhaseBonus, momentumAccelBonus, structureBonus, orbBonus, recentPriceActionBonus, trContractionPenalty, lowVolPenalty, moveExhaustionPenalty, consolidationPenalty, nearLevelPenalty, thetaDecayPenalty, narrowRangePenalty, candlePatternBonus, priceVelocityBonus, volumeSurgeBonus, total };
+  return { base, diSpreadBonus, adxBonus, diCrossBonus, alignmentBonus, tdAdjustment, obvBonus, vwapBonus, oiVolumeBonus, pricePositionAdjustment, adxMaturityPenalty, trendPhaseBonus, momentumAccelBonus, structureBonus, orbBonus, recentPriceActionBonus, trContractionPenalty, lowVolPenalty, moveExhaustionPenalty, consolidationPenalty, nearLevelPenalty, thetaDecayPenalty, narrowRangePenalty, candlePatternBonus, priceVelocityBonus, volumeSurgeBonus, trendPersistenceBonus: 0, total };
 }
 
 // ── Breakout (squeeze breakout) confidence computation ─────────────────────────
@@ -838,7 +962,7 @@ function computeRangeConfidence(
 function computeBreakoutConfidence(signal: SignalPayload): ConfidenceBreakdown {
   const tfs = signal.timeframes;
   const [ltf, mtf, htf] = tfs;
-  const empty: ConfidenceBreakdown = { base: 0.38, diSpreadBonus: 0, adxBonus: 0, diCrossBonus: 0, alignmentBonus: 0, tdAdjustment: 0, obvBonus: 0, vwapBonus: 0, oiVolumeBonus: 0, pricePositionAdjustment: 0, adxMaturityPenalty: 0, trendPhaseBonus: 0, momentumAccelBonus: 0, structureBonus: 0, orbBonus: 0, recentPriceActionBonus: 0, trContractionPenalty: 0, lowVolPenalty: 0, moveExhaustionPenalty: 0, consolidationPenalty: 0, nearLevelPenalty: 0, thetaDecayPenalty: 0, narrowRangePenalty: 0, candlePatternBonus: 0, priceVelocityBonus: 0, volumeSurgeBonus: 0, total: 0.38 };
+  const empty: ConfidenceBreakdown = { base: 0.38, diSpreadBonus: 0, adxBonus: 0, diCrossBonus: 0, alignmentBonus: 0, tdAdjustment: 0, obvBonus: 0, vwapBonus: 0, oiVolumeBonus: 0, pricePositionAdjustment: 0, adxMaturityPenalty: 0, trendPhaseBonus: 0, momentumAccelBonus: 0, structureBonus: 0, orbBonus: 0, recentPriceActionBonus: 0, trContractionPenalty: 0, lowVolPenalty: 0, moveExhaustionPenalty: 0, consolidationPenalty: 0, nearLevelPenalty: 0, thetaDecayPenalty: 0, narrowRangePenalty: 0, candlePatternBonus: 0, priceVelocityBonus: 0, volumeSurgeBonus: 0, trendPersistenceBonus: 0, total: 0.38 };
   if (!ltf || !mtf || !htf || !signal.breakoutLevel) return empty;
 
   const base = 0.38;
@@ -948,9 +1072,43 @@ function computeBreakoutConfidence(signal: SignalPayload): ConfidenceBreakdown {
   const nearLevelPenalty = 0;
   const thetaDecayPenalty = simulateThetaDecay(signal.createdAt, TARGET_DATE);
 
-  const candlePatternBonus = 0;
-  const priceVelocityBonus = 0;
-  const volumeSurgeBonus = 0;
+  // ── Leading indicators for breakout mode ──
+  let candlePatternBonus = 0;
+  if (signal.direction !== 'neutral') {
+    const isBull = signal.direction === 'bullish';
+    for (let i = 0; i < tfs.length; i++) {
+      const tf = tfs[i]!;
+      const cp = tf.allCandlePatterns;
+      const weight = i === 2 ? 0.05 : i === 1 ? 0.03 : 0.02;
+      if (isBull && cp.bullishEngulfing.present) candlePatternBonus += weight;
+      if (!isBull && cp.bearishEngulfing.present) candlePatternBonus += weight;
+    }
+    candlePatternBonus = Math.min(0.08, candlePatternBonus);
+  }
+
+  let priceVelocityBonus = 0;
+  if (signal.direction !== 'neutral' && ltf) {
+    const pv = ltf.priceVelocity;
+    const isBull = signal.direction === 'bullish';
+    const dirVel = pv.directionalVelocity;
+    const aligned = isBull ? dirVel > 0 : dirVel < 0;
+    const absVel = Math.abs(dirVel);
+    if (aligned && absVel > 0.10) priceVelocityBonus = 0.06;
+    else if (aligned && absVel > 0.06) priceVelocityBonus = 0.04;
+    else if (aligned && absVel > 0.03) priceVelocityBonus = 0.02;
+    if (pv.acceleration > 0.03) priceVelocityBonus += 0.02;
+    priceVelocityBonus = Math.max(0, Math.min(0.08, priceVelocityBonus));
+  }
+
+  let volumeSurgeBonus = 0;
+  if (signal.direction !== 'neutral' && ltf) {
+    const vs = ltf.volumeSurge;
+    if (vs.recentVolumeRatio > 2.0 && vs.surgeConfirmsDirection) volumeSurgeBonus = 0.08;
+    else if (vs.recentVolumeRatio > 1.5 && vs.surgeConfirmsDirection) volumeSurgeBonus = 0.06;
+    else if (vs.recentVolumeRatio > 1.3 && vs.volumeTrend === 'increasing') volumeSurgeBonus = 0.03;
+    else if (vs.recentVolumeRatio < 0.7) volumeSurgeBonus = -0.04;
+    volumeSurgeBonus = Math.max(-0.04, Math.min(0.08, volumeSurgeBonus));
+  }
 
   let total = Math.max(0, Math.min(1, base + diSpreadBonus + adxBonus + diCrossBonus + alignmentBonus + tdAdjustment + obvBonus + vwapBonus + oiVolumeBonus + pricePositionAdjustment + adxMaturityPenalty + trendPhaseBonus + momentumAccelBonus + structureBonus + orbBonus + recentPriceActionBonus + trContractionPenalty + lowVolPenalty + moveExhaustionPenalty + consolidationPenalty + nearLevelPenalty + thetaDecayPenalty + narrowRangePenalty + candlePatternBonus + priceVelocityBonus + volumeSurgeBonus));
 
@@ -958,8 +1116,15 @@ function computeBreakoutConfidence(signal: SignalPayload): ConfidenceBreakdown {
   if (htf.dmi.adx >= 25) total = Math.min(total, 0.60);
   if (recentPriceActionBonus <= -0.06) total = Math.min(total, 0.58);
   if (beyondPct > 0.35) total = Math.min(total, 0.58);
+  // Cap breakout confidence at 0.85 — Feb+Mar data: conf > 0.85 was 0W/3L (all F).
+  // The breakout model sums many small bonuses that individually make sense but
+  // compound to overconfident signals. Real breakouts are inherently uncertain.
+  total = Math.min(total, 0.85);
+  // No structure support (breakout not breaking through a key prior-day level)
+  // reduces conviction — Feb+Mar: breakouts with structureBonus=0 were 1W/3L.
+  if (structureBonus <= 0) total = Math.min(total, 0.78);
 
-  return { base, diSpreadBonus, adxBonus, diCrossBonus, alignmentBonus, tdAdjustment, obvBonus, vwapBonus, oiVolumeBonus, pricePositionAdjustment, adxMaturityPenalty, trendPhaseBonus, momentumAccelBonus, structureBonus, orbBonus, recentPriceActionBonus, trContractionPenalty, lowVolPenalty, moveExhaustionPenalty, consolidationPenalty, nearLevelPenalty, thetaDecayPenalty, narrowRangePenalty, candlePatternBonus, priceVelocityBonus, volumeSurgeBonus, total };
+  return { base, diSpreadBonus, adxBonus, diCrossBonus, alignmentBonus, tdAdjustment, obvBonus, vwapBonus, oiVolumeBonus, pricePositionAdjustment, adxMaturityPenalty, trendPhaseBonus, momentumAccelBonus, structureBonus, orbBonus, recentPriceActionBonus, trContractionPenalty, lowVolPenalty, moveExhaustionPenalty, consolidationPenalty, nearLevelPenalty, thetaDecayPenalty, narrowRangePenalty, candlePatternBonus, priceVelocityBonus, volumeSurgeBonus, trendPersistenceBonus: 0, total };
 }
 
 // ── VWAP reversion confidence computation ────────────────────────────────────
@@ -967,7 +1132,7 @@ function computeBreakoutConfidence(signal: SignalPayload): ConfidenceBreakdown {
 function computeVwapReversionConfidence(signal: SignalPayload): ConfidenceBreakdown {
   const tfs = signal.timeframes;
   const [ltf, _mtf, htf] = tfs;
-  const empty: ConfidenceBreakdown = { base: 0.38, diSpreadBonus: 0, adxBonus: 0, diCrossBonus: 0, alignmentBonus: 0, tdAdjustment: 0, obvBonus: 0, vwapBonus: 0, oiVolumeBonus: 0, pricePositionAdjustment: 0, adxMaturityPenalty: 0, trendPhaseBonus: 0, momentumAccelBonus: 0, structureBonus: 0, orbBonus: 0, recentPriceActionBonus: 0, trContractionPenalty: 0, lowVolPenalty: 0, moveExhaustionPenalty: 0, consolidationPenalty: 0, nearLevelPenalty: 0, thetaDecayPenalty: 0, narrowRangePenalty: 0, candlePatternBonus: 0, priceVelocityBonus: 0, volumeSurgeBonus: 0, total: 0.38 };
+  const empty: ConfidenceBreakdown = { base: 0.38, diSpreadBonus: 0, adxBonus: 0, diCrossBonus: 0, alignmentBonus: 0, tdAdjustment: 0, obvBonus: 0, vwapBonus: 0, oiVolumeBonus: 0, pricePositionAdjustment: 0, adxMaturityPenalty: 0, trendPhaseBonus: 0, momentumAccelBonus: 0, structureBonus: 0, orbBonus: 0, recentPriceActionBonus: 0, trContractionPenalty: 0, lowVolPenalty: 0, moveExhaustionPenalty: 0, consolidationPenalty: 0, nearLevelPenalty: 0, thetaDecayPenalty: 0, narrowRangePenalty: 0, candlePatternBonus: 0, priceVelocityBonus: 0, volumeSurgeBonus: 0, trendPersistenceBonus: 0, total: 0.38 };
   if (!ltf || !htf) return empty;
 
   const base = 0.38;
@@ -1037,16 +1202,45 @@ function computeVwapReversionConfidence(signal: SignalPayload): ConfidenceBreakd
   const moveExhaustionPenalty = 0, consolidationPenalty = 0, nearLevelPenalty = 0;
   const narrowRangePenalty = 0;
 
-  const candlePatternBonus = 0;
-  const priceVelocityBonus = 0;
-  const volumeSurgeBonus = 0;
+  // ── Leading indicators for vwap_reversion (same as range) ──
+  let candlePatternBonus = 0;
+  if (signal.direction !== 'neutral') {
+    const isBull = signal.direction === 'bullish';
+    const htfCp = htf.allCandlePatterns;
+    if (isBull && htfCp.hammer.present && rp <= 0.25) candlePatternBonus = 0.06;
+    else if (isBull && htfCp.bullishEngulfing.present && rp <= 0.35) candlePatternBonus = 0.06;
+    else if (!isBull && htfCp.shootingStar.present && rp >= 0.75) candlePatternBonus = 0.06;
+    else if (!isBull && htfCp.bearishEngulfing.present && rp >= 0.65) candlePatternBonus = 0.06;
+    if (isBull && htfCp.bearishEngulfing.present) candlePatternBonus -= 0.04;
+    if (!isBull && htfCp.bullishEngulfing.present) candlePatternBonus -= 0.04;
+    candlePatternBonus = Math.max(-0.04, Math.min(0.06, candlePatternBonus));
+  }
+
+  let priceVelocityBonus = 0;
+  if (signal.direction !== 'neutral' && ltf) {
+    const pv = ltf.priceVelocity;
+    const isBull = signal.direction === 'bullish';
+    const dirVel = pv.directionalVelocity;
+    const aligned = isBull ? dirVel > 0 : dirVel < 0;
+    if (aligned && Math.abs(dirVel) > 0.04) priceVelocityBonus = 0.04;
+    else if (aligned && Math.abs(dirVel) > 0.02) priceVelocityBonus = 0.02;
+    priceVelocityBonus = Math.max(0, Math.min(0.04, priceVelocityBonus));
+  }
+
+  let volumeSurgeBonus = 0;
+  if (signal.direction !== 'neutral' && ltf) {
+    const vs = ltf.volumeSurge;
+    if (vs.recentVolumeRatio > 1.5 && vs.surgeConfirmsDirection) volumeSurgeBonus = 0.04;
+    else if (vs.recentVolumeRatio > 1.3 && vs.volumeTrend === 'increasing') volumeSurgeBonus = 0.02;
+    volumeSurgeBonus = Math.max(0, Math.min(0.04, volumeSurgeBonus));
+  }
 
   let total = Math.max(0, Math.min(1, base + diSpreadBonus + adxBonus + diCrossBonus + alignmentBonus + tdAdjustment + obvBonus + vwapBonus + oiVolumeBonus + pricePositionAdjustment + adxMaturityPenalty + trendPhaseBonus + momentumAccelBonus + structureBonus + orbBonus + recentPriceActionBonus + trContractionPenalty + lowVolPenalty + moveExhaustionPenalty + consolidationPenalty + nearLevelPenalty + thetaDecayPenalty + narrowRangePenalty + candlePatternBonus + priceVelocityBonus + volumeSurgeBonus));
 
   // Hard gates: rising ADX + high value = trend, not reversion
   if (htf.dmi.adx >= 23 && htf.dmi.adxSlope > 2) total = Math.min(total, 0.55);
 
-  return { base, diSpreadBonus, adxBonus, diCrossBonus, alignmentBonus, tdAdjustment, obvBonus, vwapBonus, oiVolumeBonus, pricePositionAdjustment, adxMaturityPenalty, trendPhaseBonus, momentumAccelBonus, structureBonus, orbBonus, recentPriceActionBonus, trContractionPenalty, lowVolPenalty, moveExhaustionPenalty, consolidationPenalty, nearLevelPenalty, thetaDecayPenalty, narrowRangePenalty, candlePatternBonus, priceVelocityBonus, volumeSurgeBonus, total };
+  return { base, diSpreadBonus, adxBonus, diCrossBonus, alignmentBonus, tdAdjustment, obvBonus, vwapBonus, oiVolumeBonus, pricePositionAdjustment, adxMaturityPenalty, trendPhaseBonus, momentumAccelBonus, structureBonus, orbBonus, recentPriceActionBonus, trContractionPenalty, lowVolPenalty, moveExhaustionPenalty, consolidationPenalty, nearLevelPenalty, thetaDecayPenalty, narrowRangePenalty, candlePatternBonus, priceVelocityBonus, volumeSurgeBonus, trendPersistenceBonus: 0, total };
 }
 
 // ── Mock option evaluation (no historical option data available) ──────────────
@@ -1188,6 +1382,10 @@ async function main() {
   // ── Step 2: Walk through market hours in 1-min intervals ──────────────────
   const entries: EntryRecord[] = [];
   const allTicks: { time: string; timeET: string; price: number; direction: SignalDirection; alignment: AlignmentType; confidence: number; meetsThreshold: boolean }[] = [];
+
+  // ── Trend persistence state ───────────────────────────────────────────────
+  // Tracks recent signal direction+alignment for trend persistence bonus (mirrors live DB query)
+  const signalHistory: Array<{ direction: SignalDirection; alignment: AlignmentType }> = [];
 
   // ── Confirmation gate state ────────────────────────────────────────────────
   // Simulates the 2-stage confirmation gate from decision-orchestrator.ts
@@ -1361,11 +1559,55 @@ async function main() {
       }
     }
 
+    // ── Leading indicator direction override (mirrors signal-agent.ts) ──────
+    let leadingSignalOverride = false;
+
+    // Price velocity direction vote
+    const ltfVelocity = computePriceVelocity(ltfBars);
+    const velDir: 'bullish' | 'bearish' | 'neutral' =
+      ltfVelocity.directionalVelocity > 0.05 ? 'bullish' :
+      ltfVelocity.directionalVelocity < -0.05 ? 'bearish' : 'neutral';
+
+    if (velDir !== 'neutral' && !reversalOverride) {
+      const ltfAgrees = ltfDmi?.trend === velDir;
+      const velocityOpposesDir = velDir !== direction;
+      const accelerating = ltfVelocity.acceleration > 0.01;
+
+      if (ltfAgrees && velocityOpposesDir && accelerating && direction !== 'neutral') {
+        direction = velDir;
+        leadingSignalOverride = true;
+      } else if (ltfAgrees && velDir === direction && accelerating) {
+        leadingSignalOverride = true;
+      }
+    }
+
+    // Volume-confirmed candle pattern direction override
+    if (!reversalOverride && !leadingSignalOverride) {
+      const ltfPatterns = detectAllPatterns(ltfBars);
+      const ltfVolume = computeVolumeSurge(ltfBars);
+      const hasVolumeSurge = ltfVolume.recentVolumeRatio > 2.0;
+
+      if (hasVolumeSurge) {
+        const bullishEngulf = ltfPatterns.bullishEngulfing.present;
+        const bearishEngulf = ltfPatterns.bearishEngulfing.present;
+
+        if (bullishEngulf && direction !== 'bullish') {
+          direction = 'bullish';
+          leadingSignalOverride = true;
+        } else if (bearishEngulf && direction !== 'bearish') {
+          direction = 'bearish';
+          leadingSignalOverride = true;
+        } else if ((bullishEngulf && direction === 'bullish') || (bearishEngulf && direction === 'bearish')) {
+          leadingSignalOverride = true;
+        }
+      }
+    }
+
     // Second pass: full indicators
     const tfIndicators: TimeframeIndicators[] = [
-      computeTimeframeIndicators(ltfBars, '1m', direction),
-      computeTimeframeIndicators(mtfBars, '3m', direction),
-      computeTimeframeIndicators(htfBars, '5m', direction),
+      computeTimeframeIndicators(ltfBars, '1m', direction, true),   // LTF: shorter DMI period (8)
+      computeTimeframeIndicators(mtfBars, '3m', direction, false),
+      computeTimeframeIndicators(htfBars, '5m', direction, false),
     ];
     const alignment = classifyAlignment(tfIndicators, direction);
     const currentPrice = ltfBars[ltfBars.length - 1]!.close;
@@ -1382,6 +1624,7 @@ async function main() {
       direction, alignment, currentPrice, atr, atm, strengthScore,
       priorDayLevels, orb,
       reversalOverride: reversalOverride || undefined,
+      leadingSignalOverride: leadingSignalOverride || undefined,
       triggeredBy: 'AUTO', createdAt: timeStr,
     };
 
@@ -1430,6 +1673,11 @@ async function main() {
         signal.vwapReversionTarget = modeResult.vwapReversionTarget;
         signal.vwapDistance = modeResult.vwapDistance;
       }
+    }
+
+    // Leading signal mode rescue: force trend when mode=none but leading indicators confirm
+    if (signalMode === 'none' && leadingSignalOverride && direction !== 'neutral') {
+      signalMode = 'trend';
     }
 
     // No qualifying regime — skip this bar (no default fallback)
@@ -1527,39 +1775,38 @@ async function main() {
       ltfBars,
       ltfVwapPriceVs: tfIndicators[0]?.vwap?.priceVsVwap ?? 0,
     };
-    const cb = TCFG.adjustConfidence(cbRaw, entryCtx);
+    let cb = TCFG.adjustConfidence(cbRaw, entryCtx);
 
-    // ── Mode-specific regime-aware threshold adjustment ─────────────────────────
-    let effectiveThreshold = MIN_CONFIDENCE;
-
-    if (signalMode === 'trend') {
-      // Displacement penalty: the bigger the move from open, the riskier a new trend entry
-      if (runningDisplacement > 1.0) effectiveThreshold += 0.10;
-      else if (runningDisplacement > 0.5) effectiveThreshold += 0.05;
-      // Range exhaustion: if most of daily ATR consumed, trend move is done
-      if (rangeExhaustion > 1.5) effectiveThreshold += 0.06;
-      else if (rangeExhaustion > 1.0) effectiveThreshold += 0.03;
-      // Choppiness penalty: frequent direction flips = noise
-      if (choppiness > 1.5) effectiveThreshold += 0.04;
-      // NOTE: Regime-based threshold adjustments for range/trend entries proved counterproductive
-      // in backtesting — any adjustment cascades through entry timing and cooldowns unpredictably.
-      // Regime data is logged on each entry for analysis; use it for future structural filters.
-    } else if (signalMode === 'range') {
-      // High displacement = extended price = better for mean-reversion
-      if (runningDisplacement > 1.0) effectiveThreshold -= 0.03;
-      else if (runningDisplacement > 0.5) effectiveThreshold -= 0.02;
-      // But if range exhaustion is extreme, the "range" may be breaking out
-      if (rangeExhaustion > 2.0) effectiveThreshold += 0.05;
-    } else if (signalMode === 'breakout') {
-      // Similar to trend but slightly less aggressive
-      if (runningDisplacement > 0.8) effectiveThreshold += 0.06;
-      else if (runningDisplacement > 0.4) effectiveThreshold += 0.03;
-      if (rangeExhaustion > 1.5) effectiveThreshold += 0.04;
-    } else if (signalMode === 'vwap_reversion') {
-      // Higher displacement = more overextended = better for VWAP reversion
-      if (runningDisplacement > 0.8) effectiveThreshold -= 0.03;
-      else if (runningDisplacement > 0.4) effectiveThreshold -= 0.02;
+    // ── Trend persistence bonus (mirrors live AnalysisAgent logic) ─────────────
+    // Count consecutive same-direction aligned signals from history, apply +0.03/bar (cap +0.12)
+    // Only for trend/breakout modes — range/vwap_reversion are mean-reversion, not trend continuation.
+    // Require structure support (structureBonus > 0) — persistence can overcome additive penalties
+    // (pos, mex) but shouldn't override hard structural gates (no prior-day level backing).
+    if (direction !== 'neutral' && (signalMode === 'trend' || signalMode === 'breakout') && cb.structureBonus > 0) {
+      let consecutiveCount = 0;
+      for (let i = signalHistory.length - 1; i >= 0; i--) {
+        const s = signalHistory[i]!;
+        if (s.direction === direction &&
+            (s.alignment === 'all_aligned' || s.alignment === 'htf_mtf_aligned')) {
+          consecutiveCount++;
+        } else {
+          break;
+        }
+      }
+      if (consecutiveCount >= 2) {
+        const persistenceBonus = Math.min(0.12, (consecutiveCount - 1) * 0.03);
+        cb = { ...cb, trendPersistenceBonus: persistenceBonus, total: Math.max(0, Math.min(1, cb.total + persistenceBonus)) };
+      }
     }
+    // Record this signal for future persistence lookups
+    signalHistory.push({ direction, alignment });
+
+    // ── Dynamic threshold: lower when leading indicators confirm direction ──────
+    const hasActiveLeadingSignals = (cb.candlePatternBonus > 0 || cb.priceVelocityBonus > 0 || cb.volumeSurgeBonus > 0);
+    const leadingOverrideActive = signal.leadingSignalOverride && hasActiveLeadingSignals;
+
+    // Threshold matches production: flat minConfidence (with leading signal override if active)
+    let effectiveThreshold = leadingOverrideActive ? Math.max(MIN_CONFIDENCE - 0.05, 0.55) : MIN_CONFIDENCE;
 
     // Intraday loss tracker: after losses, raise the bar
     if (intradayLosses >= MAX_LOSSES_BEFORE_BUMP) {
@@ -1574,6 +1821,27 @@ async function main() {
 
     tickCount++;
     allTicks.push({ time: timeStr, timeET, price: currentPrice, direction, alignment, confidence: cb.total, meetsThreshold });
+
+    // Debug: dump confidence breakdown for ticks with conf >= 0.50 in afternoon
+    if (process.env.BT_DEBUG && cb.total >= 0.45) {
+      const factors = Object.entries(cb).filter(([k, v]) => k !== 'total' && k !== 'base' && typeof v === 'number' && Math.abs(v as number) >= 0.01).map(([k, v]) => `${k}=${(v as number) >= 0 ? '+' : ''}${(v as number).toFixed(3)}`).join(', ');
+      const hardGates: string[] = [];
+      const htfTf = tfIndicators[2]!;
+      if (cb.structureBonus <= 0) hardGates.push(`struct≤0→cap0.68`);
+      if (htfTf.dmi.adx < 15) hardGates.push(`adx<15→cap0.55`);
+      else if (htfTf.dmi.adx < 20) hardGates.push(`adx<20→cap0.64`);
+      if (cb.trContractionPenalty < 0 && cb.recentPriceActionBonus <= 0) hardGates.push(`TR+noPA→cap0.60`);
+      if (cb.adxMaturityPenalty <= -0.15) hardGates.push(`adxMat≥0.15→cap`);
+      if (cb.recentPriceActionBonus < 0) hardGates.push(`negPA→cap0.64`);
+      if (cb.moveExhaustionPenalty <= -0.06 && cb.consolidationPenalty < 0) hardGates.push(`exh+consol→cap0.58`);
+      if (cb.moveExhaustionPenalty <= -0.15) hardGates.push(`exh≥0.15→cap0.60`);
+      if (cb.adxMaturityPenalty <= -0.08 && cb.moveExhaustionPenalty <= -0.06) hardGates.push(`adxMat+exh→cap0.62`);
+      if (cb.adxMaturityPenalty <= -0.07) hardGates.push(`adxMat≥0.07→cap0.64`);
+      const rp = htfTf.priceStructure.rangePosition;
+      const nearExt = (direction === 'bullish' && rp >= 0.85) || (direction === 'bearish' && rp <= 0.15);
+      if (nearExt) hardGates.push(`extreme_rp=${rp.toFixed(2)}`);
+      process.stdout.write(`  DBG ${timeET} $${currentPrice.toFixed(2)} ${direction} [${signalMode}] conf=${cb.total.toFixed(3)} eff=${effectiveThreshold.toFixed(3)} | base=0.380 ${factors} | gates: ${hardGates.join(', ') || 'none'} | adx=${htfTf.dmi.adx.toFixed(1)} adxSlope=${htfTf.dmi.adxSlope.toFixed(1)} adxBars25=${htfTf.dmi.adxBarsAbove25} rp=${rp.toFixed(2)}\n`);
+    }
 
     // ── Entry decision ──────────────────────────────────────────────────────────
 
@@ -1768,7 +2036,12 @@ async function main() {
       // Per-ticker entry filter hook — allows QQQ etc. to block entries with custom logic
       const tickerAllows = !meetsThreshold || TCFG.shouldAllowEntry(entryCtx);
 
-      if (meetsThreshold && atrOk && tickerAllows && direction !== 'neutral' && dailyEntryCount < MAX_DAILY_ENTRIES) {
+      // Entry time window — only allow new entries within configured window
+      const minutesSinceOpenForWindow = (currentTs - openTime.getTime()) / 60_000;
+      const inEntryWindow = minutesSinceOpenForWindow >= TCFG.entryWindowStartMin
+                         && minutesSinceOpenForWindow <= TCFG.entryWindowEndMin;
+
+      if (meetsThreshold && atrOk && tickerAllows && inEntryWindow && direction !== 'neutral' && dailyEntryCount < MAX_DAILY_ENTRIES) {
         // Range entries bypass the trend confirmation gate — quality is in the range confidence model
         if (signalMode === 'range') {
           const RANGE_MIN_CONF = 0.70; // raised from 0.66 — Feb range entries at 0.66-0.69 were 1W/4L

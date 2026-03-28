@@ -25,6 +25,7 @@ export interface ConfidenceBreakdown {
   candlePatternBonus: number;      // -0.08..+0.08 — leading: engulfing/hammer patterns at key levels (instant, no lag)
   priceVelocityBonus: number;      // -0.06..+0.08 — leading: raw price ROC + directional velocity (no smoothing)
   volumeSurgeBonus: number;        // 0..+0.06 — leading: volume surge detection (institutional activity)
+  trendPersistenceBonus: number;   // 0..+0.12 — consecutive same-direction aligned signals boost (market self-confirming)
   total: number;                   // clamped 0..1
 }
 

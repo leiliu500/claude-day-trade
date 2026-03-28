@@ -60,6 +60,10 @@ export interface TickerBacktestConfig {
   breakoutTpMult: number;
   /** Trend: max rangeExhaustion for confirmation gate entries */
   trendMaxExhaustion: number;
+  /** Entry window: earliest entry in minutes since market open (default 0 = open) */
+  entryWindowStartMin: number;
+  /** Entry window: latest entry in minutes since market open (default 390 = close) */
+  entryWindowEndMin: number;
 
   // ── Code hooks — override with custom per-ticker logic ─────────────────────
 
@@ -108,6 +112,8 @@ export const DEFAULT_BT_CONFIG: TickerBacktestConfig = {
   breakoutStopMult: 0.7,
   breakoutTpMult: 1.8,
   trendMaxExhaustion: 12.0,
+  entryWindowStartMin: 0,
+  entryWindowEndMin: 390,
   shouldAllowEntry: () => true,
   adjustConfidence: (cb) => cb,
   simulate: simulateOrderAgent,
