@@ -2398,6 +2398,119 @@ async function main() {
   const confirmedEntries = dedupedEntries.filter(e => isConfirmed(e));
   const blockedEntries = dedupedEntries.filter(e => !isConfirmed(e));
 
+  // ── Entry Validation (proof of correctness) ──────────────────────────────────
+  const validationErrors: string[] = [];
+  {
+    // 1. Validate total daily entry count
+    if (confirmedEntries.length > MAX_DAILY_ENTRIES) {
+      validationErrors.push(`DAILY CAP VIOLATED: ${confirmedEntries.length} confirmed entries > MAX_DAILY_ENTRIES=${MAX_DAILY_ENTRIES}`);
+    }
+
+    // 2. Validate per-mode entry counts
+    const confirmedRange = confirmedEntries.filter(e => e.signalMode === 'range').length;
+    const confirmedBreakout = confirmedEntries.filter(e => e.signalMode === 'breakout').length;
+    const confirmedTrend = confirmedEntries.filter(e => e.signalMode === 'trend').length;
+    const confirmedVwapRev = confirmedEntries.filter(e => e.signalMode === 'vwap_reversion').length;
+    if (confirmedRange > MAX_RANGE_ENTRIES) {
+      validationErrors.push(`RANGE CAP VIOLATED: ${confirmedRange} range entries > MAX_RANGE_ENTRIES=${MAX_RANGE_ENTRIES}`);
+    }
+    if (confirmedBreakout > MAX_BREAKOUT_ENTRIES) {
+      validationErrors.push(`BREAKOUT CAP VIOLATED: ${confirmedBreakout} breakout entries > MAX_BREAKOUT_ENTRIES=${MAX_BREAKOUT_ENTRIES}`);
+    }
+    if (confirmedTrend > MAX_TREND_ENTRIES) {
+      validationErrors.push(`TREND CAP VIOLATED: ${confirmedTrend} trend entries > MAX_TREND_ENTRIES=${MAX_TREND_ENTRIES}`);
+    }
+    if (confirmedVwapRev > 1) {
+      validationErrors.push(`VWAP_REV CAP VIOLATED: ${confirmedVwapRev} vwap_reversion entries > MAX=1`);
+    }
+
+    // 3. Validate entry times within market hours
+    for (let i = 0; i < confirmedEntries.length; i++) {
+      const e = confirmedEntries[i]!;
+      const eTs = new Date(e.time).getTime();
+      if (eTs < openTime.getTime() || eTs > closeTime.getTime()) {
+        validationErrors.push(`MARKET HOURS VIOLATED: Entry #${i + 1} at ${e.timeET} ET is outside market hours`);
+      }
+    }
+
+    // 4. Validate entry time window
+    for (let i = 0; i < confirmedEntries.length; i++) {
+      const e = confirmedEntries[i]!;
+      const eTs = new Date(e.time).getTime();
+      const minSinceOpen = (eTs - openTime.getTime()) / 60_000;
+      if (minSinceOpen < TCFG.entryWindowStartMin || minSinceOpen > TCFG.entryWindowEndMin) {
+        validationErrors.push(`ENTRY WINDOW VIOLATED: Entry #${i + 1} at ${e.timeET} ET (${minSinceOpen.toFixed(0)}m after open) outside [${TCFG.entryWindowStartMin}-${TCFG.entryWindowEndMin}]`);
+      }
+    }
+
+    // 5. Validate cooldowns between consecutive entries of same mode
+    const byMode = new Map<string, typeof confirmedEntries>();
+    for (const e of confirmedEntries) {
+      if (!byMode.has(e.signalMode)) byMode.set(e.signalMode, []);
+      byMode.get(e.signalMode)!.push(e);
+    }
+    const cooldownMins: Record<string, number> = {
+      range: RANGE_COOLDOWN_MIN,
+      breakout: BREAKOUT_COOLDOWN_MIN,
+      trend: TREND_COOLDOWN_MIN,
+      vwap_reversion: 15,
+    };
+    for (const [mode, modeEntries] of byMode) {
+      const cooldown = cooldownMins[mode] ?? 0;
+      for (let i = 1; i < modeEntries.length; i++) {
+        const prevTs = new Date(modeEntries[i - 1]!.time).getTime();
+        const currTs = new Date(modeEntries[i]!.time).getTime();
+        const gapMin = (currTs - prevTs) / 60_000;
+        if (gapMin < cooldown) {
+          validationErrors.push(`COOLDOWN VIOLATED: ${mode} entries ${i} and ${i + 1} are ${gapMin.toFixed(0)}m apart (min=${cooldown}m)`);
+        }
+      }
+    }
+
+    // 6. Validate wait periods (range/breakout not in first N minutes)
+    for (const e of confirmedEntries) {
+      const eTs = new Date(e.time).getTime();
+      if (e.signalMode === 'range' && eTs < rangeEarliestTs) {
+        validationErrors.push(`RANGE WAIT VIOLATED: Range entry at ${e.timeET} ET before ${RANGE_WAIT_MIN}m wait period`);
+      }
+      if (e.signalMode === 'breakout' && eTs < breakoutEarliestTs) {
+        validationErrors.push(`BREAKOUT WAIT VIOLATED: Breakout entry at ${e.timeET} ET before ${BREAKOUT_WAIT_MIN}m wait period`);
+      }
+    }
+
+    // Print validation results
+    console.log(`  ── Entry Validation ──`);
+    console.log(`  Entry counts: ${confirmedEntries.length}/${MAX_DAILY_ENTRIES} daily cap | Range: ${confirmedRange}/${MAX_RANGE_ENTRIES} | Breakout: ${confirmedBreakout}/${MAX_BREAKOUT_ENTRIES} | Trend: ${confirmedTrend}/${MAX_TREND_ENTRIES} | VWAP Rev: ${confirmedVwapRev}/1`);
+
+    if (confirmedEntries.length > 0) {
+      const firstEntry = confirmedEntries[0]!;
+      const lastEntry = confirmedEntries[confirmedEntries.length - 1]!;
+      console.log(`  Entry time span: ${firstEntry.timeET} ET → ${lastEntry.timeET} ET (window: ${TCFG.entryWindowStartMin}-${TCFG.entryWindowEndMin}m after open)`);
+      console.log(`  Entry times:     ${confirmedEntries.map((e, i) => `#${i + 1} ${e.timeET} ET [${e.signalMode}]`).join('  |  ')}`);
+    }
+
+    // Cooldown proof
+    for (const [mode, modeEntries] of byMode) {
+      if (modeEntries.length >= 2) {
+        const gaps: string[] = [];
+        for (let i = 1; i < modeEntries.length; i++) {
+          const gapMin = (new Date(modeEntries[i]!.time).getTime() - new Date(modeEntries[i - 1]!.time).getTime()) / 60_000;
+          gaps.push(`${gapMin.toFixed(0)}m`);
+        }
+        console.log(`  ${mode} cooldown gaps: ${gaps.join(', ')} (min=${cooldownMins[mode] ?? 0}m)`);
+      }
+    }
+
+    if (validationErrors.length === 0) {
+      console.log(`  ✅ All entry validations passed`);
+    } else {
+      for (const err of validationErrors) {
+        console.log(`  ❌ ${err}`);
+      }
+    }
+    console.log('');
+  }
+
   // ── Confirmed Entries (what would actually trade) ──
   console.log(`  Confirmed entries: ${confirmedEntries.length} (of ${dedupedEntries.length} signals)\n`);
 
