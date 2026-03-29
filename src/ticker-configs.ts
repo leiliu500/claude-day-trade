@@ -93,7 +93,7 @@ const TICKER_OVERRIDES: Record<string, Partial<Omit<TickerConfig, 'ticker' | 'st
     // Tuned from Q1 2026 backtest: 6W/3L (67%), +63.5% P&L
     // (baseline was 8W/11L 42%, -63.8%)
     minConfidence: 0.65,
-    maxDailyEntries: 2,    // QQQ: max 2 entries per day
+    maxDailyEntries: 4,
     maxContracts: 5,       // smaller size — newer symbol, less data
     enabled: true,
     strategy: qqqStrategy,
@@ -101,7 +101,7 @@ const TICKER_OVERRIDES: Record<string, Partial<Omit<TickerConfig, 'ticker' | 'st
   IWM: {
     // Initial config — no backtest tuning yet
     minConfidence: 0.65,
-    maxDailyEntries: 2,
+    maxDailyEntries: 4,
     maxContracts: 5,
     enabled: true,
     strategy: iwmStrategy,

@@ -1476,7 +1476,7 @@ async function main() {
   let lastTrendEntryTs = 0;
   let trendEntryCount = 0;
   const TREND_COOLDOWN_MIN = 15;    // min minutes between trend entries
-  const MAX_TREND_ENTRIES = 3;       // max trend entries per day
+  const MAX_TREND_ENTRIES = 6;       // max trend entries per day
 
   // ── Displacement-based regime detection ──────────────────────────────────────
   // Tracks how far price has moved from open and how much daily range is consumed.
