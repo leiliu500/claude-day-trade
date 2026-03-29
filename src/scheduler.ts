@@ -22,6 +22,7 @@ const STREAM_FALLBACK_THRESHOLD_MS = 2 * 60 * 1000; // 2 minutes
 // Per-ticker state (replaces single isRunning boolean)
 const isRunning = new Map<string, boolean>(); // true while pipeline is executing
 const lastRunAt = new Map<string, number>();  // ms timestamp of most recent run start
+const pendingRerun = new Set<string>();       // tickers that received a bar while pipeline was running
 
 /** True when current UTC time is within the trading window: Mon-Fri 9:30 AM - 4:30 PM ET (DST-aware) */
 function isTradingWindow(): boolean {
@@ -122,6 +123,17 @@ async function runOneTicker(
       void completeSchedulerRun(runId, 'COMPLETED', [result!], Date.now() - t0).catch(() => {});
     }
     isRunning.set(ticker, false);
+
+    // Drain pending re-run: if a bar arrived while we were running, fire immediately
+    // so we don't miss/delay the signal from that bar.
+    if (pendingRerun.has(ticker)) {
+      pendingRerun.delete(ticker);
+      const rerunCfg = AUTO_TICKERS.find(t => t.ticker === ticker);
+      if (rerunCfg && isTradingWindow()) {
+        console.log(`[Scheduler] Draining queued bar for ${ticker} — running pipeline immediately`);
+        void runOneTicker(rerunCfg, 'STREAM');
+      }
+    }
   }
 
   return result!;
@@ -137,7 +149,13 @@ function subscribeToStreamTrigger(): void {
     const cfg = AUTO_TICKERS.find(t => t.ticker === ticker);
     if (!cfg) return;
     if (!isTradingWindow()) return;
-    if (isRunning.get(ticker)) return; // pipeline already in progress for this ticker
+    if (isRunning.get(ticker)) {
+      // Queue a re-run so the pipeline fires immediately after the current run finishes.
+      // Only the latest bar matters — no need to queue multiple.
+      pendingRerun.add(ticker);
+      console.log(`[Scheduler] Stream bar for ${ticker} queued — pipeline already running`);
+      return;
+    }
 
     console.log(`[Scheduler] Stream bar received — triggering pipeline for ${ticker}`);
     void runOneTicker(cfg, 'STREAM');

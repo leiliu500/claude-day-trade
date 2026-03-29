@@ -40,6 +40,19 @@ interface OrchestratorRawOutput {
   streak_context?: string;
 }
 
+/** Minutes since 9:30 AM ET market open (DST-aware). Returns negative before open. */
+function minutesSinceMarketOpen(now = new Date()): number {
+  const year = now.getUTCFullYear();
+  const dstStart = new Date(Date.UTC(year, 2, 1));
+  dstStart.setUTCDate(1 + ((7 - dstStart.getUTCDay()) % 7) + 7); // 2nd Sunday March
+  const dstEnd = new Date(Date.UTC(year, 10, 1));
+  dstEnd.setUTCDate(1 + ((7 - dstEnd.getUTCDay()) % 7)); // 1st Sunday November
+  const isDst = now >= dstStart && now < dstEnd;
+  const etOffsetMin = isDst ? -4 * 60 : -5 * 60;
+  const etMinutes = (now.getUTCHours() * 60 + now.getUTCMinutes() + etOffsetMin + 24 * 60) % (24 * 60);
+  return etMinutes - (9 * 60 + 30); // minutes since 9:30 AM ET
+}
+
 /** Compute whether the current time is in the EOD liquidation window (last 5 min before 4pm ET) */
 function computeEodWindow(): { isEodWindow: boolean; minutesToClose: number } {
   const now = new Date();
@@ -446,54 +459,13 @@ export class DecisionOrchestrator {
       }
       const phaseChangeOk = phaseChangeStructuralOk && phaseChangeTimingOk;
 
-      // (E) Stale-signal gate: at Stage-2+ (priorCount >= 1), check if confidence has
-      // materially changed since the ORIGINAL Stage-1 OBSERVE. Lagging indicators (ADX/DI)
-      // can produce the same frozen confidence for many cycles — the 2-stage gate becomes a
-      // trivial 3-min delay rather than real confirmation. If confidence delta < threshold, the
-      // signal is stale (same indicators, no new information) — block entry.
-      // Threshold scales with headroom: min(0.03, max(0.01, (1-stage1Conf)*0.15)) so
-      // high-confidence signals (less room to move) aren't unfairly blocked.
-      // Compare against the FIRST WAIT in the current streak (the original Stage-1 baseline),
-      // not the most recent, to avoid creeping-baseline where confidence drifts 0.01/cycle
-      // and never triggers the threshold despite moving far from the original.
-      // This does NOT block genuinely new signals that happen to come quickly.
-      if (!overrideOk && priorCount >= 1 && rawOutput.decision_type === 'NEW_ENTRY' && rawOutput.should_execute) {
-        // Walk recentDecisions to find the earliest WAIT in the current same-direction streak
-        // (the original Stage-1 OBSERVE that started this confirmation sequence).
-        let stage1Conf: number | null = null;
-        for (const d of context.recentDecisions) {
-          if (d.direction !== signal.direction) break; // direction changed — end of streak
-          if (d.decisionType === 'NEW_ENTRY' || d.decisionType === 'EXIT' || d.decisionType === 'REDUCE_EXPOSURE') break;
-          if (d.decisionType === 'WAIT' && d.confirmationCount > 0) {
-            stage1Conf = d.orchestrationConfidence; // keep overwriting — last one is the earliest
-          }
-        }
-        if (stage1Conf !== null) {
-          const confDelta = Math.abs(analysis.confidence - stage1Conf);
-          // Stale threshold scales with headroom above entry threshold, not distance to 100%.
-          // Near-threshold signals (66% with 65% thresh) have ~1% headroom — requiring 3% delta
-          // is unrealistic and blocks legitimate confirmations. Headroom-based scaling ensures
-          // a proportional bar: 0.6% for near-threshold, up to 2% for high-confidence signals.
-          const headroom = Math.max(0, stage1Conf - minConfidence);
-          const staleThreshold = Math.min(0.02, Math.max(0.005, headroom * 0.4));
-
-          // Weakening-signal block: if confidence DROPPED from Stage-1, conditions deteriorated —
-          // that's the opposite of confirmation. A large drop passing the stale gate as "fresh"
-          // is a bug, not a feature (e.g. 0.82 → 0.66 was allowed because delta=0.16 >> threshold).
-          // Block any entry where current confidence is lower than the original Stage-1 baseline.
-          if (analysis.confidence < stage1Conf) {
-            rawOutput.decision_type = 'WAIT';
-            rawOutput.should_execute = false;
-            rawOutput.reasoning = `[WEAKENING-SIGNAL BLOCK] Confidence dropped since original Stage-1 (${stage1Conf.toFixed(2)} → ${analysis.confidence.toFixed(2)}) — conditions deteriorated, not confirmed. ${rawOutput.reasoning}`;
-            console.log(`[DecisionOrchestrator] NEW_ENTRY blocked by weakening-signal gate (stage1Conf=${stage1Conf.toFixed(2)}, currentConf=${analysis.confidence.toFixed(2)})`);
-          } else if (confDelta < staleThreshold) {
-            rawOutput.decision_type = 'WAIT';
-            rawOutput.should_execute = false;
-            rawOutput.reasoning = `[STALE-SIGNAL BLOCK] Confidence barely changed since original Stage-1 (${stage1Conf.toFixed(2)} → ${analysis.confidence.toFixed(2)}, delta=${confDelta.toFixed(3)} < ${staleThreshold.toFixed(3)}) — lagging indicators producing frozen signal, not fresh confirmation. ${rawOutput.reasoning}`;
-            console.log(`[DecisionOrchestrator] NEW_ENTRY blocked by stale-signal gate (confDelta=${confDelta.toFixed(3)}, threshold=${staleThreshold.toFixed(3)}, stage1Conf=${stage1Conf.toFixed(2)}, currentConf=${analysis.confidence.toFixed(2)})`);
-          }
-        }
-      }
+      // (E) Stale-signal / weakening-signal gates REMOVED.
+      // The 2-stage confirmation gate (Stage-1 OBSERVE → Stage-2 ENTER) already provides
+      // a 1-3 min conviction delay. The stale/weakening gates on top delayed entries by an
+      // additional 1-5 min waiting for confidence to tick up by tiny amounts (0.5-2%).
+      // Backtest showed these gates never permanently block — they just delay until confidence
+      // fluctuates past the threshold — causing late entries where the move has already started.
+      // The per-ticker filters + confidence threshold are the real quality gates.
 
       // Strong-signal bypass: conf >= 75% + all_aligned can skip stage-2.
       // Backtest showed no false positives at this level on losing days (Mar 11/17/19),
@@ -514,10 +486,8 @@ export class DecisionOrchestrator {
       if (signal.signalMode === 'range' && priorCount < 1) {
         const RANGE_MIN_CONF = 0.70; // raised from 0.66 — Feb range entries at 0.66-0.69 were 1W/4L
         const now = new Date();
-        const todayOpen = new Date(now);
-        todayOpen.setUTCHours(13, 30, 0, 0); // 09:30 ET = 13:30 UTC (EDT)
-        const minutesSinceOpen = (now.getTime() - todayOpen.getTime()) / 60_000;
-        const pastWaitPeriod = minutesSinceOpen >= 45;
+        const minsSinceOpen = minutesSinceMarketOpen(now);
+        const pastWaitPeriod = minsSinceOpen >= 45;
         const meetsRangeThreshold = analysis.confidence >= RANGE_MIN_CONF;
 
         // Count recent range entries today for cooldown + daily limit
@@ -548,12 +518,10 @@ export class DecisionOrchestrator {
       let breakoutBypass = false;
       if (signal.signalMode === 'breakout' && priorCount < 1) {
         const now = new Date();
-        const todayOpen = new Date(now);
-        todayOpen.setUTCHours(13, 30, 0, 0);
-        const minutesSinceOpen = (now.getTime() - todayOpen.getTime()) / 60_000;
-        const pastWaitPeriod = minutesSinceOpen >= 45;
+        const minsSinceOpen = minutesSinceMarketOpen(now);
+        const pastWaitPeriod = minsSinceOpen >= 45;
         // Late-day breakouts fail more often (momentum fades into close)
-        const notTooLate = minutesSinceOpen < 360; // 15:30 ET = open + 6h
+        const notTooLate = minsSinceOpen < 360; // 15:30 ET = open + 6h
         // Mixed alignment breakouts lack directional conviction
         const alignmentOk = signal.alignment !== 'mixed';
         // Breakouts against the trend phase fail at high rate: Feb 7/9 breakout losers
@@ -600,10 +568,8 @@ export class DecisionOrchestrator {
       if (signal.signalMode === 'vwap_reversion' && priorCount < 1) {
         const VWAP_REV_MIN_CONF = 0.68;
         const now = new Date();
-        const todayOpen = new Date(now);
-        todayOpen.setUTCHours(13, 30, 0, 0);
-        const minutesSinceOpen = (now.getTime() - todayOpen.getTime()) / 60_000;
-        const pastWaitPeriod = minutesSinceOpen >= 30;
+        const minsSinceOpen = minutesSinceMarketOpen(now);
+        const pastWaitPeriod = minsSinceOpen >= 30;
         const meetsThreshold = analysis.confidence >= VWAP_REV_MIN_CONF;
 
         const todayStr = now.toISOString().slice(0, 10);

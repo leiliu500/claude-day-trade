@@ -2320,25 +2320,11 @@ async function main() {
         } else {
           // Stage-2: we have a prior stage-1 in the same direction
           stage1ConfValue = confirmStage1.confidence;
-          const confDelta = Math.abs(cb.total - confirmStage1.confidence);
-          // Stale threshold scales with headroom above entry threshold, not distance to 100%.
-          // Near-threshold signals (66% with 65% thresh) have ~1% headroom — requiring 3% delta
-          // is unrealistic and blocks legitimate confirmations. Headroom-based scaling ensures
-          // a proportional bar: 0.6% for near-threshold, up to 2% for high-confidence signals.
-          const headroom = Math.max(0, confirmStage1.confidence - effectiveThreshold);
-          const staleThreshold = Math.min(0.02, Math.max(0.005, headroom * 0.4));
-
-          if (cb.total < confirmStage1.confidence) {
-            gateResult = 'WEAKENING_BLOCK';
-            // Keep stage-1 alive — next tick can still try stage-2
-          } else if (confDelta < staleThreshold) {
-            gateResult = 'STALE_BLOCK';
-            // Keep stage-1 alive
-          } else {
-            gateResult = 'PASSED';
-            confirmStage1 = null; // reset after confirmed entry
-            lastEntryTs = currentTs;
-          }
+          // Stale/weakening gates removed — they only delayed entries by 1-5 min
+          // without filtering bad signals. The 2-stage gate is the quality filter.
+          gateResult = 'PASSED';
+          confirmStage1 = null; // reset after confirmed entry
+          lastEntryTs = currentTs;
         }
 
         const fwd = computeForwardMoves();
