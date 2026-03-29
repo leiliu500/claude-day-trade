@@ -2320,7 +2320,12 @@ async function main() {
           // Stage-2: we have a prior stage-1 in the same direction
           stage1ConfValue = confirmStage1.confidence;
           const confDelta = Math.abs(cb.total - confirmStage1.confidence);
-          const staleThreshold = Math.min(0.03, Math.max(0.01, (1 - confirmStage1.confidence) * 0.15));
+          // Stale threshold scales with headroom above entry threshold, not distance to 100%.
+          // Near-threshold signals (66% with 65% thresh) have ~1% headroom — requiring 3% delta
+          // is unrealistic and blocks legitimate confirmations. Headroom-based scaling ensures
+          // a proportional bar: 0.6% for near-threshold, up to 2% for high-confidence signals.
+          const headroom = Math.max(0, confirmStage1.confidence - effectiveThreshold);
+          const staleThreshold = Math.min(0.02, Math.max(0.005, headroom * 0.4));
 
           if (cb.total < confirmStage1.confidence) {
             gateResult = 'WEAKENING_BLOCK';

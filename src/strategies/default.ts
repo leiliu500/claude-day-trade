@@ -143,11 +143,14 @@ export function evaluateTrend(
   // Trend requires established directional movement
   if (htfAdx < 18) return null;           // ADX below 18 = no trend
   if (diSpread < 5) return null;           // no clear directional dominance
-  // Mature trend: ADX >= 25 with clear DI spread (>= 8) qualifies even with flat/declining ADX.
+  // Mature trend: ADX still elevated with clear DI spread qualifies even with declining ADX.
   // This prevents a dead zone after spikes where ADX stays elevated but slope turns negative,
   // simultaneously blocking range/breakout/vwap (ADX too high) and trend (slope <= 0).
-  // Threshold 8 (not 10): March 27 SPY 11:25 had ADX=44.5 diSpread=9.4 — strong signal missed at 10.
-  const matureTrend = htfAdx >= 25 && diSpread >= 8;
+  // ADX threshold 23 (not 25): when ADX declines from a spike it hovers 23-25 with strongly
+  // diverging DI lines — the trend decelerates but directional flow persists. March 27 SPY
+  // 13:25 had ADX=24.6 diSpread=9.4, price dropped $2 with no entry at threshold 25.
+  // DI spread threshold 8 (not 10): March 27 SPY 11:25 had ADX=44.5 diSpread=9.4.
+  const matureTrend = htfAdx >= 23 && diSpread >= 8;
   if (adxSlope <= 0 && !matureTrend) return null; // fading ADX without strong directional dominance
 
   // Direction from DI dominance

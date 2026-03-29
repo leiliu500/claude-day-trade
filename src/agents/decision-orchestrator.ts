@@ -470,9 +470,12 @@ export class DecisionOrchestrator {
         }
         if (stage1Conf !== null) {
           const confDelta = Math.abs(analysis.confidence - stage1Conf);
-          // Scale threshold by available headroom — high-confidence signals have less room to move,
-          // so demanding a fixed 0.03 delta unfairly blocks them as "stale".
-          const staleThreshold = Math.min(0.03, Math.max(0.01, (1 - stage1Conf) * 0.15));
+          // Stale threshold scales with headroom above entry threshold, not distance to 100%.
+          // Near-threshold signals (66% with 65% thresh) have ~1% headroom — requiring 3% delta
+          // is unrealistic and blocks legitimate confirmations. Headroom-based scaling ensures
+          // a proportional bar: 0.6% for near-threshold, up to 2% for high-confidence signals.
+          const headroom = Math.max(0, stage1Conf - minConfidence);
+          const staleThreshold = Math.min(0.02, Math.max(0.005, headroom * 0.4));
 
           // Weakening-signal block: if confidence DROPPED from Stage-1, conditions deteriorated —
           // that's the opposite of confirmation. A large drop passing the stale gate as "fresh"
