@@ -29,6 +29,8 @@ export interface EntryContext {
   intradayTrendStrength: number;
   regimeScore: number;
   dailyEntryCount: number;
+  /** Minutes since market open */
+  minutesSinceOpen: number;
   /** LTF bars for per-ticker regime computation — matches live strategy access */
   ltfBars?: Array<{ timestamp: string; open: number; high: number; low: number; close: number }>;
   /** LTF VWAP price-vs-VWAP for per-ticker regime computation */
@@ -60,6 +62,10 @@ export interface TickerBacktestConfig {
   breakoutTpMult: number;
   /** Trend: max rangeExhaustion for confirmation gate entries */
   trendMaxExhaustion: number;
+  /** Trend: min rangeExhaustion to trigger exhausted+reverting block (rExh > N && dvel < 0). Default 7.0. */
+  trendExhaustedRevertMinExh: number;
+  /** Trend: min confidence for strong-signal bypass (skips 2-stage gate when all_aligned). Default 0.75. */
+  trendStrongSignalMinConf: number;
   /** Entry window: earliest entry in minutes since market open (default 0 = open) */
   entryWindowStartMin: number;
   /** Entry window: latest entry in minutes since market open (default 390 = close) */
@@ -112,6 +118,8 @@ export const DEFAULT_BT_CONFIG: TickerBacktestConfig = {
   breakoutStopMult: 0.7,
   breakoutTpMult: 1.8,
   trendMaxExhaustion: 12.0,
+  trendExhaustedRevertMinExh: 7.0,
+  trendStrongSignalMinConf: 0.75,
   entryWindowStartMin: 0,
   entryWindowEndMin: 390,
   shouldAllowEntry: () => true,

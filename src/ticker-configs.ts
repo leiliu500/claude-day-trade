@@ -85,6 +85,7 @@ const TICKER_OVERRIDES: Record<string, Partial<Omit<TickerConfig, 'ticker' | 'st
   SPY: {
     // Tuned Q4 2025 + Q1 2026: blocks breakout entries in mature trending regimes
     strategy: spyStrategy,
+    maxDailyEntries: 6,
     // Entry window: block first 30 min after open + last 30 min before close
     entryWindowStartMin: 30,
     entryWindowEndMin: 360,
@@ -93,7 +94,7 @@ const TICKER_OVERRIDES: Record<string, Partial<Omit<TickerConfig, 'ticker' | 'st
     // Tuned from Q1 2026 backtest: 6W/3L (67%), +63.5% P&L
     // (baseline was 8W/11L 42%, -63.8%)
     minConfidence: 0.65,
-    maxDailyEntries: 4,
+    maxDailyEntries: 6,
     maxContracts: 5,       // smaller size — newer symbol, less data
     enabled: true,
     strategy: qqqStrategy,
@@ -101,7 +102,7 @@ const TICKER_OVERRIDES: Record<string, Partial<Omit<TickerConfig, 'ticker' | 'st
   IWM: {
     // Initial config — no backtest tuning yet
     minConfidence: 0.65,
-    maxDailyEntries: 4,
+    maxDailyEntries: 6,
     maxContracts: 5,
     enabled: true,
     strategy: iwmStrategy,

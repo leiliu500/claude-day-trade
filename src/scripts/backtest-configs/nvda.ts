@@ -22,14 +22,25 @@ function nvdaShouldAllowEntry(ctx: EntryContext): true | string {
   // confidence < 80% removed: Q4+Q1 net +148 costly (498 good vs 350 bad)
 
   if (signalMode === 'trend') {
-    if (cb.trendPhaseBonus < 0) return `trend trendPhase ${cb.trendPhaseBonus.toFixed(3)} < 0`;
-    if (ctx.choppiness >= 0.55) return `trend choppiness ${ctx.choppiness.toFixed(2)} >= 0.55`;
+    // trendPhase < 0 removed: Mar 26 both blocked were A-grade (MFE 0.83-1.12%)
+    // choppiness raised 0.55 → 0.70: Mar 26 chop 0.56-0.68 were all A-grade (6 entries),
+    // chop 0.71+ was 3F/1C (blocked correctly). Early-day high-chop outliers (1.23, 1.32)
+    // are A-grade but overlap with F-grade entries in same time window.
+    if (ctx.choppiness >= 0.70) return `trend choppiness ${ctx.choppiness.toFixed(2)} >= 0.70`;
+    // Regime >= 90 + negative momentum = overextended trend losing steam.
+    // Mar 27 F-grade at regime=91, mom=-0.060. All good entries were regime <= 84.
+    if (ctx.regimeScore >= 90 && cb.momentumAccelBonus < 0) return `trend regime ${ctx.regimeScore} >= 90 + negative momentum ${cb.momentumAccelBonus.toFixed(3)}`;
+    // Early-day high exhaustion: rExh >= 10 in first 90 min = gap-and-fade risk.
+    // Mar 27 F at 10:42 (72m), rExh=11.6. Good entries at similar rExh were afternoon (12:27+).
+    if (ctx.minutesSinceOpen <= 90 && ctx.rangeExhaustion >= 10) return `trend early exhaustion: ${ctx.minutesSinceOpen.toFixed(0)}m + rExh=${ctx.rangeExhaustion.toFixed(1)}`;
   }
 
   if (signalMode === 'breakout') {
     if (cb.structureBonus <= 0) return `breakout structureBonus ${cb.structureBonus.toFixed(3)} <= 0`;
-    if (ctx.regimeScore < 60) return `breakout regime ${ctx.regimeScore} < 60`;
-    if (ctx.choppiness >= 0.95) return `breakout choppiness ${ctx.choppiness.toFixed(2)} >= 0.95`;
+    // breakout regime < 60 removed: Mar 26 all 4 blocked were A-grade (regime 27-58, early-day)
+    // breakout choppiness raised 0.95 → 2.50: Mar 26 chop 1.53-2.14 were all A-grade (MFE 1.12-1.27%)
+    // NVDA breakouts on big gap days naturally have high chop before trend establishes
+    if (ctx.choppiness >= 2.50) return `breakout choppiness ${ctx.choppiness.toFixed(2)} >= 2.50`;
   }
 
   return true;
@@ -45,7 +56,7 @@ export const NVDA_CONFIG: Partial<TickerBacktestConfig> = {
   minConfidence: 0.65,
   minAtrPct: 0.08,
   // NVDA: max 1 entry per day — 2nd entries were 0W/3L (Feb 12#2, Feb 20#2, Feb 24#2 all F).
-  maxDailyEntries: 1,
+  maxDailyEntries: 4,
   // NVDA: lower breakout exhaustion from 10.0 → 6.0.
   // F-grade breakouts all had Exh >= 8.3. Good breakouts had Exh <= 5.3.
   breakoutMaxExhaustion: 6.0,
@@ -57,6 +68,12 @@ export const NVDA_CONFIG: Partial<TickerBacktestConfig> = {
   breakoutTpMult: 1.8,
   // trendMaxExhaustion disabled: Q4+Q1 counterfactual net +4 costly (6 good vs 2 bad)
   trendMaxExhaustion: 999,
+  // trend_exhausted_reverting: default 7.0 (same as other tickers)
+  // Mar 26: blocked 3 A-grades at rExh 8.3-11.6, but Mar 27: would catch F-grade at rExh 11.3
+  trendExhaustedRevertMinExh: 7.0,
+  // Strong-signal bypass lowered 0.75 → 0.67: Mar 26 had 13 gate-blocked signals at 66-72%
+  // conf + all_aligned, 12 were A/B grade. NVDA signals plateau around 67% on trending days.
+  trendStrongSignalMinConf: 0.67,
 
   shouldAllowEntry: nvdaShouldAllowEntry,
   adjustConfidence: nvdaAdjustConfidence,

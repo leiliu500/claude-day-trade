@@ -1857,6 +1857,7 @@ async function main() {
       breakdown: cbRaw, strengthScore, currentPrice, atr,
       rangeExhaustion, displacementVelocity, choppiness,
       intradayTrendStrength, regimeScore, dailyEntryCount,
+      minutesSinceOpen: (currentTs - openTime.getTime()) / 60_000,
       ltfBars,
       ltfVwapPriceVs: tfIndicators[0]?.vwap?.priceVsVwap ?? 0,
     };
@@ -2251,7 +2252,7 @@ async function main() {
         const trendUnderLimit = trendEntryCount < MAX_TREND_ENTRIES;
         if (!trendCooldownOk || !trendUnderLimit) {
           // Over daily trend limit or in cooldown — skip
-        } else if (rangeExhaustion > 7.0 && displacementVelocity < 0) {
+        } else if (rangeExhaustion > TCFG.trendExhaustedRevertMinExh && displacementVelocity < 0) {
           pushFilterBlocked(`trend_exhausted_reverting: rExh=${rangeExhaustion.toFixed(1)} dvel=${displacementVelocity?.toFixed(4)}`);
           // Late exhausted trend: daily range consumed >7x ATR and momentum reverting — skip.
         } else if (rangeExhaustion > TCFG.trendMaxExhaustion) {
@@ -2298,7 +2299,7 @@ async function main() {
         // Strong-signal bypass: conf >= 75% + all_aligned can skip stage-2.
         // Backtest showed no false positives at this level on losing days,
         // but captures +53.3% and +9.2% entries on trending days.
-        const strongSignalBypass = cb.total >= 0.75 && alignment === 'all_aligned';
+        const strongSignalBypass = cb.total >= TCFG.trendStrongSignalMinConf && alignment === 'all_aligned';
 
         if (highConvOverride) {
           gateResult = 'HIGH_CONV_OVERRIDE';

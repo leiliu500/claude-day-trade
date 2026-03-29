@@ -61,7 +61,7 @@ function iwmAdjustConfidence(cb: ConfidenceBreakdown, _ctx: EntryContext): Confi
 export const IWM_CONFIG: Partial<TickerBacktestConfig> = {
   minConfidence: 0.65,
   minAtrPct: 0.08,
-  maxDailyEntries: 2,
+  maxDailyEntries: 6,
   breakoutMaxExhaustion: 10.0,
   breakoutMaxChop: 1.15,
   breakoutMinStrength: 35,
