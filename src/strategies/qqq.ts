@@ -159,8 +159,8 @@ function qqqShouldAllowEntry(ctx: EntryContext): true | string {
     if ((ctx.choppiness ?? 0) >= 0.55) return `trend choppiness ${(ctx.choppiness ?? 0).toFixed(2)} >= 0.55`;
     if (ctx.direction === 'bearish' && _lastRegimeScore >= 85
         && ctx.displacementVelocity !== undefined && Math.abs(ctx.displacementVelocity) < 0.03) return `bearish trend regime ${_lastRegimeScore} >= 85 + dvel ${ctx.displacementVelocity.toFixed(4)} near zero`;
-    if (ctx.rangeExhaustion !== undefined && ctx.rangeExhaustion >= 7.0
-        && ctx.displacementVelocity !== undefined && ctx.displacementVelocity < 0.05) return `trend exhausted+lowDvel rExh=${ctx.rangeExhaustion.toFixed(1)} dvel=${ctx.displacementVelocity.toFixed(4)}`;
+    if (ctx.rangeExhaustion !== undefined && ctx.rangeExhaustion >= 10.0
+        && ctx.displacementVelocity !== undefined && Math.abs(ctx.displacementVelocity) < 0.03) return `trend exhausted+lowDvel rExh=${ctx.rangeExhaustion.toFixed(1)} dvel=${ctx.displacementVelocity.toFixed(4)}`;
   }
 
   if (signalMode === 'breakout') {
