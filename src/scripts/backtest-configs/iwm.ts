@@ -30,8 +30,10 @@ function iwmShouldAllowEntry(ctx: EntryContext): true | string {
   if (atrPct < 0.08) return `atrPct ${atrPct.toFixed(3)}% < 0.08%`;
   if (signalMode === 'breakout' && atrPct < 0.13) return `breakout atrPct ${atrPct.toFixed(3)}% < 0.13%`;
 
-  // dvel threshold relaxed from -0.003 to -0.02: Q4+Q1 net +29 costly
-  if (ctx.displacementVelocity < -0.02) return `dvel ${ctx.displacementVelocity.toFixed(4)} < -0.02`;
+  // dvel: only apply to bullish — on bearish days, negative dvel is directionally correct.
+  // Mar 26-27: bearish entries blocked by dvel were 7 good vs 2 bad (net +5 costly);
+  // bullish entries blocked were 0 good vs 4 bad (all F-grade, net -4 helpful).
+  if (ctx.direction === 'bullish' && ctx.displacementVelocity < -0.02) return `dvel ${ctx.displacementVelocity.toFixed(4)} < -0.02`;
 
   if (signalMode === 'trend') {
     if (cb.trendPhaseBonus < 0) return `trend trendPhase ${cb.trendPhaseBonus.toFixed(3)} < 0`;
@@ -41,11 +43,15 @@ function iwmShouldAllowEntry(ctx: EntryContext): true | string {
 
   if (signalMode === 'breakout') {
     // breakout structureBonus <= 0 removed: Q4+Q1 net +8 costly
-    if (ctx.regimeScore < 60) return `breakout regime ${ctx.regimeScore} < 60`;
-    if (ctx.choppiness >= 0.95) return `breakout choppiness ${ctx.choppiness.toFixed(2)} >= 0.95`;
+    // breakout regime lowered from 60 to 55: Mar 26 12:31 A (regime=57), 12:36 A (regime=59) were blocked.
+    if (ctx.regimeScore < 55) return `breakout regime ${ctx.regimeScore} < 55`;
+    // breakout choppiness raised from 0.95 to 1.00: Mar 26 12:39 A-grade (chop=0.95) was blocked.
+    if (ctx.choppiness >= 1.00) return `breakout choppiness ${ctx.choppiness.toFixed(2)} >= 1.00`;
     // breakout regime >= 75 removed: Q4+Q1 net +5 costly
-    if (ctx.displacementVelocity !== undefined && ctx.displacementVelocity < 0.06
-        && ctx.displacementVelocity >= 0) return `breakout lowDvel ${ctx.displacementVelocity.toFixed(4)} < 0.06`;
+    // breakout lowDvel lowered from 0.06 to 0.05: Mar 26 12:48 B (dvel=0.0502), Mar 27 13:59 B (dvel=0.0553) missed.
+    // Still blocks F entries at 0.0451/0.0203.
+    if (ctx.displacementVelocity !== undefined && ctx.displacementVelocity < 0.05
+        && ctx.displacementVelocity >= 0) return `breakout lowDvel ${ctx.displacementVelocity.toFixed(4)} < 0.05`;
   }
 
   return true;
