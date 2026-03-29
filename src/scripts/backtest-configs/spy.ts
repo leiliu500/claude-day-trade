@@ -79,10 +79,7 @@ export const SPY_CONFIG: Partial<TickerBacktestConfig> = {
   // Entries at rExh 20-30 were 10 good, 0 bad. trend_exhausted_reverting (dvel<0) catches actual reversals.
   trendMaxExhaustion: 999,
 
-  // SPY: max 2 entries per day.
-  // Q4 2025: 2nd entries on losing days compound losses, but trade-off is
-  // acceptable — also captures 2nd winners (Oct 1 +6.0%, Dec 8 +4.8%).
-  maxDailyEntries: 2,
+  maxDailyEntries: 4,
 
   // Strict trend phase for breakouts: require trendPhase >= 0, NO high-conf bypass.
   breakoutStrictTrendPhase: true,

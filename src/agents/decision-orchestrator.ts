@@ -626,9 +626,8 @@ export class DecisionOrchestrator {
         }
       }
 
-      // Global daily entry cap: max 2 entries across all modes — prevents loss-stacking on bad days.
-      // Feb 5/17 and Mar 5 had triple losses; capping at 2 limits damage.
-      const MAX_DAILY_ENTRIES = 2;
+      // Global daily entry cap — prevents loss-stacking on bad days.
+      const MAX_DAILY_ENTRIES = tickerCfg?.maxDailyEntries ?? 4;
       const dailyCapNow = new Date();
       const dailyCapTodayStr = dailyCapNow.toISOString().slice(0, 10);
       const allEntriesToday = context.recentDecisions.filter(d =>

@@ -64,7 +64,7 @@ export const DEFAULT_TICKER_CONFIG: Omit<TickerConfig, 'ticker'> = {
   profile: 'S',
   enabled: true,
   minConfidence: 0.65,
-  maxDailyEntries: 2,
+  maxDailyEntries: 4,
   maxRiskPct: 0.005,
   maxContracts: 10,
   maxSpreadPct: 0.02,
