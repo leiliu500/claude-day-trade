@@ -81,10 +81,19 @@ function parseBacktestOutput(output: string): BacktestEntry[] {
   while (i < lines.length) {
     const line = lines[i]!;
 
-    // Match: "  Entry #N: ✅ GOOD | 🟢 CONFIRMED [RANGE]"
-    const entryMatch = line.match(/Entry #\d+:\s+(?:✅|❌|⚠️)\s*\s*(GOOD|BAD|MARGINAL)\s*\|\s*(?:🟢|🔵|🔴|🟡|⚡)\s*(.+?)(?:\s*←.*)?$/);
+    // Match: "  Entry #N: Grade 🟢 A | 🟢 CONFIRMED [RANGE]"
+    // Also supports legacy format: "  Entry #N: ✅ GOOD | 🟢 CONFIRMED"
+    const gradeMatch = line.match(/Entry #\d+:\s+Grade\s+(?:🟢|🔵|🟡|🟠|🔴)\s*([A-F])\s*\|\s*(?:🟢|🔵|🔴|🟡|⚡)\s*(.+?)(?:\s*←.*)?$/);
+    const legacyMatch = !gradeMatch ? line.match(/Entry #\d+:\s+(?:✅|❌|⚠️)\s*\s*(GOOD|BAD|MARGINAL)\s*\|\s*(?:🟢|🔵|🔴|🟡|⚡)\s*(.+?)(?:\s*←.*)?$/) : null;
+    const entryMatch = gradeMatch || legacyMatch;
     if (entryMatch) {
-      const outcome = entryMatch[1]!;
+      let outcome: string;
+      if (gradeMatch) {
+        const grade = gradeMatch[1]!;
+        outcome = (grade === 'A' || grade === 'B') ? 'GOOD' : (grade === 'F') ? 'BAD' : 'MARGINAL';
+      } else {
+        outcome = entryMatch[1]!;
+      }
       const gateRaw = entryMatch[2]!.trim();
 
       // Parse subsequent lines for this entry
@@ -98,7 +107,7 @@ function parseBacktestOutput(output: string): BacktestEntry[] {
         const timeMatch = l.match(/Time:\s+(\d{2}:\d{2})\s+ET\s+\((\S+)\s+UTC\)/);
         if (timeMatch) { timeET = timeMatch[1]!; timeUTC = timeMatch[2]!; }
 
-        const dirMatch = l.match(/Direction:\s+(\w+)\s+\|\s+Alignment:\s+(\w+)/);
+        const dirMatch = l.match(/Direction:\s+(\w+)\s+(?:[✅❌⚠️↕↗↘]+ )?(?:\|\s+)?Alignment:\s+(\w+)/);
         if (dirMatch) { direction = dirMatch[1]!.toLowerCase(); alignment = dirMatch[2]!; }
         if (l.includes('Mode: RANGE')) signalMode = 'range';
         if (l.includes('Mode: BREAKOUT')) signalMode = 'breakout';
@@ -109,7 +118,7 @@ function parseBacktestOutput(output: string): BacktestEntry[] {
         const stage1Match = l.match(/Stage-1 was ([0-9.]+)%/);
         if (stage1Match) stage1Conf = parseFloat(stage1Match[1]!) / 100;
 
-        const fwdMatch = l.match(/max favorable=\$([0-9.]+),\s*max adverse=\$([0-9.]+)/);
+        const fwdMatch = l.match(/max favorable=\$([0-9.]+),\s*max adverse=\$([0-9.]+)/) || l.match(/Fav=\$([0-9.]+)\s*\|\s*Adv=\$([0-9.]+)/);
         if (fwdMatch) { maxFavorable = parseFloat(fwdMatch[1]!); maxAdverse = parseFloat(fwdMatch[2]!); }
 
         // Stop at next entry or section

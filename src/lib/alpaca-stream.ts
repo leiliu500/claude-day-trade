@@ -126,9 +126,14 @@ export class AlpacaStreamManager extends EventEmitter {
   /**
    * Return aggregated N-minute bars from the 1-min cache, or null when:
    *  - cache is empty / not yet populated
-   *  - newest cached bar is older than STALENESS_THRESHOLD_S
    *  - cache has fewer than minBars after aggregation
    *  - timeframe is 1h or 1d (derived from too few bars — use REST)
+   *
+   * The cache is used even when the newest bar is stale (stream hiccup).
+   * A brief SIP disconnection does not invalidate the accumulated bar
+   * history — falling back to REST would swap the entire bar window and
+   * cause indicator discontinuities (ADX jumps, confidence spikes).
+   * Staleness is logged as a warning so we know the stream dropped.
    */
   getBars(ticker: string, timeframe: Timeframe, minBars: number): OHLCVBar[] | null {
     // 1h and 1d require too much history to derive from 1-min cache
@@ -137,10 +142,12 @@ export class AlpacaStreamManager extends EventEmitter {
     const ones = this.barCache.get(ticker);
     if (!ones || ones.length === 0) return null;
 
-    // Staleness check
+    // Log staleness as a warning — but still use the cache
     const latest = ones[ones.length - 1]!;
     const ageS = (Date.now() - new Date(latest.timestamp).getTime()) / 1_000;
-    if (ageS > STALENESS_THRESHOLD_S) return null;
+    if (ageS > STALENESS_THRESHOLD_S) {
+      console.warn(`[AlpacaStream] ${ticker} cache stale (${Math.round(ageS)}s) — using cached bars (${ones.length} bars)`);
+    }
 
     const aggregated = this._aggregate(ones, timeframe);
     if (aggregated.length < minBars) return null;
