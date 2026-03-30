@@ -390,7 +390,7 @@ async function main() {
   // ── Step 2: Walk through market hours in 1-min intervals ──────────────────
   const entries: EntryRecord[] = [];
   const filterBlockedEntries: FilterBlockedEntry[] = [];
-  const allTicks: { time: string; timeET: string; price: number; direction: SignalDirection; alignment: AlignmentType; confidence: number; meetsThreshold: boolean }[] = [];
+  const allTicks: { time: string; timeET: string; price: number; direction: SignalDirection; alignment: AlignmentType; confidence: number; meetsThreshold: boolean; signalMode: string }[] = [];
 
   // ── Leading override momentum persistence ────────────────────────────────
   // Once a leading override flips direction, persist that direction as long as LTF DMI agrees.
@@ -927,7 +927,7 @@ async function main() {
     const atrOk = signalMode !== 'breakout' || atrPct >= TCFG.minAtrPct;
 
     tickCount++;
-    allTicks.push({ time: timeStr, timeET, price: currentPrice, direction, alignment, confidence: cb.total, meetsThreshold });
+    allTicks.push({ time: timeStr, timeET, price: currentPrice, direction, alignment, confidence: cb.total, meetsThreshold, signalMode });
 
     // Debug: dump confidence breakdown for ticks with conf >= 0.50 in afternoon
     if (process.env.BT_DEBUG && cb.total >= parseFloat(process.env.BT_DEBUG_MIN ?? '0.45')) {
@@ -1786,6 +1786,287 @@ async function main() {
     console.log(`  ── No confirmed entries on ${TARGET_DATE}.\n`);
   }
 
+  // ── Market Move Scanner: detect missed entries from price action ────────────
+  // Scans 1m bars for significant directional moves, then checks whether
+  // the system had a matching signal at or near the move start.
+  // This catches moves the system was completely blind to (neutral direction,
+  // no mode, wrong direction, low confidence).
+  {
+    interface MarketMove {
+      startIdx: number;
+      startTime: string;
+      startTimeET: string;
+      startPrice: number;
+      direction: 'bullish' | 'bearish';
+      mfePct: number;          // max favorable excursion %
+      maePct: number;          // max adverse excursion %
+      mfePeakMinutes: number;
+      peakPrice: number;
+    }
+
+    // Scan each bar as a potential move start; compute forward MFE/MAE over 120 min
+    const MIN_MFE_PCT = 0.30; // only flag moves with MFE > 0.30% (meaningful for options)
+    const LOOKAHEAD_BARS = 120; // 120 minutes forward window
+    const moves: MarketMove[] = [];
+
+    // Skip first 15 minutes (market open noise) and last 30 minutes (EOD theta)
+    const scanStart = 15;
+    const scanEnd = Math.max(0, targetDateBars.length - 30);
+
+    for (let i = scanStart; i < scanEnd; i++) {
+      const bar = targetDateBars[i]!;
+      const entryPrice = bar.close;
+      const entryTs = new Date(bar.timestamp).getTime();
+
+      // Compute forward MFE for both directions
+      let bullMfe = 0, bullMae = 0, bullPeakMin = 0, bullPeakPrice = entryPrice;
+      let bearMfe = 0, bearMae = 0, bearPeakMin = 0, bearPeakPrice = entryPrice;
+
+      for (let j = i + 1; j < Math.min(i + 1 + LOOKAHEAD_BARS, targetDateBars.length); j++) {
+        const fb = targetDateBars[j]!;
+        const mins = Math.round((new Date(fb.timestamp).getTime() - entryTs) / 60_000);
+
+        // Bullish: favorable = price going up
+        const bullFav = fb.high - entryPrice;
+        const bullAdv = entryPrice - fb.low;
+        if (bullFav > bullMfe) { bullMfe = bullFav; bullPeakMin = mins; bullPeakPrice = fb.high; }
+        if (bullAdv > bullMae) bullMae = bullAdv;
+
+        // Bearish: favorable = price going down
+        const bearFav = entryPrice - fb.low;
+        const bearAdv = fb.high - entryPrice;
+        if (bearFav > bearMfe) { bearMfe = bearFav; bearPeakMin = mins; bearPeakPrice = fb.low; }
+        if (bearAdv > bearMae) bearMae = bearAdv;
+      }
+
+      const bullMfePct = (bullMfe / entryPrice) * 100;
+      const bearMfePct = (bearMfe / entryPrice) * 100;
+      const bullMaePct = (bullMae / entryPrice) * 100;
+      const bearMaePct = (bearMae / entryPrice) * 100;
+
+      // Pick the stronger direction
+      const bestDir = bullMfePct >= bearMfePct ? 'bullish' : 'bearish';
+      const mfePct = bestDir === 'bullish' ? bullMfePct : bearMfePct;
+      const maePct = bestDir === 'bullish' ? bullMaePct : bearMaePct;
+      const mfePeakMin = bestDir === 'bullish' ? bullPeakMin : bearPeakMin;
+      const peakPrice = bestDir === 'bullish' ? bullPeakPrice : bearPeakPrice;
+
+      if (mfePct >= MIN_MFE_PCT && (maePct < 0.01 || mfePct / maePct > 1.2)) {
+        moves.push({
+          startIdx: i,
+          startTime: bar.timestamp,
+          startTimeET: utcToET(bar.timestamp),
+          startPrice: entryPrice,
+          direction: bestDir,
+          mfePct, maePct, mfePeakMinutes: mfePeakMin, peakPrice,
+        });
+      }
+    }
+
+    // Deduplicate: within 10-min windows of same direction, keep best MFE
+    const dedupedMoves: MarketMove[] = [];
+    for (const mv of moves) {
+      const prev = dedupedMoves[dedupedMoves.length - 1];
+      if (prev && prev.direction === mv.direction) {
+        const prevTs = new Date(prev.startTime).getTime();
+        const currTs = new Date(mv.startTime).getTime();
+        if (currTs - prevTs < 10 * 60_000) {
+          if (mv.mfePct > prev.mfePct) dedupedMoves[dedupedMoves.length - 1] = mv;
+          continue;
+        }
+      }
+      dedupedMoves.push(mv);
+    }
+
+    // For each move, classify system awareness
+    interface MoveAwareness {
+      move: MarketMove;
+      status: 'CAUGHT' | 'FILTER_BLOCKED' | 'LOW_CONFIDENCE' | 'WRONG_DIRECTION' | 'NO_SIGNAL' | 'WRONG_MODE';
+      systemDirection: SignalDirection | null;
+      systemConf: number | null;
+      systemMode: string | null;
+      filterRule?: string;
+    }
+
+    const awareness: MoveAwareness[] = [];
+
+    for (const mv of dedupedMoves) {
+      const mvTs = new Date(mv.startTime).getTime();
+
+      // Find the system's tick at or just before this move
+      // Use widening search: try +/- 2min first, then +/- 5min (covers early-day gaps
+      // where streamCache < 20 bars or timeframes < 14 bars cause skipped ticks)
+      let tick: typeof allTicks[0] | null = null;
+      for (const window of [2 * 60_000, 5 * 60_000, 10 * 60_000]) {
+        const matchingTicks = allTicks.filter(t => {
+          const tTs = new Date(t.time).getTime();
+          return Math.abs(tTs - mvTs) <= window;
+        });
+        if (matchingTicks.length > 0) {
+          tick = matchingTicks.reduce((best, t) => Math.abs(new Date(t.time).getTime() - mvTs) < Math.abs(new Date(best.time).getTime() - mvTs) ? t : best);
+          break;
+        }
+      }
+
+      // Check if a confirmed entry covers this move
+      const caughtByEntry = confirmedEntries.some(e => {
+        const eTs = new Date(e.time).getTime();
+        return Math.abs(eTs - mvTs) <= 5 * 60_000 && e.direction === mv.direction;
+      });
+
+      if (caughtByEntry) {
+        awareness.push({
+          move: mv, status: 'CAUGHT',
+          systemDirection: tick?.direction ?? null,
+          systemConf: tick?.confidence ?? null,
+          systemMode: tick?.signalMode ?? null,
+        });
+        continue;
+      }
+
+      // Check if filter-blocked
+      const filteredMatch = filterBlockedEntries.find(fb => {
+        const fbTs = new Date(fb.time).getTime();
+        return Math.abs(fbTs - mvTs) <= 5 * 60_000 && fb.direction === mv.direction;
+      });
+      if (filteredMatch) {
+        awareness.push({
+          move: mv, status: 'FILTER_BLOCKED',
+          systemDirection: tick?.direction ?? null,
+          systemConf: tick?.confidence ?? null,
+          systemMode: tick?.signalMode ?? null,
+          filterRule: filteredMatch.filterRule,
+        });
+        continue;
+      }
+
+      // Check if blocked by confirmation gate
+      const gateBlocked = blockedEntries.some(e => {
+        const eTs = new Date(e.time).getTime();
+        return Math.abs(eTs - mvTs) <= 5 * 60_000 && e.direction === mv.direction;
+      });
+      if (gateBlocked) {
+        awareness.push({
+          move: mv, status: 'FILTER_BLOCKED',
+          systemDirection: tick?.direction ?? null,
+          systemConf: tick?.confidence ?? null,
+          systemMode: tick?.signalMode ?? null,
+          filterRule: 'confirmation_gate',
+        });
+        continue;
+      }
+
+      if (!tick) {
+        // No tick even within 10 min — truly no data (very early in session, cache warming)
+        awareness.push({ move: mv, status: 'NO_SIGNAL', systemDirection: null, systemConf: null, systemMode: null });
+        continue;
+      }
+
+      // System had a tick but didn't enter — classify why
+      if (tick.direction === 'neutral') {
+        awareness.push({ move: mv, status: 'NO_SIGNAL', systemDirection: 'neutral', systemConf: tick.confidence, systemMode: tick.signalMode });
+      } else if (tick.direction !== mv.direction) {
+        awareness.push({ move: mv, status: 'WRONG_DIRECTION', systemDirection: tick.direction, systemConf: tick.confidence, systemMode: tick.signalMode });
+      } else if (tick.signalMode === 'none') {
+        awareness.push({ move: mv, status: 'WRONG_MODE', systemDirection: tick.direction, systemConf: tick.confidence, systemMode: 'none' });
+      } else {
+        awareness.push({ move: mv, status: 'LOW_CONFIDENCE', systemDirection: tick.direction, systemConf: tick.confidence, systemMode: tick.signalMode });
+      }
+    }
+
+    // Report
+    const caught = awareness.filter(a => a.status === 'CAUGHT');
+    const missed = awareness.filter(a => a.status !== 'CAUGHT');
+
+    console.log(`\n${'─'.repeat(80)}`);
+    console.log(`  MARKET MOVE SCANNER (auto-detected from price data)`);
+    console.log(`${'─'.repeat(80)}`);
+    console.log(`  Significant moves found: ${dedupedMoves.length} (MFE >= ${MIN_MFE_PCT}%, MFE/MAE > 1.2)`);
+    console.log(`  System caught: ${caught.length} | Missed: ${missed.length}`);
+
+    if (missed.length > 0) {
+      // Group by miss reason
+      const byReason = new Map<string, MoveAwareness[]>();
+      for (const m of missed) {
+        const list = byReason.get(m.status) ?? [];
+        list.push(m);
+        byReason.set(m.status, list);
+      }
+
+      console.log(`\n  Miss breakdown:`);
+      const reasonLabels: Record<string, string> = {
+        NO_SIGNAL: 'Direction neutral / no signal generated',
+        WRONG_DIRECTION: 'Signal pointed wrong direction',
+        LOW_CONFIDENCE: 'Right direction, confidence too low',
+        WRONG_MODE: 'Right direction, mode=none (no regime detected)',
+        FILTER_BLOCKED: 'Right signal, blocked by filter/gate',
+      };
+      for (const [reason, items] of byReason) {
+        console.log(`    ${reasonLabels[reason] ?? reason}: ${items.length}`);
+      }
+
+      console.log(`\n  Missed moves detail:`);
+      for (const a of missed) {
+        const mv = a.move;
+        const dirIcon = mv.direction === 'bullish' ? '▲' : '▼';
+        const mfeOverMae = mv.maePct > 0.01 ? (mv.mfePct / mv.maePct).toFixed(1) : '∞';
+        let reason = '';
+        switch (a.status) {
+          case 'NO_SIGNAL':
+            reason = a.systemDirection === 'neutral'
+              ? `system was NEUTRAL (conf=${((a.systemConf ?? 0) * 100).toFixed(0)}%, mode=${a.systemMode})`
+              : 'no tick — insufficient bars for indicators (cache gap)';
+            break;
+          case 'WRONG_DIRECTION':
+            reason = `system said ${a.systemDirection?.toUpperCase()} (conf=${((a.systemConf ?? 0) * 100).toFixed(0)}%, mode=${a.systemMode})`;
+            break;
+          case 'LOW_CONFIDENCE':
+            reason = `right dir, conf=${((a.systemConf ?? 0) * 100).toFixed(0)}% < threshold (mode=${a.systemMode})`;
+            break;
+          case 'WRONG_MODE':
+            reason = `right dir (conf=${((a.systemConf ?? 0) * 100).toFixed(0)}%), but mode=none`;
+            break;
+          case 'FILTER_BLOCKED':
+            reason = `filter: ${a.filterRule}`;
+            break;
+        }
+        console.log(`    ⚠️  ${mv.startTimeET} ET ${dirIcon} ${mv.direction} $${mv.startPrice.toFixed(2)} → $${mv.peakPrice.toFixed(2)} MFE=${mv.mfePct.toFixed(2)}% MAE=${mv.maePct.toFixed(2)}% R=${mfeOverMae} peak@${mv.mfePeakMinutes}m`);
+        console.log(`        WHY MISSED: ${reason}`);
+      }
+    }
+
+    if (caught.length > 0) {
+      console.log(`\n  Caught moves:`);
+      for (const a of caught) {
+        const mv = a.move;
+        const dirIcon = mv.direction === 'bullish' ? '▲' : '▼';
+        console.log(`    ✅ ${mv.startTimeET} ET ${dirIcon} ${mv.direction} $${mv.startPrice.toFixed(2)} → $${mv.peakPrice.toFixed(2)} MFE=${mv.mfePct.toFixed(2)}%`);
+      }
+    }
+
+    const captureRate = dedupedMoves.length > 0 ? (caught.length / dedupedMoves.length * 100).toFixed(0) : 'N/A';
+    console.log(`\n  Move capture rate: ${captureRate}%`);
+
+    // Add to JSON output
+    if (JSON_OUTPUT) {
+      // Will be merged into jsonSummary below
+      (globalThis as any).__btMoveScanner = {
+        totalMoves: dedupedMoves.length,
+        caught: caught.length,
+        missed: missed.length,
+        captureRate: dedupedMoves.length > 0 ? caught.length / dedupedMoves.length : null,
+        missedMoves: missed.map(a => ({
+          time: a.move.startTime, timeET: a.move.startTimeET,
+          direction: a.move.direction, startPrice: a.move.startPrice,
+          mfePct: a.move.mfePct, maePct: a.move.maePct, mfePeakMinutes: a.move.mfePeakMinutes,
+          missReason: a.status, systemDirection: a.systemDirection,
+          systemConf: a.systemConf, systemMode: a.systemMode,
+          filterRule: a.filterRule,
+        })),
+      };
+    }
+  }
+
   // ── JSON output for machine-readable aggregation (backtest-audit.ts) ──
   if (JSON_OUTPUT) {
     // Deduplicate filter-blocked entries (same logic as console report)
@@ -1835,6 +2116,12 @@ async function main() {
         mfePct: fb.mfePct, maePct: fb.maePct, mfeOverMae: fb.mfeOverMae, mfePeakMinutes: fb.mfePeakMinutes,
       })),
     };
+    // Merge move scanner data if available
+    const moveScanner = (globalThis as any).__btMoveScanner;
+    if (moveScanner) {
+      (jsonSummary as any).moveScanner = moveScanner;
+      delete (globalThis as any).__btMoveScanner;
+    }
     console.log(`\n__JSON_START__${JSON.stringify(jsonSummary)}__JSON_END__`);
   }
 }
