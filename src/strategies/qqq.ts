@@ -143,43 +143,54 @@ function qqqAdjustConfidence(cb: ConfidenceBreakdown, ctx: EntryContext): Confid
   return adjusted;
 }
 
-// ── QQQ Entry Filter ─────────────────────────────────────────────────────────
+// ── QQQ Entry Filter (mirrors SPY) ──────────────────────────────────────────
 
 function qqqShouldAllowEntry(ctx: EntryContext): true | string {
-  const { signalMode, breakdown: cb } = ctx;
+  const { signalMode, direction, atr, currentPrice } = ctx;
 
-  const atrPct = ctx.currentPrice > 0 ? (ctx.atr / ctx.currentPrice) * 100 : 0;
-  if (atrPct < 0.07) return `atrPct ${atrPct.toFixed(3)}% < 0.07%`;
-  if (ctx.direction === 'bearish' && signalMode !== 'breakout' && atrPct < 0.09) return `bearish ${signalMode} atrPct ${atrPct.toFixed(3)}% < 0.09%`;
+  const atrPct = currentPrice > 0 ? (atr / currentPrice) * 100 : 0;
+  if (signalMode === 'breakout' && atrPct < 0.08) return `breakout atrPct ${atrPct.toFixed(3)}% < 0.08%`;
 
-  if (signalMode === 'trend') {
-    if (cb.trendPhaseBonus < 0) return `trend trendPhase ${cb.trendPhaseBonus.toFixed(3)} < 0`;
-    if (cb.nearLevelPenalty < -0.05) return `trend nearLevelPenalty ${cb.nearLevelPenalty.toFixed(3)} < -0.05`;
-    if (cb.diSpreadBonus < 0.04) return `trend diSpread ${cb.diSpreadBonus.toFixed(3)} < 0.04`;
-    if (ctx.rangeExhaustion !== undefined && ctx.rangeExhaustion > 7.0
-        && (ctx.choppiness ?? 0) >= 0.55) return `trend exhausted+choppy rExh=${ctx.rangeExhaustion.toFixed(1)} chop=${(ctx.choppiness ?? 0).toFixed(2)}`;
-    if (ctx.direction === 'bearish' && _lastRegimeScore >= 85
-        && ctx.displacementVelocity !== undefined && Math.abs(ctx.displacementVelocity) < 0.03) return `bearish trend regime ${_lastRegimeScore} >= 85 + dvel ${ctx.displacementVelocity.toFixed(4)} near zero`;
-    if (ctx.rangeExhaustion !== undefined && ctx.rangeExhaustion >= 10.0
-        && ctx.displacementVelocity !== undefined && Math.abs(ctx.displacementVelocity) < 0.03) return `trend exhausted+lowDvel rExh=${ctx.rangeExhaustion.toFixed(1)} dvel=${ctx.displacementVelocity.toFixed(4)}`;
-  }
+  if (signalMode === 'breakout' && ctx.displacementVelocity !== undefined
+      && ctx.displacementVelocity < -0.05) return `breakout dvel ${ctx.displacementVelocity.toFixed(4)} < -0.05`;
 
-  if (signalMode === 'breakout') {
-    if (cb.trendPhaseBonus < 0) return `breakout trendPhase ${cb.trendPhaseBonus.toFixed(3)} < 0`;
-    if (ctx.confidence < 0.72) return `breakout confidence ${(ctx.confidence * 100).toFixed(0)}% < 72%`;
-    if (cb.structureBonus <= 0) return `breakout structureBonus ${cb.structureBonus.toFixed(3)} <= 0`;
-    if (_lastRegimeScore < 60) return `breakout regime ${_lastRegimeScore} < 60`;
-    if ((ctx.choppiness ?? 0) >= 0.95) return `breakout choppiness ${(ctx.choppiness ?? 0).toFixed(2)} >= 0.95`;
-    if (ctx.displacementVelocity !== undefined && Math.abs(ctx.displacementVelocity) < 0.07
-        && (ctx.choppiness ?? 0) >= 0.55) return `breakout lowDvel+chop dvel=${ctx.displacementVelocity.toFixed(4)} chop=${(ctx.choppiness ?? 0).toFixed(2)}`;
-  }
+  // SPY uses absolute atr < 0.70 (~0.125% of $560); equivalent atrPct for QQQ
+  if (signalMode === 'trend' && atrPct < 0.125) return `trend atrPct ${atrPct.toFixed(3)}% < 0.125%`;
 
-  if (signalMode === 'vwap_reversion') {
-    // vwap_reversion choppiness >= 1.5 removed: Q4+Q1 counterfactual net +2 costly (2 good, 0 bad)
-    if (ctx.displacementVelocity !== undefined && ctx.displacementVelocity < 0) return `vwap_reversion dvel ${ctx.displacementVelocity.toFixed(4)} < 0`;
-    if (_lastRegimeScore >= 73) return `vwap_reversion regime ${_lastRegimeScore} >= 73`;
-    // vwap_reversion rangeExhaustion >= 14 removed: Q4+Q1 counterfactual net +9 costly (9 good, 0 bad)
-  }
+  if (signalMode === 'trend'
+      && ctx.rangeExhaustion !== undefined && ctx.rangeExhaustion > 7.0
+      && ctx.choppiness !== undefined && ctx.choppiness >= 0.55) return `trend exhausted+choppy rExh=${ctx.rangeExhaustion.toFixed(1)} chop=${ctx.choppiness.toFixed(2)}`;
+
+  if (direction === 'bullish'
+      && ctx.rangeExhaustion !== undefined && ctx.rangeExhaustion >= 6.0) return `bullish rangeExhaustion ${ctx.rangeExhaustion.toFixed(1)} >= 6.0`;
+
+  if (direction === 'bullish'
+      && ctx.displacementVelocity !== undefined && ctx.displacementVelocity < 0.08) return `bullish dvel ${ctx.displacementVelocity.toFixed(4)} < 0.08`;
+
+  if (signalMode === 'breakout'
+      && ctx.rangeExhaustion !== undefined && ctx.rangeExhaustion < 1.0) return `breakout rangeExhaustion ${ctx.rangeExhaustion.toFixed(1)} < 1.0 (early morning)`;
+
+  if (signalMode === 'breakout'
+      && ctx.choppiness !== undefined && ctx.choppiness >= 0.90
+      && ctx.displacementVelocity !== undefined && ctx.displacementVelocity < 0.10) return `breakout chop+lowDvel chop=${ctx.choppiness.toFixed(2)} dvel=${ctx.displacementVelocity.toFixed(4)}`;
+
+  if (signalMode === 'breakout' && ctx.confidence < 0.74) return `breakout confidence ${(ctx.confidence * 100).toFixed(0)}% < 74%`;
+
+  if (signalMode === 'breakout'
+      && ctx.rangeExhaustion !== undefined && ctx.rangeExhaustion >= 7.0
+      && ctx.choppiness !== undefined && ctx.choppiness >= 1.0) return `breakout highExh+highChop rExh=${ctx.rangeExhaustion.toFixed(1)} chop=${ctx.choppiness.toFixed(2)}`;
+
+  if (signalMode === 'breakout'
+      && ctx.choppiness !== undefined && ctx.choppiness >= 2.0) return `breakout extremeChop ${ctx.choppiness.toFixed(2)} >= 2.0`;
+
+  if (signalMode === 'breakout'
+      && ctx.rangeExhaustion !== undefined && ctx.rangeExhaustion >= 9.0) return `breakout extremeExhaustion ${ctx.rangeExhaustion.toFixed(1)} >= 9.0`;
+
+  if (signalMode === 'breakout' && _lastRegimeScore >= 80) return `breakout regime ${_lastRegimeScore} >= 80`;
+
+  if (signalMode === 'breakout' && direction === 'bullish'
+      && ctx.rangeExhaustion !== undefined && ctx.rangeExhaustion >= 4.5
+      && _lastRegimeScore >= 65) return `bullish breakout highExh+regime rExh=${ctx.rangeExhaustion.toFixed(1)} regime=${_lastRegimeScore}`;
 
   return true;
 }

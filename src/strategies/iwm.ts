@@ -11,7 +11,6 @@
  */
 
 import type { PartialTickerStrategy, EntryContext } from './strategy.js';
-import type { ConfidenceBreakdown } from '../types/analysis.js';
 import type { TimeframeIndicators } from '../types/indicators.js';
 import type { SignalDirection } from '../types/signal.js';
 
@@ -108,39 +107,54 @@ function iwmDetectMode(
   return defaultStrategy.detectMode(tfIndicators, direction, currentPrice);
 }
 
-// ── IWM Entry Filter ────────────────────────────────────────────────────────
+// ── IWM Entry Filter (mirrors SPY) ─────────────────────────────────────────
 
 function iwmShouldAllowEntry(ctx: EntryContext): true | string {
-  const { signalMode, breakdown: cb } = ctx;
+  const { signalMode, direction, atr, currentPrice } = ctx;
 
-  const atrPct = ctx.currentPrice > 0 ? (ctx.atr / ctx.currentPrice) * 100 : 0;
-  if (atrPct < 0.08) return `atrPct ${atrPct.toFixed(3)}% < 0.08%`;
-  if (signalMode === 'breakout' && atrPct < 0.13) return `breakout atrPct ${atrPct.toFixed(3)}% < 0.13%`;
+  const atrPct = currentPrice > 0 ? (atr / currentPrice) * 100 : 0;
+  if (signalMode === 'breakout' && atrPct < 0.08) return `breakout atrPct ${atrPct.toFixed(3)}% < 0.08%`;
 
-  // dvel: only apply to bullish — on bearish days, negative dvel is directionally correct.
-  // Mar 26-27: bearish entries blocked by dvel were 7 good vs 2 bad (net +5 costly);
-  // bullish entries blocked were 0 good vs 4 bad (all F-grade, net -4 helpful).
-  if (ctx.direction === 'bullish' && ctx.displacementVelocity !== undefined && ctx.displacementVelocity < -0.02) return `dvel ${ctx.displacementVelocity.toFixed(4)} < -0.02`;
+  if (signalMode === 'breakout' && ctx.displacementVelocity !== undefined
+      && ctx.displacementVelocity < -0.05) return `breakout dvel ${ctx.displacementVelocity.toFixed(4)} < -0.05`;
 
-  if (signalMode === 'trend') {
-    if (cb.trendPhaseBonus < 0) return `trend trendPhase ${cb.trendPhaseBonus.toFixed(3)} < 0`;
-    if (ctx.rangeExhaustion !== undefined && ctx.rangeExhaustion > 7.0
-        && (ctx.choppiness ?? 0) >= 0.55) return `trend exhausted+choppy rExh=${ctx.rangeExhaustion.toFixed(1)} chop=${(ctx.choppiness ?? 0).toFixed(2)}`;
-    if (ctx.rangeExhaustion !== undefined && ctx.rangeExhaustion >= 7.0
-        && ctx.displacementVelocity !== undefined && ctx.displacementVelocity < 0.10) return `trend exhausted+lowDvel rExh=${ctx.rangeExhaustion.toFixed(1)} dvel=${ctx.displacementVelocity.toFixed(4)}`;
-  }
+  // SPY uses absolute atr < 0.70 (~0.125% of $560); equivalent atrPct for IWM
+  if (signalMode === 'trend' && atrPct < 0.125) return `trend atrPct ${atrPct.toFixed(3)}% < 0.125%`;
 
-  if (signalMode === 'breakout') {
-    // breakout structureBonus <= 0 removed: Q4+Q1 counterfactual net +8 costly (43 good vs 35 bad)
-    // breakout regime lowered from 60 to 55: Mar 26 12:31 A (regime=57), 12:36 A (regime=59) were blocked.
-    if (_lastRegimeScore < 55) return `breakout regime ${_lastRegimeScore} < 55`;
-    // breakout choppiness raised from 0.95 to 1.00: Mar 26 12:39 A-grade (chop=0.95) was blocked.
-    if ((ctx.choppiness ?? 0) >= 1.00) return `breakout choppiness ${(ctx.choppiness ?? 0).toFixed(2)} >= 1.00`;
-    // breakout regime >= 75 removed: Q4+Q1 counterfactual net +5 costly (22 good vs 17 bad)
-    // breakout lowDvel lowered from 0.06 to 0.05: Mar 26 12:48 B (dvel=0.0502), Mar 27 13:59 B (dvel=0.0553) missed.
-    if (ctx.displacementVelocity !== undefined && ctx.displacementVelocity < 0.05
-        && ctx.displacementVelocity >= 0) return `breakout lowDvel ${ctx.displacementVelocity.toFixed(4)} < 0.05`;
-  }
+  if (signalMode === 'trend'
+      && ctx.rangeExhaustion !== undefined && ctx.rangeExhaustion > 7.0
+      && ctx.choppiness !== undefined && ctx.choppiness >= 0.55) return `trend exhausted+choppy rExh=${ctx.rangeExhaustion.toFixed(1)} chop=${ctx.choppiness.toFixed(2)}`;
+
+  if (direction === 'bullish'
+      && ctx.rangeExhaustion !== undefined && ctx.rangeExhaustion >= 6.0) return `bullish rangeExhaustion ${ctx.rangeExhaustion.toFixed(1)} >= 6.0`;
+
+  if (direction === 'bullish'
+      && ctx.displacementVelocity !== undefined && ctx.displacementVelocity < 0.08) return `bullish dvel ${ctx.displacementVelocity.toFixed(4)} < 0.08`;
+
+  if (signalMode === 'breakout'
+      && ctx.rangeExhaustion !== undefined && ctx.rangeExhaustion < 1.0) return `breakout rangeExhaustion ${ctx.rangeExhaustion.toFixed(1)} < 1.0 (early morning)`;
+
+  if (signalMode === 'breakout'
+      && ctx.choppiness !== undefined && ctx.choppiness >= 0.90
+      && ctx.displacementVelocity !== undefined && ctx.displacementVelocity < 0.10) return `breakout chop+lowDvel chop=${ctx.choppiness.toFixed(2)} dvel=${ctx.displacementVelocity.toFixed(4)}`;
+
+  if (signalMode === 'breakout' && ctx.confidence < 0.74) return `breakout confidence ${(ctx.confidence * 100).toFixed(0)}% < 74%`;
+
+  if (signalMode === 'breakout'
+      && ctx.rangeExhaustion !== undefined && ctx.rangeExhaustion >= 7.0
+      && ctx.choppiness !== undefined && ctx.choppiness >= 1.0) return `breakout highExh+highChop rExh=${ctx.rangeExhaustion.toFixed(1)} chop=${ctx.choppiness.toFixed(2)}`;
+
+  if (signalMode === 'breakout'
+      && ctx.choppiness !== undefined && ctx.choppiness >= 2.0) return `breakout extremeChop ${ctx.choppiness.toFixed(2)} >= 2.0`;
+
+  if (signalMode === 'breakout'
+      && ctx.rangeExhaustion !== undefined && ctx.rangeExhaustion >= 9.0) return `breakout extremeExhaustion ${ctx.rangeExhaustion.toFixed(1)} >= 9.0`;
+
+  if (signalMode === 'breakout' && _lastRegimeScore >= 80) return `breakout regime ${_lastRegimeScore} >= 80`;
+
+  if (signalMode === 'breakout' && direction === 'bullish'
+      && ctx.rangeExhaustion !== undefined && ctx.rangeExhaustion >= 4.5
+      && _lastRegimeScore >= 65) return `bullish breakout highExh+regime rExh=${ctx.rangeExhaustion.toFixed(1)} regime=${_lastRegimeScore}`;
 
   return true;
 }
