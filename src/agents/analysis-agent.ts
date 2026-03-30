@@ -268,10 +268,10 @@ function computeConfidence(signal: SignalPayload, option: OptionEvaluation): Con
   }
   // Halve ADX maturity penalty when all timeframes align + DI spread still widening.
   // All-aligned with expanding directional momentum = genuine continuation, not late chase.
-  // High ADX (>= 40) with fading momentum = exhaustion trap — amplify maturity penalty.
-  if (adxMaturityPenalty < 0 && htf.dmi.adx >= 40 && htf.dmi.adxSlope < 0) {
-    adxMaturityPenalty *= 1.5;
-  } else if (adxMaturityPenalty < 0 && signal.alignment === 'all_aligned' && htf.dmi.adx >= 20) {
+  // NOTE: Removed 1.5x amplifier for ADX >= 40 with fading slope — phase/accel penalties
+  // already capture fading momentum; amplifying maturity triple-counted the same phenomenon,
+  // blocking all_aligned entries across SPY/QQQ/IWM (maturity=-0.225 + phase=-0.08 + accel=-0.06).
+  if (adxMaturityPenalty < 0 && signal.alignment === 'all_aligned' && htf.dmi.adx >= 20) {
     const dirSpread = signal.direction === 'bullish'
       ? htf.dmi.plusDI - htf.dmi.minusDI
       : htf.dmi.minusDI - htf.dmi.plusDI;
@@ -974,6 +974,25 @@ function computeConfidence(signal: SignalPayload, option: OptionEvaluation): Con
     if (trendPhaseBonus < 0 && priceVelocityBonus > 0) trendPhaseBonus *= 0.5;
   }
 
+  // Counter-trend adjustment for MTF+LTF aligned signals: when MTF+LTF agree on direction
+  // but HTF still opposes (mtf_ltf_aligned), several HTF-derived penalties are artifacts of
+  // the old trend rather than weaknesses of the new signal.  The "move exhaustion" on HTF
+  // IS the reversal beginning; fading ADX/DI is the old trend ending; being below PDL (bullish)
+  // or above PDH (bearish) is the entry point, not a trap.
+  // Less aggressive than reversalOverride (which requires LTF opposing + HTF fading + range extreme).
+  // SPY 2026-03-30 14:52 UTC: bullish bounce from $634.95 blocked at conf=0.00 because
+  // mex/phase/accel/struct/maturity all reflected the prior bearish trend.
+  if (signal.alignment === 'mtf_ltf_aligned' && !signal.reversalOverride) {
+    if (moveExhaustionPenalty < 0) moveExhaustionPenalty = 0;         // HTF move = reversal start
+    if (trendPhaseBonus < 0) trendPhaseBonus = 0;                     // fading ADX = old trend ending
+    if (momentumAccelBonus < 0) momentumAccelBonus = 0;               // narrowing DI = old trend fading
+    if (structureBonus < 0) structureBonus = 0;                        // below PDL / above PDH = entry point
+    if (adxMaturityPenalty < 0) adxMaturityPenalty *= 0.5;            // HTF maturity = old trend's age
+    if (pricePositionAdjustment < 0) pricePositionAdjustment *= 0.5; // range from old trend
+    if (diSpreadBonus < 0) diSpreadBonus = 0;                         // HTF DI opposes by definition
+    alignmentBonus = Math.max(alignmentBonus, 0.04);                  // MTF+LTF both confirm = stronger than 0.02
+  }
+
   // DI Spread cap for aged trends: in a mature trend the DI spread reflects sustained
   // momentum, not fresh signal. Cap to prevent inflated confidence on stale setups.
   if (adxMaturityPenalty <= -0.04) diSpreadBonus = Math.min(diSpreadBonus, 0.06);
@@ -1052,7 +1071,9 @@ function computeConfidence(signal: SignalPayload, option: OptionEvaluation): Con
   // Hard gate: very severe ADX maturity (post-halving still >= 7%).  Trend ran 20+ bars
   // above ADX 25 — even with the all_aligned halving benefit, this much aging means the
   // easy money is gone and reversal risk is high.
-  if (adxMaturityPenalty <= -0.07) {
+  // Exempt all_aligned + ADX >= 20: all timeframes confirming + established trend = genuine
+  // continuation.  Trend persistence bonus (applied later) handles the conviction signal.
+  if (adxMaturityPenalty <= -0.07 && !(signal.alignment === 'all_aligned' && htf.dmi.adx >= 20)) {
     total = Math.min(total, 0.64);
   }
 
@@ -1860,11 +1881,28 @@ export class AnalysisAgent {
         }
         if (consecutiveCount >= 2) {
           const persistenceBonus = Math.min(0.12, (consecutiveCount - 1) * 0.03);
-          cb = { ...cb, trendPersistenceBonus: persistenceBonus, total: Math.max(0, Math.min(1, cb.total + persistenceBonus)) };
+          let agingReduction = 0;
+          // When persistence is strong (3+ consecutive aligned signals), halve negative
+          // maturity/phase/accel penalties.  Persistent all-timeframe alignment directly
+          // contradicts "trend is dying" — the trend keeps producing aligned signals.
+          // Without this, maturity + phase + accel triple-count the same "aging" story
+          // and block entries on genuinely persisting trends (QQQ/IWM/SPY 2026-03-30).
+          if (persistenceBonus >= 0.06) {
+            const matRed = cb.adxMaturityPenalty < 0 ? -cb.adxMaturityPenalty * 0.5 : 0;
+            const phRed = cb.trendPhaseBonus < 0 ? -cb.trendPhaseBonus * 0.5 : 0;
+            const accRed = cb.momentumAccelBonus < 0 ? -cb.momentumAccelBonus * 0.5 : 0;
+            agingReduction = matRed + phRed + accRed;
+            cb = { ...cb,
+              adxMaturityPenalty: cb.adxMaturityPenalty < 0 ? cb.adxMaturityPenalty * 0.5 : cb.adxMaturityPenalty,
+              trendPhaseBonus: cb.trendPhaseBonus < 0 ? cb.trendPhaseBonus * 0.5 : cb.trendPhaseBonus,
+              momentumAccelBonus: cb.momentumAccelBonus < 0 ? cb.momentumAccelBonus * 0.5 : cb.momentumAccelBonus,
+            };
+          }
+          cb = { ...cb, trendPersistenceBonus: persistenceBonus, total: Math.max(0, Math.min(1, cb.total + persistenceBonus + agingReduction)) };
           entryCtx.confidence = cb.total;
           entryCtx.breakdown = cb;
           if (persistenceBonus > 0) {
-            console.log(`[AnalysisAgent] ${signal.ticker} trend persistence: ${consecutiveCount} consecutive ${signal.direction} aligned signals → +${(persistenceBonus * 100).toFixed(0)}% bonus`);
+            console.log(`[AnalysisAgent] ${signal.ticker} trend persistence: ${consecutiveCount} consecutive ${signal.direction} aligned signals → +${(persistenceBonus * 100).toFixed(0)}% bonus${agingReduction > 0 ? ` (aging halved: +${(agingReduction * 100).toFixed(0)}%)` : ''}`);
           }
         }
       } catch {

@@ -156,7 +156,8 @@ function qqqShouldAllowEntry(ctx: EntryContext): true | string {
     if (cb.trendPhaseBonus < 0) return `trend trendPhase ${cb.trendPhaseBonus.toFixed(3)} < 0`;
     if (cb.nearLevelPenalty < -0.05) return `trend nearLevelPenalty ${cb.nearLevelPenalty.toFixed(3)} < -0.05`;
     if (cb.diSpreadBonus < 0.04) return `trend diSpread ${cb.diSpreadBonus.toFixed(3)} < 0.04`;
-    if ((ctx.choppiness ?? 0) >= 0.55) return `trend choppiness ${(ctx.choppiness ?? 0).toFixed(2)} >= 0.55`;
+    if (ctx.rangeExhaustion !== undefined && ctx.rangeExhaustion > 7.0
+        && (ctx.choppiness ?? 0) >= 0.55) return `trend exhausted+choppy rExh=${ctx.rangeExhaustion.toFixed(1)} chop=${(ctx.choppiness ?? 0).toFixed(2)}`;
     if (ctx.direction === 'bearish' && _lastRegimeScore >= 85
         && ctx.displacementVelocity !== undefined && Math.abs(ctx.displacementVelocity) < 0.03) return `bearish trend regime ${_lastRegimeScore} >= 85 + dvel ${ctx.displacementVelocity.toFixed(4)} near zero`;
     if (ctx.rangeExhaustion !== undefined && ctx.rangeExhaustion >= 10.0

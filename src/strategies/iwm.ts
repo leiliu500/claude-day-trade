@@ -124,7 +124,8 @@ function iwmShouldAllowEntry(ctx: EntryContext): true | string {
 
   if (signalMode === 'trend') {
     if (cb.trendPhaseBonus < 0) return `trend trendPhase ${cb.trendPhaseBonus.toFixed(3)} < 0`;
-    if ((ctx.choppiness ?? 0) >= 0.55) return `trend choppiness ${(ctx.choppiness ?? 0).toFixed(2)} >= 0.55`;
+    if (ctx.rangeExhaustion !== undefined && ctx.rangeExhaustion > 7.0
+        && (ctx.choppiness ?? 0) >= 0.55) return `trend exhausted+choppy rExh=${ctx.rangeExhaustion.toFixed(1)} chop=${(ctx.choppiness ?? 0).toFixed(2)}`;
     if (ctx.rangeExhaustion !== undefined && ctx.rangeExhaustion >= 7.0
         && ctx.displacementVelocity !== undefined && ctx.displacementVelocity < 0.10) return `trend exhausted+lowDvel rExh=${ctx.rangeExhaustion.toFixed(1)} dvel=${ctx.displacementVelocity.toFixed(4)}`;
   }
