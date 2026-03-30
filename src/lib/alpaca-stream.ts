@@ -8,8 +8,8 @@
  *     getBars() derives any N-minute aggregation on demand.
  *
  *  2. Option quote poll (REST OPRA snapshot, every OPTION_POLL_MS)
- *     Alpaca does not provide a WebSocket stream for option quotes.
- *     Polls the snapshot API for all currently-watched option symbols.
+ *     Alpaca's option WebSocket stream requires a separate subscription (402).
+ *     Polls the REST snapshot API every 1s for all currently-watched option symbols.
  *     Caches the latest mid-price per symbol; fires watchOptionQuote callbacks.
  *     getOptionMid() returns the latest cached mid instantly.
  *     Poll starts on first watchOptionQuote call; stops when all are unwatched.
@@ -40,7 +40,7 @@ const MIN_RECONNECT_MS = 1_000;
 const MAX_RECONNECT_MS = 30_000;
 
 /** How often to poll option snapshots for all watched symbols (ms) */
-const OPTION_POLL_MS = 5_000;
+const OPTION_POLL_MS = 1_000;
 
 // ── Internal types ────────────────────────────────────────────────────────────
 
