@@ -7,3 +7,5 @@ logs/
 .DS_Store
 coverage/
 .nyc_output/
+# Bar fixture data (large JSON files fetched from Alpaca)
+src/scripts/fixtures/*.json

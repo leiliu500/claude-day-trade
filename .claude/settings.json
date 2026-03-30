@@ -90,7 +90,8 @@
       "Bash(chmod +x /tmp/run-backtest-batch.sh)",
       "Bash(bash /tmp/run-backtest-batch.sh)",
       "Bash(npx vitest:*)",
-      "Bash(grep -E '\\(CONFIRMED.*BREAKOUT|CONFIRMED$|ATR.*Regime\\)')"
+      "Bash(grep -E '\\(CONFIRMED.*BREAKOUT|CONFIRMED$|ATR.*Regime\\)')",
+      "Bash(grep -r \"BT_\\\\|BACKTEST\\\\|ESTIMATE\" /home/ec2-user/claude-day-trade --include=*.ts --include=*.js --include=*.env* --include=*.json)"
     ],
     "additionalDirectories": [
       "/tmp"

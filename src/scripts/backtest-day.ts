@@ -38,6 +38,7 @@ import { evaluateTrend, evaluateRange, evaluateBreakout, evaluateVwapReversion, 
 // ── Config ────────────────────────────────────────────────────────────────────
 
 const USE_AI = process.argv.includes('--ai');
+const JSON_OUTPUT = process.argv.includes('--json');
 const TARGET_DATE = process.argv.filter(a => !a.startsWith('--'))[2] || '2026-03-18';
 const TICKER = process.argv.filter(a => !a.startsWith('--'))[3] || 'SPY';
 const PROFILE = 'S' as const; // Scalp: 1m, 3m, 5m
@@ -1276,6 +1277,7 @@ interface FilterBlockedEntry {
   mfePct: number;
   maePct: number;
   mfeOverMae: number;
+  mfePeakMinutes: number;
   entryGrade: 'A' | 'B' | 'C' | 'D' | 'F';
   outcome: 'GOOD' | 'BAD' | 'MARGINAL';
   // Context
@@ -1342,6 +1344,7 @@ interface EntryRecord {
   priceAt30m: number | null;
   outcome: 'GOOD' | 'BAD' | 'MARGINAL';
   atr: number;
+  mfePeakMinutes: number;  // minutes after entry when MFE peaks
   // Simulated order-agent result (secondary — not fully accurate for options)
   sim: SimResult;
   breakdown: ConfidenceBreakdown;
@@ -1943,10 +1946,14 @@ async function main() {
         return bt > currentTs;
       });
       let maxFavorable = 0, maxAdverse = 0;
+      let mfePeakMinutes = 0; // minutes after entry when MFE peaks
       for (const fb of futureBars) {
         const move = direction === 'bullish' ? fb.high - currentPrice : currentPrice - fb.low;
         const adverse = direction === 'bullish' ? currentPrice - fb.low : fb.high - currentPrice;
-        if (move > maxFavorable) maxFavorable = move;
+        if (move > maxFavorable) {
+          maxFavorable = move;
+          mfePeakMinutes = Math.round((new Date(fb.timestamp).getTime() - currentTs) / 60_000);
+        }
         if (adverse > maxAdverse) maxAdverse = adverse;
       }
       const findPriceAt = (mins: number): number | null => {
@@ -2015,6 +2022,7 @@ async function main() {
         maxFavorable, maxAdverse, mfePct, maePct, mfeOverMae, directionCorrect,
         move5mPct, move10mPct, move15mPct, move30mPct, entryGrade, outcome, sim,
         priceAt5m: p5m, priceAt10m: p10m, priceAt15m: p15m, priceAt30m: p30m,
+        mfePeakMinutes,
       };
     };
 
@@ -2027,7 +2035,7 @@ async function main() {
       filterBlockedEntries.push({
         time: timeStr, timeET, direction, signalMode, confidence: cb.total,
         price: currentPrice, filterRule, filterCategory: filterCategory(filterRule),
-        mfePct: fwd.mfePct, maePct: fwd.maePct, mfeOverMae: fwd.mfeOverMae,
+        mfePct: fwd.mfePct, maePct: fwd.maePct, mfeOverMae: fwd.mfeOverMae, mfePeakMinutes: fwd.mfePeakMinutes,
         entryGrade: fwd.entryGrade, outcome: fwd.outcome,
         ...regimeCtx,
       });
@@ -2758,6 +2766,58 @@ async function main() {
     console.log(`  ✅ All confirmed entries graded C or better on ${TARGET_DATE}.\n`);
   } else {
     console.log(`  ── No confirmed entries on ${TARGET_DATE}.\n`);
+  }
+
+  // ── JSON output for machine-readable aggregation (backtest-audit.ts) ──
+  if (JSON_OUTPUT) {
+    // Deduplicate filter-blocked entries (same logic as console report)
+    const dedupedFiltered: FilterBlockedEntry[] = [];
+    for (const fb of filterBlockedEntries) {
+      const prev = dedupedFiltered[dedupedFiltered.length - 1];
+      if (prev && prev.direction === fb.direction) {
+        const prevTs = new Date(prev.time).getTime();
+        const currTs = new Date(fb.time).getTime();
+        if (currTs - prevTs < 5 * 60_000) {
+          const gradeRank: Record<string, number> = { A: 5, B: 4, C: 3, D: 2, F: 1 };
+          if ((gradeRank[fb.entryGrade] ?? 0) > (gradeRank[prev.entryGrade] ?? 0) || ((gradeRank[fb.entryGrade] ?? 0) === (gradeRank[prev.entryGrade] ?? 0) && fb.confidence > prev.confidence)) {
+            dedupedFiltered[dedupedFiltered.length - 1] = fb;
+          }
+          continue;
+        }
+      }
+      dedupedFiltered.push(fb);
+    }
+
+    const jsonSummary = {
+      date: TARGET_DATE,
+      ticker: TICKER,
+      confirmed: confirmedEntries.map(e => ({
+        time: e.time, timeET: e.timeET, direction: e.direction, alignment: e.alignment,
+        mode: e.signalMode, confidence: e.confidence, price: e.price, strength: e.strengthScore,
+        grade: e.entryGrade, outcome: e.outcome, gate: e.gateResult,
+        mfePct: e.mfePct, maePct: e.maePct, mfeOverMae: e.mfeOverMae, mfePeakMinutes: e.mfePeakMinutes,
+        move5m: e.move5mPct, move10m: e.move10mPct, move15m: e.move15mPct, move30m: e.move30mPct,
+        dirCorrect: e.directionCorrect, atr: e.atr,
+        sim: { pnlPct: e.sim.pnlPct, exitReason: e.sim.exitReason, holdMin: e.sim.holdMinutes, peakPnl: e.sim.peakPnlPct },
+        breakdown: e.breakdown,
+      })),
+      blocked: blockedEntries.map(e => ({
+        time: e.time, timeET: e.timeET, direction: e.direction, alignment: e.alignment,
+        mode: e.signalMode, confidence: e.confidence, price: e.price,
+        grade: e.entryGrade, outcome: e.outcome, gate: e.gateResult,
+        mfePct: e.mfePct, maePct: e.maePct, mfeOverMae: e.mfeOverMae, mfePeakMinutes: e.mfePeakMinutes,
+        move5m: e.move5mPct, move10m: e.move10mPct, move15m: e.move15mPct, move30m: e.move30mPct,
+        dirCorrect: e.directionCorrect,
+      })),
+      filtered: dedupedFiltered.map(fb => ({
+        time: fb.time, timeET: fb.timeET, direction: fb.direction, mode: fb.signalMode,
+        confidence: fb.confidence, price: fb.price,
+        grade: fb.entryGrade, outcome: fb.outcome,
+        filterRule: fb.filterRule, filterCategory: fb.filterCategory,
+        mfePct: fb.mfePct, maePct: fb.maePct, mfeOverMae: fb.mfeOverMae, mfePeakMinutes: fb.mfePeakMinutes,
+      })),
+    };
+    console.log(`\n__JSON_START__${JSON.stringify(jsonSummary)}__JSON_END__`);
   }
 }
 
