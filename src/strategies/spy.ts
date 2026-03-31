@@ -19,7 +19,6 @@
  */
 
 import type { PartialTickerStrategy, EntryContext } from './strategy.js';
-import type { ConfidenceBreakdown } from '../types/analysis.js';
 import type { TimeframeIndicators } from '../types/indicators.js';
 import type { SignalDirection } from '../types/signal.js';
 
@@ -134,85 +133,15 @@ function spyDetectMode(
   return defaultStrategy.detectMode(tfIndicators, direction, currentPrice);
 }
 
-// ── SPY Confidence Adjustment ────────────────────────────────────────────────
-
-function spyAdjustConfidence(breakdown: ConfidenceBreakdown, ctx: EntryContext): ConfidenceBreakdown {
-  // Suppress positive PA bonus for bullish trend entries at high regime.
-  // At high regime (>= 75), consecutive confirming bars on the bullish side
-  // are the final push into a day-high stall, not fresh momentum.
-  //
-  // Q1 2026 SPY data — bullish trend entries at regime >= 75:
-  //   Jan 5:  regime 80, PA=+0.080, conf=83% → +3.1%  (small win)
-  //   Jan 26: regime 76, PA=+0.080, conf=82% → -14.9% (big loss)
-  //   Feb 20: regime 82, PA=+0.080, conf=77% → -5.8%  (loss)
-  //   1W/2L, net -17.6%, sole winner only +3.1%
-  //
-  // Removing PA at regime >= 75 drops Jan 26 from 82% → 73% (below 75%
-  // strong-signal bypass), preventing the fast-track entry.
-  if (ctx.signalMode === 'trend' && ctx.direction === 'bullish'
-      && _lastRegimeScore >= 75 && breakdown.recentPriceActionBonus > 0) {
-    const adjusted = { ...breakdown };
-    adjusted.total -= adjusted.recentPriceActionBonus;
-    adjusted.recentPriceActionBonus = 0;
-    adjusted.total = Math.max(0, Math.min(1, adjusted.total));
-    return adjusted;
-  }
-  return breakdown;
-}
-
-// ── SPY Entry Filter ────────────────────────────────────────────────────────
+// ── SPY Entry Filter (data-quality checks only) ────────────────────────────
 
 function spyShouldAllowEntry(ctx: EntryContext): true | string {
-  const { signalMode, direction, atr, currentPrice } = ctx;
+  const { signalMode, atr, currentPrice } = ctx;
 
+  // Data quality: ATR too low = insufficient volatility for reliable signals
   const atrPct = currentPrice > 0 ? (atr / currentPrice) * 100 : 0;
   if (signalMode === 'breakout' && atrPct < 0.08) return `breakout atrPct ${atrPct.toFixed(3)}% < 0.08%`;
-
-  if (signalMode === 'breakout' && ctx.displacementVelocity !== undefined
-      && ctx.displacementVelocity < -0.05) return `breakout dvel ${ctx.displacementVelocity.toFixed(4)} < -0.05`;
-
   if (signalMode === 'trend' && atr < 0.70) return `trend atr ${atr.toFixed(3)} < 0.70`;
-
-  // trend_regime >= 80 removed: Q4+Q1 counterfactual net +12 costly (97 good missed vs 85 bad avoided).
-  // trend_exhausted_reverting (rExh>7 + dvel<0) and trend_exhausted_choppy already catch actual reversals.
-
-  if (signalMode === 'trend'
-      && ctx.rangeExhaustion !== undefined && ctx.rangeExhaustion > 7.0
-      && ctx.choppiness !== undefined && ctx.choppiness >= 0.55) return `trend exhausted+choppy rExh=${ctx.rangeExhaustion.toFixed(1)} chop=${ctx.choppiness.toFixed(2)}`;
-
-  if (direction === 'bullish'
-      && ctx.rangeExhaustion !== undefined && ctx.rangeExhaustion >= 6.0) return `bullish rangeExhaustion ${ctx.rangeExhaustion.toFixed(1)} >= 6.0`;
-
-  if (direction === 'bullish'
-      && ctx.displacementVelocity !== undefined && ctx.displacementVelocity < 0.08) return `bullish dvel ${ctx.displacementVelocity.toFixed(4)} < 0.08`;
-
-  if (signalMode === 'breakout'
-      && ctx.rangeExhaustion !== undefined && ctx.rangeExhaustion < 1.0) return `breakout rangeExhaustion ${ctx.rangeExhaustion.toFixed(1)} < 1.0 (early morning)`;
-
-  if (signalMode === 'breakout'
-      && ctx.choppiness !== undefined && ctx.choppiness >= 0.90
-      && ctx.displacementVelocity !== undefined && ctx.displacementVelocity < 0.10) return `breakout chop+lowDvel chop=${ctx.choppiness.toFixed(2)} dvel=${ctx.displacementVelocity.toFixed(4)}`;
-
-  if (signalMode === 'breakout' && ctx.confidence < 0.74) return `breakout confidence ${(ctx.confidence * 100).toFixed(0)}% < 74%`;
-
-  if (signalMode === 'breakout'
-      && ctx.rangeExhaustion !== undefined && ctx.rangeExhaustion >= 7.0
-      && ctx.choppiness !== undefined && ctx.choppiness >= 1.0) return `breakout highExh+highChop rExh=${ctx.rangeExhaustion.toFixed(1)} chop=${ctx.choppiness.toFixed(2)}`;
-
-  if (signalMode === 'breakout'
-      && ctx.choppiness !== undefined && ctx.choppiness >= 2.0) return `breakout extremeChop ${ctx.choppiness.toFixed(2)} >= 2.0`;
-
-  if (signalMode === 'breakout'
-      && ctx.rangeExhaustion !== undefined && ctx.rangeExhaustion >= 9.0) return `breakout extremeExhaustion ${ctx.rangeExhaustion.toFixed(1)} >= 9.0`;
-
-  if (signalMode === 'breakout' && _lastRegimeScore >= 80) return `breakout regime ${_lastRegimeScore} >= 80`;
-
-  // breakout_atr < 0.80 removed: Q4+Q1 counterfactual net +9 costly (13 good vs 4 bad).
-  // breakout_atrPct < 0.08% and trend_atr < 0.70 already catch genuinely low-volatility cases.
-
-  if (signalMode === 'breakout' && direction === 'bullish'
-      && ctx.rangeExhaustion !== undefined && ctx.rangeExhaustion >= 4.5
-      && _lastRegimeScore >= 65) return `bullish breakout highExh+regime rExh=${ctx.rangeExhaustion.toFixed(1)} regime=${_lastRegimeScore}`;
 
   return true;
 }
@@ -221,6 +150,5 @@ function spyShouldAllowEntry(ctx: EntryContext): true | string {
 
 export const spyStrategy: PartialTickerStrategy = {
   detectMode: spyDetectMode,
-  adjustConfidence: spyAdjustConfidence,
   shouldAllowEntry: spyShouldAllowEntry,
 };

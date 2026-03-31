@@ -1076,3 +1076,60 @@ tr:hover td { background: #1c2128; }
   font-style: italic;
   padding: 6px 0;
 }
+
+/* ── Structural Trigger Conditions ────────────────────────────────────────── */
+
+.trigger-pass-summary {
+  font-size: 0.82rem;
+  font-weight: 600;
+  margin-left: 8px;
+  text-transform: none;
+  letter-spacing: 0;
+}
+
+.trigger-conditions {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-bottom: 8px;
+}
+
+.trigger-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 10px;
+  border-radius: 6px;
+  font-size: 0.82rem;
+  border: 1px solid transparent;
+}
+
+.trigger-pass {
+  background: #0d2d1222;
+  border-color: #196c2e44;
+}
+
+.trigger-fail {
+  background: #2d0d0a22;
+  border-color: #8e1a1444;
+}
+
+.trigger-icon {
+  flex-shrink: 0;
+  font-size: 0.85rem;
+}
+
+.trigger-name {
+  font-weight: 600;
+  min-width: 160px;
+  color: #e6edf3;
+  font-size: 0.8rem;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+
+.trigger-detail {
+  color: #8b949e;
+  font-size: 0.78rem;
+  font-variant-numeric: tabular-nums;
+}

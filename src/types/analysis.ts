@@ -45,13 +45,15 @@ export interface AnalysisResult {
   allModeConfidences?: ModeConfidences;
   /** Which mode was selected by detectMode. */
   selectedMode?: string;
-  meetsEntryThreshold: boolean;    // confidence >= 0.65
-  /** Why entry was blocked — set when meetsEntryThreshold is false despite confidence >= threshold. */
+  meetsEntryThreshold: boolean;    // N-1 triggers passed → AI decides
+  /** Why entry was blocked — set when triggers or AI blocked entry. */
   entryBlockReason?: string;
   aiExplanation: string;
   keyFactors: string[];
   risks: string[];
   desiredRight: 'call' | 'put' | null;
   rangeExhaustion?: number;        // (dayHigh - dayLow) / htfATR — how much of daily range is consumed
+  /** Structural trigger conditions — shows which binary conditions passed/failed. */
+  triggerConditions?: Array<{ name: string; passed: boolean; detail: string }>;
   createdAt: string;
 }

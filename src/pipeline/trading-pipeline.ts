@@ -35,13 +35,11 @@ function deterministicWait(
   tickerCfg: TickerConfig,
 ): DecisionResult {
   const confPct = (analysis.confidence * 100).toFixed(0);
-  const threshPct = (tickerCfg.minConfidence * 100).toFixed(0);
-  const belowThreshold = analysis.confidence < tickerCfg.minConfidence;
   const reason = !timeGateOk
-    ? `Market closed (time gate) — no open positions to manage. AI orchestration skipped. (Confidence ${confPct}%, threshold ${threshPct}%)`
-    : belowThreshold
-      ? `Confidence ${confPct}% < threshold ${threshPct}% — no open positions to manage. AI orchestration skipped.`
-      : `Entry filter blocked: ${analysis.entryBlockReason ?? 'unknown'} (confidence ${confPct}% meets ${threshPct}% threshold) — no open positions to manage. AI orchestration skipped.`;
+    ? `Market closed (time gate) — no open positions to manage. AI orchestration skipped. (Confidence ${confPct}%)`
+    : !analysis.meetsEntryThreshold
+      ? `Triggers not met (${confPct}%) — no open positions to manage. AI orchestration skipped. ${analysis.entryBlockReason ?? ''}`
+      : `Entry filter blocked: ${analysis.entryBlockReason ?? 'unknown'} (${confPct}%) — no open positions to manage. AI orchestration skipped.`;
   return {
     id: uuidv4(),
     signalId: signal.id,

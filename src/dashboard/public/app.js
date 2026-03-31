@@ -358,6 +358,12 @@ async function loadSignals() {
     const confTip = amc.trend != null
       ? `Trend: ${(amc.trend * 100).toFixed(0)}%  Range: ${(amc.range * 100).toFixed(0)}%  Breakout: ${(amc.breakout * 100).toFixed(0)}%  VWAP Rev: ${(amc.vwap_reversion * 100).toFixed(0)}%`
       : '';
+    // Trigger pass count from structural triggers
+    const tc = ap.triggerConditions || [];
+    const tcPass = tc.filter(t => t.passed).length;
+    const tcTotal = tc.length;
+    const tcStr = tcTotal > 0 ? `${tcPass}/${tcTotal}` : '—';
+    const tcCls = tcTotal > 0 ? (tcPass === tcTotal ? 'bullish' : tcPass >= tcTotal - 1 ? 'neutral' : 'bearish') : '';
     return `
     <tr>
       <td>${fmtTime(sig.created_at)}</td>
@@ -367,7 +373,7 @@ async function loadSignals() {
       <td>${sig.alignment}</td>
       <td><span style="color:${modeColor};font-weight:600" title="${confTip}">${modeLabel}</span></td>
       <td title="${confTip}">${(parseFloat(sig.confidence) * 100).toFixed(0)}%</td>
-      <td>${sig.confidence_meets_threshold ? '✅' : '—'}</td>
+      <td class="${tcCls}" title="${tc.map(t => (t.passed ? '✅' : '❌') + ' ' + t.name).join('\n')}">${tcStr}</td>
       <td>${sig.triggered_by}</td>
       <td class="${sig.selected_right ?? ''}">${sig.selected_right?.toUpperCase() ?? '—'}</td>
       <td><code>${sig.selected_symbol ?? '—'}</code></td>
@@ -394,19 +400,41 @@ async function loadDecisions() {
     const stageLbl = es ? es.stage.replace(/_/g, ' ') : '—';
     const stageClass = es?.overrideTriggered ? 'bullish' : '';
     const overrideBadge = es?.overrideTriggered ? ' <span style="font-size:0.75em;background:#e67e22;color:#fff;padding:1px 4px;border-radius:3px">OVERRIDE</span>' : '';
+    // Trigger conditions from joined signal
+    const ap = d.analysis_payload || {};
+    const tc = ap.triggerConditions || [];
+    const tcPass = tc.filter(t => t.passed).length;
+    const tcTotal = tc.length;
+    const tcStr = tcTotal > 0 ? `${tcPass}/${tcTotal}` : '—';
+    const tcCls = tcTotal > 0 ? (tcPass === tcTotal ? 'bullish' : tcPass >= tcTotal - 1 ? 'neutral' : 'bearish') : '';
+    // Mode from analysis
+    const modeColors = { trend: '#58a6ff', range: '#d29922', breakout: '#f0883e', vwap_reversion: '#a371f7' };
+    const selMode = ap.selectedMode || '—';
+    const modeLbl = selMode === 'vwap_reversion' ? 'VWAP' : selMode === 'none' ? '—' : selMode !== '—' ? selMode.toUpperCase() : '—';
+    const modeColor = modeColors[selMode] || '#8b949e';
+    // AI entry decision reasoning
+    const aiExpl = ap.aiExplanation || '';
+    const blockReason = ap.entryBlockReason || '';
+    const isAiWait = blockReason.startsWith('AI WAIT:');
+    const aiText = isAiWait ? blockReason.replace('AI WAIT: ', '')
+      : aiExpl && !aiExpl.includes('skipped') ? aiExpl
+      : blockReason || '';
+    const aiCls = isAiWait ? 'bearish' : ap.meetsEntryThreshold ? 'bullish' : '';
+    const aiLabel = isAiWait ? '🤖 WAIT' : ap.meetsEntryThreshold && aiText ? '🤖 ENTER' : '';
     return `
     <tr>
       <td>${fmtTime(d.created_at)}</td>
       <td><b>${d.ticker}</b></td>
-      <td>${d.profile}</td>
       <td class="${d.direction ?? ''}">${d.direction ?? '—'}</td>
       <td class="decision-${d.decision_type}"><b>${d.decision_type}</b></td>
-      <td class="${stageClass}">${stageLbl}${overrideBadge}</td>
-      <td>${d.confirmation_count}</td>
+      <td><span style="color:${modeColor};font-weight:600">${modeLbl}</span></td>
+      <td class="${tcCls}" title="${tc.map(t => (t.passed ? '✅' : '❌') + ' ' + t.name).join('\n')}">${tcStr}</td>
       <td>${d.orchestration_confidence ? (parseFloat(d.orchestration_confidence) * 100).toFixed(0) + '%' : '—'}</td>
+      <td class="${stageClass}">${stageLbl}${overrideBadge}</td>
       <td>${d.urgency ?? '—'}</td>
       <td>${d.should_execute ? '✅' : '—'}</td>
-      <td class="reasoning" title="${d.reasoning || ''}">${d.reasoning || '—'}</td>
+      <td class="reasoning" title="${(d.reasoning || '').replace(/"/g, '&quot;')}">${d.reasoning || '—'}</td>
+      <td class="reasoning">${aiLabel ? `<span class="${aiCls}" style="font-weight:600">${aiLabel}</span> ` : ''}${aiText || '—'}</td>
     </tr>
   `; });
   setRows('tbl-decisions', rows);
@@ -1010,8 +1038,33 @@ function renderAnalysisCard(sig) {
     </div>
   ` : '';
 
-  // Confidence breakdown section
-  const cbHtml = cb.total != null ? `
+  // Trigger conditions section (new structural trigger system)
+  const triggers = analysis.triggerConditions || [];
+  const triggerHtml = triggers.length > 0 ? (() => {
+    const passCount = triggers.filter(t => t.passed).length;
+    const totalCount = triggers.length;
+    const allPassed = passCount === totalCount;
+    const confLabel = allPassed ? '70%' : passCount === totalCount - 1 ? '55%' : passCount === totalCount - 2 ? '40%' : '25%';
+    return `
+      <div class="stats-section-label">Structural Triggers — ${selMode === 'vwap_reversion' ? 'VWAP Rev' : selMode.toUpperCase()} <span class="trigger-pass-summary ${allPassed ? 'bullish' : passCount >= totalCount - 1 ? 'neutral' : 'bearish'}">${passCount}/${totalCount} passed → ${confLabel}</span></div>
+      <div class="trigger-conditions">
+        ${triggers.map(t => `
+          <div class="trigger-row ${t.passed ? 'trigger-pass' : 'trigger-fail'}">
+            <span class="trigger-icon">${t.passed ? '✅' : '❌'}</span>
+            <span class="trigger-name">${t.name.replace(/_/g, ' ')}</span>
+            <span class="trigger-detail">${t.detail}</span>
+          </div>
+        `).join('')}
+      </div>
+      <div class="conf-total-row">
+        <span>Confidence</span>
+        <span class="${thresh ? 'bullish' : 'bearish'}" style="font-weight:700">${confPct}%${thresh ? ' ✅' : ' (below threshold)'}</span>
+      </div>
+    `;
+  })() : '';
+
+  // Legacy confidence breakdown (only show if no trigger conditions available)
+  const cbHtml = triggers.length === 0 && cb.total != null ? `
     <div class="stats-section-label">Confidence Breakdown (${selMode === 'vwap_reversion' ? 'VWAP Rev' : selMode})</div>
     <div class="conf-breakdown">
       ${renderConfidenceBar('Base',        cb.base              ?? 0, 0.50, 'conf-bar-base')}
@@ -1215,6 +1268,7 @@ function renderAnalysisCard(sig) {
         </div>
       </div>
       ${modeConfHtml}
+      ${triggerHtml}
       ${cbHtml}
       ${msHtml}
       ${tfHtml}

@@ -115,7 +115,6 @@ function computeServerConfirmationCount(
 export class DecisionOrchestrator {
   async run(input: OrchestratorInput, tickerCfg?: import('../ticker-configs.js').TickerConfig): Promise<DecisionResult> {
     const { signal, option, analysis, context, timeGateOk } = input;
-    const minConfidence = tickerCfg?.minConfidence ?? config.MIN_CONFIDENCE;
     const { isEodWindow, minutesToClose } = computeEodWindow();
     const { isFomcWindow, minutesToEvent: fomcMinutesToEvent, eventDescription: fomcEventDescription } = checkFomcWindow(30);
 
@@ -137,32 +136,15 @@ export class DecisionOrchestrator {
       } : {}),
       triggered_by: signal.triggeredBy,
 
-      // Analysis
-      confidence: analysis.confidence,
-      confidence_breakdown: {
-        di_cross_bonus: analysis.confidenceBreakdown.diCrossBonus,
-        vwap_bonus: analysis.confidenceBreakdown.vwapBonus,
-        trend_phase_bonus: analysis.confidenceBreakdown.trendPhaseBonus,
-        momentum_accel_bonus: analysis.confidenceBreakdown.momentumAccelBonus,
-        price_position_adjustment: analysis.confidenceBreakdown.pricePositionAdjustment,
-        recent_price_action_bonus: analysis.confidenceBreakdown.recentPriceActionBonus,
-        tr_contraction_penalty: analysis.confidenceBreakdown.trContractionPenalty,
-        low_vol_penalty: analysis.confidenceBreakdown.lowVolPenalty,
-        move_exhaustion_penalty: analysis.confidenceBreakdown.moveExhaustionPenalty,
-        consolidation_penalty: analysis.confidenceBreakdown.consolidationPenalty,
-        near_level_penalty: analysis.confidenceBreakdown.nearLevelPenalty,
-        theta_decay_penalty: analysis.confidenceBreakdown.thetaDecayPenalty,
-        narrow_range_penalty: analysis.confidenceBreakdown.narrowRangePenalty,
-        candle_pattern_bonus: analysis.confidenceBreakdown.candlePatternBonus,
-        price_velocity_bonus: analysis.confidenceBreakdown.priceVelocityBonus,
-        volume_surge_bonus: analysis.confidenceBreakdown.volumeSurgeBonus,
-        price_half: signal.timeframes[2]?.priceStructure.priceHalf ?? signal.timeframes[0]?.priceStructure.priceHalf ?? 'lower',
-        range_position: parseFloat((signal.timeframes[2]?.priceStructure.rangePosition ?? signal.timeframes[0]?.priceStructure.rangePosition ?? 0.5).toFixed(2)),
-        note: (signal.timeframes[2]?.priceStructure.priceHalf ?? signal.timeframes[0]?.priceStructure.priceHalf) === 'lower'
-          ? 'Lower half: puts preferred, calls are higher risk'
-          : 'Upper half: calls preferred, puts are higher risk',
-      },
+      // Structural triggers — the entry gate (NOT confidence)
       meets_entry_threshold: analysis.meetsEntryThreshold,
+      entry_block_reason: analysis.entryBlockReason ?? null,
+      trigger_conditions: (analysis.triggerConditions ?? []).map(t => ({
+        name: t.name,
+        passed: t.passed,
+        detail: t.detail,
+      })),
+      confidence: analysis.confidence, // backward-compat display only (0.70=all pass, 0.55=N-1)
       desired_right: analysis.desiredRight,
       key_factors: analysis.keyFactors,
       risks: analysis.risks,
@@ -350,249 +332,31 @@ export class DecisionOrchestrator {
         rawOutput.decision_type = 'WAIT';
         rawOutput.should_execute = false;
         rawOutput.reasoning = `[GATE OVERRIDE] Liquidity/candidate gate failed. ${rawOutput.reasoning}`;
-      } else if (analysis.confidence < minConfidence) {
-        rawOutput.decision_type = 'WAIT';
-        rawOutput.should_execute = false;
-        rawOutput.reasoning = `[GATE OVERRIDE] Confidence ${analysis.confidence.toFixed(2)} < ${minConfidence}. ${rawOutput.reasoning}`;
       }
-      // NOTE: should_execute=false returned by the AI for a valid NEW_ENTRY/ADD_POSITION is
-      // intentionally respected — it means the AI expressed doubt.  The confirmation count gate
-      // below provides server-side protection against premature entries regardless.
+      // Confidence gate removed — structural triggers are the entry gate, not confidence numbers.
     }
+
+    // Extract trigger data for use in confirmation gate and WAIT override
+    const triggerConditions = analysis.triggerConditions || [];
+    const triggerPassCount = triggerConditions.filter(t => t.passed).length;
+    const triggerTotal = triggerConditions.length;
+    const allTriggersPassed = triggerTotal > 0 && triggerPassCount === triggerTotal;
+    const triggersMetThreshold = triggerTotal > 0 && (triggerTotal - triggerPassCount) <= 1;
 
     // Server-side confirmation count — computed here (before the confirmation gate) so the gate
     // can use priorCount, and the final serverCount reflects the post-gate decision type.
     // Always use server count as the source of truth — never let AI count drift unchecked.
     const priorCount = computeServerConfirmationCount(context.recentDecisions, signal.direction ?? '');
 
-    // Confirmation count gate for NEW_ENTRY: require at least 1 prior same-direction confirmation
-    // (meaning serverCount will be >= 2) before allowing execution.
-    // Override path:
-    //   (A) High-conviction override: confidence >= 0.92 AND alignment = "all_aligned"
-    // ADD_POSITION already requires an open position + confidence >= 0.80 + all_aligned, so it
-    // is excluded from this gate — the existing conditions are sufficient.
-    //
-    // IMPORTANT: When the gate fires at Stage-1 (priorCount=0), we mark this as a Stage-1 OBSERVE
-    // WAIT and still advance the server count to 1.  This ensures the next cycle sees priorCount=1
-    // and can enter at Stage-2, preventing an infinite Stage-1 loop where entries are permanently
-    // blocked because WAIT decisions never advance the count.
+    // ── Structural trigger gate for NEW_ENTRY ──
+    // ALL entries must pass through structural triggers. No old bypasses (confidence-based
+    // overrides, phase-change, range/breakout/vwap confidence thresholds, 2-stage confirmation).
+    // Entry flow: all triggers pass → entry AI says ENTER → execute immediately.
+    // Only safety checks retained: daily entry cap and 30-min post-open wait.
     let isStage1ObserveWait = false;
     let isPhaseChangeOverride = false;
-    if (rawOutput.decision_type === 'NEW_ENTRY' && rawOutput.should_execute) {
-      const overrideOk = analysis.confidence >= 0.92 && signal.alignment === 'all_aligned';
-
-      // (C) Phase-change override: HTF DI crossed in signal direction within last 2 bars
-      //     (still holding) with rising ADX (growth phase). This is a definitive trend-change
-      //     signal — enter immediately without waiting for the 2-stage confirmation gate.
-      //     Requires confidence >= 0.60 and non-mixed alignment to filter noise.
-      //     Threshold is lower than other overrides because the structural signal (growth cross
-      //     + rising ADX + non-mixed alignment) already provides strong filtering.
-      //     Timing quality filters prevent chasing at range extremes, entering exhausted trends,
-      //     fighting VWAP/ORB direction, or entering with decelerating momentum.
-      const htfTf = signal.timeframes[2] ?? signal.timeframes[0];
-      const ltfTf = signal.timeframes[0];
-      // Tightened: require conf >= 0.65, ADX >= 20, positive price action, no near-level penalty.
-      // Backtest showed phase-change entries with low ADX/negative PA/near-level are traps.
-      const phaseChangeStructuralOk = !!htfTf &&
-        analysis.confidence >= 0.65 &&
-        signal.alignment !== 'mixed' &&
-        (signal.direction === 'bullish' ? htfTf.dmi.growthCrossUp : htfTf.dmi.growthCrossDown) &&
-        htfTf.dmi.adx >= 20 &&
-        analysis.confidenceBreakdown.recentPriceActionBonus >= 0 &&
-        analysis.confidenceBreakdown.nearLevelPenalty > -0.03;
-      // Timing quality gate: block entries with poor timing even if structural signal is valid.
-      // Data analysis (2026-03-12): phase-change entries lose when they re-enter the same fading
-      // setup repeatedly, or when ADX is near exhaustion. The winning trade catches the initial
-      // move; losers chase with mature ADX, stale signal, and decelerating spread.
-      let phaseChangeTimingOk = true;
-      let phaseChangeTimingRejectReason = '';
-      if (phaseChangeStructuralOk && htfTf) {
-        const rp = htfTf.priceStructure.rangePosition;
-        const isBullish = signal.direction === 'bullish';
-        // 1. Price position: don't chase at range extremes
-        if (isBullish && rp > 0.85) {
-          phaseChangeTimingOk = false;
-          phaseChangeTimingRejectReason = `price at range extreme (rangePos=${rp.toFixed(2)}, bullish needs ≤0.85)`;
-        } else if (!isBullish && rp < 0.15) {
-          phaseChangeTimingOk = false;
-          phaseChangeTimingRejectReason = `price at range extreme (rangePos=${rp.toFixed(2)}, bearish needs ≥0.15)`;
-        }
-        // 2. ADX exhaustion: trend may be overextended (>50 is extreme)
-        if (phaseChangeTimingOk && htfTf.dmi.adx > 50) {
-          phaseChangeTimingOk = false;
-          phaseChangeTimingRejectReason = `ADX exhausted (${htfTf.dmi.adx.toFixed(1)} > 50)`;
-        }
-        // 3. Recent phase-change entry cooldown: if there was already a phase-change entry
-        //    for this direction in recent decisions, don't re-enter the same setup
-        if (phaseChangeTimingOk) {
-          const recentPhaseEntry = context.recentDecisions.some(d =>
-            d.decisionType === 'NEW_ENTRY' &&
-            d.direction === signal.direction &&
-            d.reasoning?.includes('[PHASE-CHANGE'));
-          if (recentPhaseEntry) {
-            phaseChangeTimingOk = false;
-            phaseChangeTimingRejectReason = `already entered via phase-change for ${signal.direction} recently — cooldown`;
-          }
-        }
-        // 5. VWAP alignment on LTF: don't fight the intraday trend
-        if (phaseChangeTimingOk && ltfTf) {
-          const vwapPct = ltfTf.vwap.priceVsVwap;
-          if (isBullish && vwapPct < -0.30) {
-            phaseChangeTimingOk = false;
-            phaseChangeTimingRejectReason = `price below VWAP (${vwapPct.toFixed(2)}% < -0.30% for bullish)`;
-          } else if (!isBullish && vwapPct > 0.30) {
-            phaseChangeTimingOk = false;
-            phaseChangeTimingRejectReason = `price above VWAP (${vwapPct.toFixed(2)}% > 0.30% for bearish)`;
-          }
-        }
-        // 6. ORB alignment: don't enter against the day's established momentum
-        if (phaseChangeTimingOk && signal.orb.orbFormed) {
-          const orbDir = signal.orb.breakoutDirection;
-          if (isBullish && orbDir === 'bearish') {
-            phaseChangeTimingOk = false;
-            phaseChangeTimingRejectReason = `ORB breakout is bearish — bullish entry fights day momentum`;
-          } else if (!isBullish && orbDir === 'bullish') {
-            phaseChangeTimingOk = false;
-            phaseChangeTimingRejectReason = `ORB breakout is bullish — bearish entry fights day momentum`;
-          }
-        }
-      }
-      const phaseChangeOk = phaseChangeStructuralOk && phaseChangeTimingOk;
-
-      // (E) Stale-signal / weakening-signal gates REMOVED.
-      // The 2-stage confirmation gate (Stage-1 OBSERVE → Stage-2 ENTER) already provides
-      // a 1-3 min conviction delay. The stale/weakening gates on top delayed entries by an
-      // additional 1-5 min waiting for confidence to tick up by tiny amounts (0.5-2%).
-      // Backtest showed these gates never permanently block — they just delay until confidence
-      // fluctuates past the threshold — causing late entries where the move has already started.
-      // The per-ticker filters + confidence threshold are the real quality gates.
-
-      // Strong-signal bypass: conf >= 75% + all_aligned can skip stage-2.
-      // Backtest showed no false positives at this level on losing days (Mar 11/17/19),
-      // but captures profitable entries on trending days (Mar 18: +9.2%, Mar 20: +16.8%).
-      // IMPORTANT: Only for trend entries. Breakout entries have their own bypass gate
-      // with trendPhase >= 0 requirement — strongSignalBypass must NOT override that.
-      // Mar 23: bullish breakout at day high with trendPhase=-0.04 entered via this bypass
-      // at 86% + all_aligned → immediate reversal, grade F entry.
-      const strongSignalBypass = !overrideOk && !phaseChangeOk && priorCount < 1
-        && signal.signalMode !== 'breakout'
-        && analysis.confidence >= 0.75 && signal.alignment === 'all_aligned';
-
-      // Range-mode bypass: range entries skip the trend confirmation gate.
-      // Quality is controlled by the range confidence model + cooldown/limits below.
-      // Gate conditions: 45-min wait after market open, 20-min cooldown between range entries,
-      // max 2 range entries per day, stricter confidence threshold (0.66).
-      let rangeBypass = false;
-      if (signal.signalMode === 'range' && priorCount < 1) {
-        const RANGE_MIN_CONF = 0.70; // raised from 0.66 — Feb range entries at 0.66-0.69 were 1W/4L
-        const now = new Date();
-        const minsSinceOpen = minutesSinceMarketOpen(now);
-        const pastWaitPeriod = minsSinceOpen >= 45;
-        const meetsRangeThreshold = analysis.confidence >= RANGE_MIN_CONF;
-
-        // Count recent range entries today for cooldown + daily limit
-        const todayStr = now.toISOString().slice(0, 10);
-        const rangeEntriesToday = context.recentDecisions.filter(d =>
-          d.decisionType === 'NEW_ENTRY' &&
-          d.reasoning?.includes('[RANGE') &&
-          d.createdAt.startsWith(todayStr)
-        );
-        const underLimit = rangeEntriesToday.length < 1; // max 1 range entry per day — 2nd range entries were 3W/7L across Feb+Mar
-        const lastRangeEntry = rangeEntriesToday[0]; // newest first
-        const cooldownOk = !lastRangeEntry ||
-          (now.getTime() - new Date(lastRangeEntry.createdAt).getTime()) >= 20 * 60_000;
-
-        rangeBypass = meetsRangeThreshold && pastWaitPeriod && underLimit && cooldownOk;
-        if (!rangeBypass) {
-          const reason = !meetsRangeThreshold ? `conf ${analysis.confidence.toFixed(2)} < 0.70 range threshold` :
-            !pastWaitPeriod ? 'waiting 45min after open' :
-            !underLimit ? 'max 1 range entry/day reached' : '20min cooldown active';
-          console.log(`[DecisionOrchestrator] Range bypass blocked: ${reason}`);
-        }
-      }
-
-      // Breakout-mode bypass: breakout entries skip the trend confirmation gate.
-      // Quality is controlled by the breakout confidence model + cooldown/limits below.
-      // Gate conditions: 45-min wait after market open, 30-min cooldown between breakout entries,
-      // max 2 breakout entries per day, 15:30 ET cutoff, non-mixed alignment.
-      let breakoutBypass = false;
-      if (signal.signalMode === 'breakout' && priorCount < 1) {
-        const now = new Date();
-        const minsSinceOpen = minutesSinceMarketOpen(now);
-        const pastWaitPeriod = minsSinceOpen >= 45;
-        // Late-day breakouts fail more often (momentum fades into close)
-        const notTooLate = minsSinceOpen < 360; // 15:30 ET = open + 6h
-        // Mixed alignment breakouts lack directional conviction
-        const alignmentOk = signal.alignment !== 'mixed';
-        // Breakouts against the trend phase fail at high rate: Feb 7/9 breakout losers
-        // had trendPhaseBonus < 0. Require non-negative trend phase for entry.
-        const trendPhaseOk = analysis.confidenceBreakdown.trendPhaseBonus >= 0;
-        // Weak ADX breakouts fail: ADX bonus <= 0.020 was 1W/4L (20%).
-        // ADX >= 0.050 was 5W/1L (83%). Require moderate ADX for conviction.
-        const adxOk = analysis.confidenceBreakdown.adxBonus >= 0.03;
-        // Low strength breakouts fail: Feb str=30,33 were losses.
-        const strengthOk = signal.strengthScore >= 35;
-        // Extremely extended day: >10x ATR consumed = move is exhausted.
-        // Feb 6 breakout at 12x was a STOP loss (bought the top). All winners < 8x.
-        const notExhausted = !analysis.rangeExhaustion || analysis.rangeExhaustion <= 10.0;
-
-        const todayStr = now.toISOString().slice(0, 10);
-        const breakoutEntriesToday = context.recentDecisions.filter(d =>
-          d.decisionType === 'NEW_ENTRY' &&
-          d.reasoning?.includes('[BREAKOUT') &&
-          d.createdAt.startsWith(todayStr)
-        );
-        const underLimit = breakoutEntriesToday.length < 2;
-        const lastBreakoutEntry = breakoutEntriesToday[0];
-        const cooldownOk = !lastBreakoutEntry ||
-          (now.getTime() - new Date(lastBreakoutEntry.createdAt).getTime()) >= 30 * 60_000;
-
-        breakoutBypass = pastWaitPeriod && underLimit && cooldownOk && notTooLate && alignmentOk && trendPhaseOk && adxOk && strengthOk && notExhausted;
-        if (!breakoutBypass) {
-          const reason = !pastWaitPeriod ? 'waiting 45min after open' :
-            !notTooLate ? 'past 15:30 ET breakout cutoff' :
-            !alignmentOk ? 'mixed alignment — no directional conviction' :
-            !trendPhaseOk ? `trendPhase ${analysis.confidenceBreakdown.trendPhaseBonus.toFixed(3)} < 0 — counter-trend breakout` :
-            !adxOk ? `ADX bonus ${analysis.confidenceBreakdown.adxBonus.toFixed(3)} < 0.03 — weak momentum` :
-            !strengthOk ? `strength ${signal.strengthScore} < 35 — low conviction` :
-            !notExhausted ? `rangeExhaustion ${analysis.rangeExhaustion?.toFixed(1)} > 10 — day exhausted` :
-            !underLimit ? 'max 2 breakout entries/day reached' : '30min cooldown active';
-          console.log(`[DecisionOrchestrator] Breakout bypass blocked: ${reason}`);
-        }
-      }
-
-      // VWAP-reversion bypass: skip the 2-stage confirmation gate for VWAP mean-reversion entries.
-      // These are time-sensitive (reversal candle already appeared) and use the range confidence model
-      // which already filters quality. Same structure as rangeBypass: 45-min wait, cooldown, daily limit.
-      let vwapRevBypass = false;
-      if (signal.signalMode === 'vwap_reversion' && priorCount < 1) {
-        const VWAP_REV_MIN_CONF = 0.68;
-        const now = new Date();
-        const minsSinceOpen = minutesSinceMarketOpen(now);
-        const pastWaitPeriod = minsSinceOpen >= 30;
-        const meetsThreshold = analysis.confidence >= VWAP_REV_MIN_CONF;
-
-        const todayStr = now.toISOString().slice(0, 10);
-        const vwapRevEntriesToday = context.recentDecisions.filter(d =>
-          d.decisionType === 'NEW_ENTRY' &&
-          d.reasoning?.includes('[VWAP_REV') &&
-          d.createdAt.startsWith(todayStr)
-        );
-        const underLimit = vwapRevEntriesToday.length < 1; // max 1 VWAP reversion entry per day — backtest showed 2nd entries were F-grade
-        const lastVwapRevEntry = vwapRevEntriesToday[0];
-        const cooldownOk = !lastVwapRevEntry ||
-          (now.getTime() - new Date(lastVwapRevEntry.createdAt).getTime()) >= 15 * 60_000; // 15-min cooldown
-
-        vwapRevBypass = meetsThreshold && pastWaitPeriod && underLimit && cooldownOk;
-        if (!vwapRevBypass) {
-          const reason = !meetsThreshold ? `conf ${analysis.confidence.toFixed(2)} < 0.68 VWAP reversion threshold` :
-            !pastWaitPeriod ? 'waiting 45min after open' :
-            !underLimit ? 'max 2 VWAP reversion entries/day reached' : '15min cooldown active';
-          console.log(`[DecisionOrchestrator] VWAP reversion bypass blocked: ${reason}`);
-        }
-      }
-
-      // Global daily entry cap — prevents loss-stacking on bad days.
+    if ((rawOutput.decision_type === 'NEW_ENTRY' || rawOutput.decision_type === 'ADD_POSITION') && rawOutput.should_execute) {
+      // Daily entry cap — prevents loss-stacking on bad days.
       const MAX_DAILY_ENTRIES = tickerCfg?.maxDailyEntries ?? 4;
       const dailyCapNow = new Date();
       const dailyCapTodayStr = dailyCapNow.toISOString().slice(0, 10);
@@ -600,50 +364,33 @@ export class DecisionOrchestrator {
         d.decisionType === 'NEW_ENTRY' &&
         d.createdAt.startsWith(dailyCapTodayStr)
       );
-      if (allEntriesToday.length >= MAX_DAILY_ENTRIES) {
-        rangeBypass = false;
-        breakoutBypass = false;
-        vwapRevBypass = false;
-        // Also block trend overrides/bypasses
-        if (overrideOk || phaseChangeOk || strongSignalBypass) {
-          console.log(`[DecisionOrchestrator] Daily entry cap reached (${allEntriesToday.length}/${MAX_DAILY_ENTRIES}) — blocking all new entries`);
-        }
-      }
       const dailyCapOk = allEntriesToday.length < MAX_DAILY_ENTRIES;
 
-      if (!dailyCapOk || (!overrideOk && !phaseChangeOk && !strongSignalBypass && !rangeBypass && !breakoutBypass && !vwapRevBypass && priorCount < 1)) {
+      // 30-min post-open wait — first 30 min are noisy
+      const minsSinceOpen = minutesSinceMarketOpen(new Date());
+      const pastWaitPeriod = minsSinceOpen >= 30;
+
+      if (!dailyCapOk) {
         rawOutput.decision_type = 'WAIT';
         rawOutput.should_execute = false;
-        const timingNote = (phaseChangeStructuralOk && !phaseChangeTimingOk)
-          ? ` [Phase-change structural signal present but timing rejected: ${phaseChangeTimingRejectReason}]`
-          : '';
-        rawOutput.reasoning = `[STAGE-1 OBSERVE] [TRIGGER: AI recommended NEW_ENTRY but server gate blocked — priorCount=${priorCount}, needs ≥1 confirm]${timingNote} Building conviction (count will advance to 1). Override requires confidence>=0.92 + all_aligned, or confidence>=0.75 + all_aligned, or phase-change. ${rawOutput.reasoning}`;
-        isStage1ObserveWait = true; // count advances to 1 so next cycle can enter at Stage-2
-        if (phaseChangeStructuralOk && !phaseChangeTimingOk) {
-          console.log(`[DecisionOrchestrator] Phase-change override blocked by timing filter: ${phaseChangeTimingRejectReason} (priorCount=${priorCount}, confidence=${analysis.confidence.toFixed(2)})`);
-        }
-        console.log(`[DecisionOrchestrator] NEW_ENTRY blocked by confirmation gate (Stage-1 OBSERVE, priorCount=${priorCount}, confidence=${analysis.confidence.toFixed(2)}, alignment=${signal.alignment})`);
-      } else if (rangeBypass) {
+        rawOutput.reasoning = `[DAILY CAP] ${allEntriesToday.length}/${MAX_DAILY_ENTRIES} entries today — no more entries allowed. ${rawOutput.reasoning}`;
+        console.log(`[DecisionOrchestrator] NEW_ENTRY blocked by daily cap (${allEntriesToday.length}/${MAX_DAILY_ENTRIES})`);
+      } else if (!pastWaitPeriod) {
+        rawOutput.decision_type = 'WAIT';
+        rawOutput.should_execute = false;
+        rawOutput.reasoning = `[WAIT PERIOD] ${minsSinceOpen}min since open < 30min wait period. ${rawOutput.reasoning}`;
+        console.log(`[DecisionOrchestrator] NEW_ENTRY blocked by 30-min wait period (${minsSinceOpen}min since open)`);
+      } else if (triggerTotal > 0 && triggerPassCount < triggerTotal) {
+        // Orchestrator AI said NEW_ENTRY but not all triggers passed — block it
+        rawOutput.decision_type = 'WAIT';
+        rawOutput.should_execute = false;
+        rawOutput.reasoning = `[TRIGGER GATE] Orchestrator recommended NEW_ENTRY but only ${triggerPassCount}/${triggerTotal} triggers passed — all must pass. ${rawOutput.reasoning}`;
+        console.log(`[DecisionOrchestrator] NEW_ENTRY blocked by trigger gate (${triggerPassCount}/${triggerTotal} triggers passed)`);
+      } else {
+        // Triggers meet N-1 threshold + orchestrator AI said NEW_ENTRY → execute
         const side = signal.direction === 'bullish' ? 'CALL' : 'PUT';
-        rawOutput.reasoning = `[RANGE BYPASS] Mean-reversion ${side} at range ${signal.direction === 'bullish' ? 'support' : 'resistance'} (conf=${(analysis.confidence * 100).toFixed(1)}%, ADX=${htfTf?.dmi.adx.toFixed(1)}). ${rawOutput.reasoning}`;
-        console.log(`[DecisionOrchestrator] NEW_ENTRY range bypass — ${side} (confidence=${analysis.confidence.toFixed(2)}, support=${signal.rangeSupport?.toFixed(2)}, resistance=${signal.rangeResistance?.toFixed(2)})`);
-      } else if (breakoutBypass) {
-        const side = signal.direction === 'bullish' ? 'CALL' : 'PUT';
-        rawOutput.reasoning = `[BREAKOUT BYPASS] Squeeze breakout ${side} beyond ${signal.breakoutLevel?.toFixed(2)} (conf=${(analysis.confidence * 100).toFixed(1)}%, ADX=${htfTf?.dmi.adx.toFixed(1)}, slope=${htfTf?.dmi.adxSlope.toFixed(1)}). ${rawOutput.reasoning}`;
-        console.log(`[DecisionOrchestrator] NEW_ENTRY breakout bypass — ${side} (confidence=${analysis.confidence.toFixed(2)}, breakoutLevel=${signal.breakoutLevel?.toFixed(2)}, beyond=${signal.breakoutBeyond?.toFixed(3)}%)`);
-      } else if (vwapRevBypass) {
-        const side = signal.direction === 'bullish' ? 'CALL' : 'PUT';
-        rawOutput.reasoning = `[VWAP_REV BYPASS] VWAP reversion ${side} toward ${signal.vwapReversionTarget?.toFixed(2)} (conf=${(analysis.confidence * 100).toFixed(1)}%, dist=${signal.vwapDistance?.toFixed(2)}%). ${rawOutput.reasoning}`;
-        console.log(`[DecisionOrchestrator] NEW_ENTRY VWAP reversion bypass — ${side} (confidence=${analysis.confidence.toFixed(2)}, vwapTarget=${signal.vwapReversionTarget?.toFixed(2)}, distance=${signal.vwapDistance?.toFixed(2)}%)`);
-      } else if (strongSignalBypass) {
-        const side = signal.direction === 'bullish' ? 'CALL' : 'PUT';
-        rawOutput.reasoning = `[STRONG-SIGNAL BYPASS] Confidence ${(analysis.confidence * 100).toFixed(1)}% + all_aligned → immediate ${side} entry (no 2-stage wait). ${rawOutput.reasoning}`;
-        console.log(`[DecisionOrchestrator] NEW_ENTRY strong-signal bypass — ${side} (priorCount=${priorCount}, confidence=${analysis.confidence.toFixed(2)}, alignment=${signal.alignment})`);
-      } else if (phaseChangeOk && priorCount < 1 && !overrideOk) {
-        isPhaseChangeOverride = true;
-        const side = signal.direction === 'bullish' ? 'CALL' : 'PUT';
-        rawOutput.reasoning = `[PHASE-CHANGE OVERRIDE] HTF DI cross ${signal.direction} + rising ADX → immediate ${side} entry (no 2-stage wait). ${rawOutput.reasoning}`;
-        console.log(`[DecisionOrchestrator] NEW_ENTRY phase-change override applied — ${side} (priorCount=${priorCount}, confidence=${analysis.confidence.toFixed(2)}, alignment=${signal.alignment}, htfADXSlope=${htfTf!.dmi.adxSlope.toFixed(1)})`);
+        rawOutput.reasoning = `[TRIGGER ENTRY] ${triggerPassCount}/${triggerTotal} triggers passed → ${side} entry. ${rawOutput.reasoning}`;
+        console.log(`[DecisionOrchestrator] NEW_ENTRY via trigger gate — ${triggerPassCount}/${triggerTotal} triggers passed`);
       }
     }
 
@@ -654,21 +401,11 @@ export class DecisionOrchestrator {
     // Phase-change OVERRIDE (section C) is retained — it only fires when the AI already
     // recommends NEW_ENTRY, so the AI's conviction is confirmed by the structural signal.
 
-    // Direct AI WAITs: WAIT decisions from the AI never advance the confirmation count.
-    // Only gate-blocked NEW_ENTRY decisions (isStage1ObserveWait) advance the count.
-    // The AI must output NEW_ENTRY to signal conviction — WAIT means "not ready".
-    if (!isStage1ObserveWait && !isHardTimeGateBlock && rawOutput.decision_type === 'WAIT' &&
-        analysis.meetsEntryThreshold && !rawOutput.reasoning.includes('[GATE OVERRIDE]')) {
-      if (priorCount === 0) {
-        rawOutput.reasoning = `[STAGE-1 OBSERVE] [TRIGGER: AI returned WAIT despite confidence ${analysis.confidence.toFixed(2)} above threshold — AI chose caution, count stays at 0 (requires NEW_ENTRY to advance)] ${rawOutput.reasoning}`;
-        console.log(`[DecisionOrchestrator] Direct AI WAIT at Stage-1 (priorCount=0, confidence=${analysis.confidence.toFixed(2)}, alignment=${signal.alignment}) — NOT advancing count (requires NEW_ENTRY)`);
-      } else {
-        // At priorCount>=1, AI still chose WAIT — count does NOT advance.
-        // AI must output NEW_ENTRY to advance the count; WAIT always means "not ready".
-        rawOutput.reasoning = `[STAGE-${priorCount} WAIT] [AI chose WAIT — count stays at ${priorCount} (requires NEW_ENTRY to advance)] ${rawOutput.reasoning}`;
-        console.log(`[DecisionOrchestrator] Direct AI WAIT at Stage-${priorCount} (priorCount=${priorCount}, confidence=${analysis.confidence.toFixed(2)}, alignment=${signal.alignment}) — NOT advancing count (requires NEW_ENTRY)`);
-      }
-    }
+    // Trigger override: REMOVED (2026-03-31).
+    // Data showed override forcing repeated NEW_ENTRY every minute against orchestrator AI's
+    // WAIT (which cited OBV divergence, string of losses, timing issues). All entries lost.
+    // The orchestrator AI's WAIT judgment should be respected — triggers pass the threshold
+    // to let signals reach the AI, but should not override the AI's final decision.
 
     // Server-side confirmation count — computed after all gate overrides.
     // Only add +1 when the final decision is a pre-entry conviction advance (WAIT stages) or

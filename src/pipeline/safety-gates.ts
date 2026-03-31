@@ -45,10 +45,8 @@ export function checkSafetyGates(params: {
     failed.push(`LIQUIDITY_GATE: spread ${pct}% exceeds ${(maxSpreadPct * 100).toFixed(0)}%`);
   }
 
-  // 3. Confidence gate — must meet minimum for entry
-  if (analysis.confidence < minConfidence) {
-    failed.push(`CONFIDENCE_GATE: ${analysis.confidence.toFixed(2)} < ${minConfidence}`);
-  }
+  // 3. Confidence gate removed — structural triggers are the entry gate, not confidence numbers.
+  //    Kept as comment for audit trail.
 
   // 4. R:R gate — minimum risk/reward
   const rr = option.winnerCandidate?.rrRatio ?? 0;

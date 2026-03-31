@@ -152,7 +152,7 @@
         <thead>
           <tr>
             <th>Time</th><th>Ticker</th><th>Profile</th><th>Direction</th>
-            <th>Alignment</th><th>Mode</th><th>Confidence</th><th>Thresh?</th><th>Trigger</th>
+            <th>Alignment</th><th>Mode</th><th>Confidence</th><th>Triggers</th><th>Source</th>
             <th>Side</th><th>Symbol</th><th>Entry</th><th>Stop</th><th>TP</th>
             <th>R:R</th><th>Spread%</th><th>Liq?</th>
           </tr>
@@ -166,9 +166,9 @@
       <table id="tbl-decisions">
         <thead>
           <tr>
-            <th>Time</th><th>Ticker</th><th>Profile</th><th>Direction</th>
-            <th>Decision</th><th>Stage</th><th>Confirms</th><th>Confidence</th>
-            <th>Urgency</th><th>Execute</th><th>Reasoning</th>
+            <th>Time</th><th>Ticker</th><th>Direction</th>
+            <th>Decision</th><th>Mode</th><th>Triggers</th><th>Confidence</th>
+            <th>Stage</th><th>Urgency</th><th>Execute</th><th>Reasoning</th><th>AI Decision</th>
           </tr>
         </thead>
         <tbody></tbody>
@@ -237,7 +237,7 @@
     <section id="tab-analysis" class="tab-content">
       <div class="agents-section-header">
         Analysis Agent Output <small id="analysis-count"></small>
-        <small style="float:right;color:#8b949e;font-weight:normal">Confidence breakdown · AI explanation · Indicators · Key factors · Risks</small>
+        <small style="float:right;color:#8b949e;font-weight:normal">Structural triggers · AI explanation · Indicators · Key factors · Risks</small>
       </div>
       <div id="analysis-cards" class="agent-cards"></div>
       <div id="pagination-analysis"></div>

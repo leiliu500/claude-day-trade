@@ -132,11 +132,13 @@ export function startDashboard(port: number): void {
 
       const [{ rows }, { rows: countRows }] = await Promise.all([
         pool.query(
-          `SELECT id, ticker, profile, direction, decision_type, confirmation_count,
-                  orchestration_confidence, urgency, should_execute, reasoning, entry_strategy, created_at
-           FROM trading.trading_decisions
-           ${whereClause}
-           ORDER BY created_at DESC
+          `SELECT d.id, d.ticker, d.profile, d.direction, d.decision_type, d.confirmation_count,
+                  d.orchestration_confidence, d.urgency, d.should_execute, d.reasoning, d.entry_strategy, d.created_at,
+                  ss.analysis_payload, ss.confidence AS signal_confidence
+           FROM trading.trading_decisions d
+           LEFT JOIN trading.signal_snapshots ss ON ss.id = d.signal_snapshot_id
+           ${whereClause.replace(/\bticker\b/g, 'd.ticker').replace(/\bcreated_at\b/g, 'd.created_at').replace(/\btrade_date\b/g, 'd.trade_date').replace(/\bdecision_type\b/g, 'd.decision_type')}
+           ORDER BY d.created_at DESC
            LIMIT $${limitN} OFFSET $${offsetN}`,
           [...filterParams, limit, offset]
         ),
