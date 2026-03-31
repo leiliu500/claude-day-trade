@@ -2110,6 +2110,156 @@ async function main() {
     const captureRate = dedupedMoves.length > 0 ? (caught.length / dedupedMoves.length * 100).toFixed(0) : 'N/A';
     console.log(`\n  Move capture rate: ${captureRate}%`);
 
+    // ── Suppression & Threshold Analysis ──────────────────────────────────────
+    // For each missed move, find the system's best opportunity within the move range
+    // and analyze what suppressed it (threshold, gates, filters, wrong direction)
+    {
+      console.log(`\n${'─'.repeat(80)}`);
+      console.log(`  SUPPRESSION & THRESHOLD ANALYSIS`);
+      console.log(`${'─'.repeat(80)}`);
+
+      // 1) Threshold sensitivity: how many moves would be caught at each threshold level
+      const thresholds = [0.70, 0.65, 0.60, 0.55, 0.50, 0.45, 0.40, 0.30, 0.20];
+      console.log(`\n  Threshold sensitivity (right-direction moves only):`);
+      console.log(`  Threshold   Catchable   Of Total    Avg MFE of caught    Moves`);
+      console.log(`  ${'─'.repeat(75)}`);
+
+      // For each move where system had right direction at some point, find max conf
+      const rightDirMoves = awareness.map(a => {
+        const ticks = getSystemTicksForMove(a.move);
+        const rightDirTicks = ticks.filter(t => t.direction === a.move.direction);
+        const maxConf = rightDirTicks.length > 0 ? Math.max(...rightDirTicks.map(t => t.confidence)) : 0;
+        const maxConfTick = rightDirTicks.find(t => t.confidence === maxConf);
+        return { ...a, maxConf, maxConfTick, rightDirTicks };
+      });
+
+      for (const th of thresholds) {
+        const catchable = rightDirMoves.filter(m => m.maxConf >= th);
+        const avgMfe = catchable.length > 0 ? catchable.reduce((s, m) => s + m.move.mfePct, 0) / catchable.length : 0;
+        const marker = th === MIN_CONFIDENCE ? ' ◄ CURRENT' : '';
+        const moveNums = catchable.map(m => {
+          const idx = rightDirMoves.indexOf(m);
+          return `#${idx + 1}`;
+        }).join(', ');
+        console.log(`  ${(th * 100).toFixed(0)}%         ${String(catchable.length).padStart(2)}/${dedupedMoves.length}        ${(catchable.length / dedupedMoves.length * 100).toFixed(0).padStart(3)}%       ${avgMfe.toFixed(2)}%               ${moveNums}${marker}`);
+      }
+
+      // 2) Gate & filter cost/benefit for moves where system had right direction
+      console.log(`\n  Per-move suppression detail (right direction only):`);
+      console.log(`  #   Time Range          MaxConf  Needed   Gap     Suppressor                         MFE    Grade`);
+      console.log(`  ${'─'.repeat(100)}`);
+
+      for (let mi = 0; mi < awareness.length; mi++) {
+        const a = awareness[mi]!;
+        const rdm = rightDirMoves[mi]!;
+        const mv = a.move;
+
+        // Skip wrong-direction and caught moves for this section
+        if (a.status === 'CAUGHT') {
+          const confPct = (rdm.maxConf * 100).toFixed(0);
+          console.log(`  ${String(mi + 1).padStart(2)}  ${mv.startTimeET}→${mv.peakTimeET}    ${confPct.padStart(3)}%     ---      ---     ✅ CAUGHT                              ${mv.mfePct.toFixed(2)}%  ${mv.direction}`);
+          continue;
+        }
+        if (a.status === 'WRONG_DIRECTION' && rdm.maxConf === 0) {
+          console.log(`  ${String(mi + 1).padStart(2)}  ${mv.startTimeET}→${mv.peakTimeET}      0%     ---      ---     ❌ Wrong direction entire range         ${mv.mfePct.toFixed(2)}%  ${mv.direction}`);
+          continue;
+        }
+        if (a.status === 'NO_SIGNAL' && rdm.rightDirTicks.length === 0) {
+          console.log(`  ${String(mi + 1).padStart(2)}  ${mv.startTimeET}→${mv.peakTimeET}      -%     ---      ---     ❌ No signal / cache gap                ${mv.mfePct.toFixed(2)}%  ${mv.direction}`);
+          continue;
+        }
+
+        const maxConfPct = (rdm.maxConf * 100).toFixed(0);
+        const threshPct = (MIN_CONFIDENCE * 100).toFixed(0);
+        const gap = rdm.maxConf >= MIN_CONFIDENCE ? 'PASS' : `${((MIN_CONFIDENCE - rdm.maxConf) * 100).toFixed(0)}%`;
+
+        // Determine primary suppressor
+        let suppressor = '';
+        if (a.status === 'FILTER_BLOCKED') {
+          suppressor = `Filter: ${a.filterRule ?? 'unknown'}`;
+        } else if (a.status === 'WRONG_DIRECTION') {
+          // Had right dir ticks but initial tick was wrong
+          suppressor = `Wrong dir at start, right later (max ${maxConfPct}%)`;
+        } else if (rdm.maxConf >= MIN_CONFIDENCE) {
+          // Had enough confidence at some point — blocked by gate or filter
+          const filterMatch = filterBlockedEntries.find(fb => {
+            const fbTs = new Date(fb.time).getTime();
+            const mvStart = new Date(mv.startTime).getTime();
+            const mvPeak = new Date(mv.peakTime).getTime();
+            return fbTs >= mvStart && fbTs <= mvPeak && fb.direction === mv.direction;
+          });
+          const gateMatch = blockedEntries.find(e => {
+            const eTs = new Date(e.time).getTime();
+            const mvStart = new Date(mv.startTime).getTime();
+            const mvPeak = new Date(mv.peakTime).getTime();
+            return eTs >= mvStart && eTs <= mvPeak && e.direction === mv.direction;
+          });
+          if (filterMatch) {
+            suppressor = `Filter: ${filterMatch.filterRule}`;
+          } else if (gateMatch) {
+            suppressor = `Gate: ${gateMatch.gateResult}`;
+          } else {
+            suppressor = `Conf ≥${threshPct}% but no entry tick aligned`;
+          }
+        } else {
+          // Confidence too low — identify how far off and likely hard gate
+          const shortfall = MIN_CONFIDENCE - rdm.maxConf;
+          if (shortfall <= 0.05) {
+            suppressor = `Near-miss: ${maxConfPct}% (${gap} short of ${threshPct}%)`;
+          } else if (shortfall <= 0.15) {
+            suppressor = `Moderate gap: ${maxConfPct}% (${gap} short)`;
+          } else {
+            suppressor = `Large gap: ${maxConfPct}% (${gap} short)`;
+          }
+          // Check if a hard gate likely capped it
+          if (rdm.maxConf > 0.50 && rdm.maxConf < MIN_CONFIDENCE) {
+            suppressor += ' — likely hard-gate capped';
+          }
+        }
+
+        // Find grade for the best tick
+        const gradeForMove = (() => {
+          // Check if any filter-blocked entry covers this move and has a grade
+          const fb = filterBlockedEntries.find(f => {
+            const fTs = new Date(f.time).getTime();
+            return fTs >= new Date(mv.startTime).getTime() && fTs <= new Date(mv.peakTime).getTime() && f.direction === mv.direction;
+          });
+          if (fb) return fb.entryGrade;
+          // Check blocked entries
+          const be = blockedEntries.find(e => {
+            const eTs = new Date(e.time).getTime();
+            return eTs >= new Date(mv.startTime).getTime() && eTs <= new Date(mv.peakTime).getTime() && e.direction === mv.direction;
+          });
+          if (be) return be.entryGrade;
+          return '?';
+        })();
+
+        console.log(`  ${String(mi + 1).padStart(2)}  ${mv.startTimeET}→${mv.peakTimeET}    ${maxConfPct.padStart(3)}%     ${threshPct}%      ${gap.padStart(5)}   ${suppressor.padEnd(38)} ${mv.mfePct.toFixed(2)}%  ${gradeForMove}`);
+      }
+
+      // 3) Summary: opportunity cost
+      const rightDirLowConf = rightDirMoves.filter(m => m.status === 'LOW_CONFIDENCE' || (m.status === 'FILTER_BLOCKED'));
+      const nearMisses = rightDirLowConf.filter(m => m.maxConf >= MIN_CONFIDENCE - 0.05);
+      const totalMissedMfe = rightDirLowConf.reduce((s, m) => s + m.move.mfePct, 0);
+      const filterBlocked = rightDirMoves.filter(m => m.status === 'FILTER_BLOCKED');
+
+      console.log(`\n  Summary:`);
+      console.log(`    Right direction, suppressed:  ${rightDirLowConf.length} moves (total MFE: ${totalMissedMfe.toFixed(2)}%)`);
+      console.log(`    Near-misses (within 5%):      ${nearMisses.length} moves (max conf ${nearMisses.map(m => (m.maxConf * 100).toFixed(0) + '%').join(', ') || 'none'})`);
+      console.log(`    Filter-blocked:               ${filterBlocked.length} moves`);
+      console.log(`    Wrong direction:              ${rightDirMoves.filter(m => m.status === 'WRONG_DIRECTION' && m.maxConf === 0).length} moves (no optimization path)`);
+
+      // 4) Recommendation
+      if (nearMisses.length > 0) {
+        const nearMissMfe = nearMisses.reduce((s, m) => s + m.move.mfePct, 0);
+        console.log(`\n    💡 Lowering threshold by 5% (${(MIN_CONFIDENCE * 100).toFixed(0)}%→${((MIN_CONFIDENCE - 0.05) * 100).toFixed(0)}%) would catch ${nearMisses.length} more moves (${nearMissMfe.toFixed(2)}% total MFE)`);
+      }
+      if (filterBlocked.length > 0) {
+        const fbMfe = filterBlocked.reduce((s, m) => s + m.move.mfePct, 0);
+        console.log(`    💡 Relaxing filters would catch ${filterBlocked.length} more moves (${fbMfe.toFixed(2)}% total MFE)`);
+      }
+    }
+
     // Add to JSON output
     if (JSON_OUTPUT) {
       // Will be merged into jsonSummary below
