@@ -1802,6 +1802,8 @@ async function main() {
       maePct: number;          // max adverse excursion %
       mfePeakMinutes: number;
       peakPrice: number;
+      peakTime: string;
+      peakTimeET: string;
     }
 
     // Scan each bar as a potential move start; compute forward MFE/MAE over 120 min
@@ -1819,8 +1821,8 @@ async function main() {
       const entryTs = new Date(bar.timestamp).getTime();
 
       // Compute forward MFE for both directions
-      let bullMfe = 0, bullMae = 0, bullPeakMin = 0, bullPeakPrice = entryPrice;
-      let bearMfe = 0, bearMae = 0, bearPeakMin = 0, bearPeakPrice = entryPrice;
+      let bullMfe = 0, bullMae = 0, bullPeakMin = 0, bullPeakPrice = entryPrice, bullPeakTs = bar.timestamp;
+      let bearMfe = 0, bearMae = 0, bearPeakMin = 0, bearPeakPrice = entryPrice, bearPeakTs = bar.timestamp;
 
       for (let j = i + 1; j < Math.min(i + 1 + LOOKAHEAD_BARS, targetDateBars.length); j++) {
         const fb = targetDateBars[j]!;
@@ -1829,13 +1831,13 @@ async function main() {
         // Bullish: favorable = price going up
         const bullFav = fb.high - entryPrice;
         const bullAdv = entryPrice - fb.low;
-        if (bullFav > bullMfe) { bullMfe = bullFav; bullPeakMin = mins; bullPeakPrice = fb.high; }
+        if (bullFav > bullMfe) { bullMfe = bullFav; bullPeakMin = mins; bullPeakPrice = fb.high; bullPeakTs = fb.timestamp; }
         if (bullAdv > bullMae) bullMae = bullAdv;
 
         // Bearish: favorable = price going down
         const bearFav = entryPrice - fb.low;
         const bearAdv = fb.high - entryPrice;
-        if (bearFav > bearMfe) { bearMfe = bearFav; bearPeakMin = mins; bearPeakPrice = fb.low; }
+        if (bearFav > bearMfe) { bearMfe = bearFav; bearPeakMin = mins; bearPeakPrice = fb.low; bearPeakTs = fb.timestamp; }
         if (bearAdv > bearMae) bearMae = bearAdv;
       }
 
@@ -1850,6 +1852,7 @@ async function main() {
       const maePct = bestDir === 'bullish' ? bullMaePct : bearMaePct;
       const mfePeakMin = bestDir === 'bullish' ? bullPeakMin : bearPeakMin;
       const peakPrice = bestDir === 'bullish' ? bullPeakPrice : bearPeakPrice;
+      const peakTs = bestDir === 'bullish' ? bullPeakTs : bearPeakTs;
 
       if (mfePct >= MIN_MFE_PCT && (maePct < 0.01 || mfePct / maePct > 1.2)) {
         moves.push({
@@ -1859,6 +1862,7 @@ async function main() {
           startPrice: entryPrice,
           direction: bestDir,
           mfePct, maePct, mfePeakMinutes: mfePeakMin, peakPrice,
+          peakTime: peakTs, peakTimeET: utcToET(peakTs),
         });
       }
     }
@@ -1984,6 +1988,61 @@ async function main() {
     console.log(`  Significant moves found: ${dedupedMoves.length} (MFE >= ${MIN_MFE_PCT}%, MFE/MAE > 1.2)`);
     console.log(`  System caught: ${caught.length} | Missed: ${missed.length}`);
 
+    // Summary table of all moves with time ranges
+    console.log(`\n  #   Time Range (ET)     Dir     Price Range             MFE    MAE    R       Status`);
+    console.log(`  ${'─'.repeat(95)}`);
+    for (let mi = 0; mi < awareness.length; mi++) {
+      const a = awareness[mi]!;
+      const mv = a.move;
+      const dirIcon = mv.direction === 'bullish' ? '▲' : '▼';
+      const mfeOverMae = mv.maePct > 0.01 ? (mv.mfePct / mv.maePct).toFixed(1) : '∞';
+      let statusLabel = '';
+      switch (a.status) {
+        case 'CAUGHT': statusLabel = '✅ CAUGHT'; break;
+        case 'LOW_CONFIDENCE': statusLabel = `❌ low conf (${((a.systemConf ?? 0) * 100).toFixed(0)}%)`; break;
+        case 'WRONG_DIRECTION': statusLabel = `❌ wrong dir`; break;
+        case 'NO_SIGNAL': statusLabel = '❌ no signal'; break;
+        case 'FILTER_BLOCKED': statusLabel = `❌ filter`; break;
+        case 'WRONG_MODE': statusLabel = '❌ wrong mode'; break;
+      }
+      const num = String(mi + 1).padStart(2);
+      const timeRange = `${mv.startTimeET}→${mv.peakTimeET}`.padEnd(18);
+      const dir = `${dirIcon} ${mv.direction}`.padEnd(9);
+      const priceRange = `$${mv.startPrice.toFixed(2)} → $${mv.peakPrice.toFixed(2)}`.padEnd(23);
+      const mfe = `${mv.mfePct.toFixed(2)}%`.padStart(5);
+      const mae = `${mv.maePct.toFixed(2)}%`.padStart(5);
+      const ratio = String(mfeOverMae).padStart(5);
+      console.log(`  ${num}  ${timeRange} ${dir} ${priceRange} ${mfe}  ${mae}  ${ratio}   ${statusLabel}`);
+    }
+
+    // Helper: find system ticks within a move's time range
+    const getSystemTicksForMove = (mv: MarketMove) => {
+      const startTs = new Date(mv.startTime).getTime();
+      const peakTs = new Date(mv.peakTime).getTime();
+      return allTicks.filter(t => {
+        const tTs = new Date(t.time).getTime();
+        return tTs >= startTs && tTs <= peakTs;
+      });
+    };
+
+    const formatMoveTicks = (ticks: typeof allTicks, moveDir: string) => {
+      if (ticks.length === 0) return '        System: no ticks in range';
+      // Sample up to 6 ticks evenly spaced
+      const sampled: typeof allTicks = [];
+      if (ticks.length <= 6) {
+        sampled.push(...ticks);
+      } else {
+        const step = (ticks.length - 1) / 5;
+        for (let k = 0; k < 6; k++) sampled.push(ticks[Math.round(k * step)]!);
+      }
+      const lines = sampled.map(t => {
+        const dirMatch = t.direction === moveDir ? '✓' : '✗';
+        const confPct = (t.confidence * 100).toFixed(0);
+        return `${t.timeET} ${t.direction} ${confPct}%${dirMatch}`;
+      });
+      return `        System: ${lines.join(' | ')}`;
+    };
+
     if (missed.length > 0) {
       // Group by miss reason
       const byReason = new Map<string, MoveAwareness[]>();
@@ -2030,8 +2089,10 @@ async function main() {
             reason = `filter: ${a.filterRule}`;
             break;
         }
-        console.log(`    ⚠️  ${mv.startTimeET} ET ${dirIcon} ${mv.direction} $${mv.startPrice.toFixed(2)} → $${mv.peakPrice.toFixed(2)} MFE=${mv.mfePct.toFixed(2)}% MAE=${mv.maePct.toFixed(2)}% R=${mfeOverMae} peak@${mv.mfePeakMinutes}m`);
+        console.log(`    ⚠️  ${mv.startTimeET}→${mv.peakTimeET} ET ${dirIcon} ${mv.direction} $${mv.startPrice.toFixed(2)} → $${mv.peakPrice.toFixed(2)} MFE=${mv.mfePct.toFixed(2)}% MAE=${mv.maePct.toFixed(2)}% R=${mfeOverMae} peak@${mv.mfePeakMinutes}m`);
         console.log(`        WHY MISSED: ${reason}`);
+        const moveTicks = getSystemTicksForMove(mv);
+        console.log(formatMoveTicks(moveTicks, mv.direction));
       }
     }
 
@@ -2040,7 +2101,9 @@ async function main() {
       for (const a of caught) {
         const mv = a.move;
         const dirIcon = mv.direction === 'bullish' ? '▲' : '▼';
-        console.log(`    ✅ ${mv.startTimeET} ET ${dirIcon} ${mv.direction} $${mv.startPrice.toFixed(2)} → $${mv.peakPrice.toFixed(2)} MFE=${mv.mfePct.toFixed(2)}%`);
+        console.log(`    ✅ ${mv.startTimeET}→${mv.peakTimeET} ET ${dirIcon} ${mv.direction} $${mv.startPrice.toFixed(2)} → $${mv.peakPrice.toFixed(2)} MFE=${mv.mfePct.toFixed(2)}%`);
+        const moveTicks = getSystemTicksForMove(mv);
+        console.log(formatMoveTicks(moveTicks, mv.direction));
       }
     }
 
