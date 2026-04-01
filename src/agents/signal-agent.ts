@@ -11,6 +11,7 @@ import { computeVWAP } from '../indicators/vwap.js';
 import { computePriorDayLevels, computeORB } from '../indicators/market-structure.js';
 import { computePriceVelocity } from '../indicators/price-velocity.js';
 import { computeVolumeSurge } from '../indicators/volume-surge.js';
+import { detectSpike } from '../indicators/spike-detector.js';
 import { PROFILE_TIMEFRAMES, normalizeAlpacaBars } from '../types/market.js';
 import type { OHLCVBar, Timeframe, TradingProfile, AlpacaBarsResponse } from '../types/market.js';
 import type { TimeframeIndicators } from '../types/indicators.js';
@@ -204,17 +205,35 @@ export class SignalAgent {
 
     // ── Leading indicator direction override ──────────────────────────────────
     // DMI majority-vote determines direction, but it lags by 14+ bars on MTF/HTF.
-    // Leading indicators (price velocity, volume-confirmed candle patterns) can
-    // detect direction changes 5-15 bars before DMI catches up.
+    // Leading indicators (spike detection, price velocity, volume-confirmed candle
+    // patterns) can detect direction changes 0-15 bars before DMI catches up.
     //
-    // Two mechanisms:
+    // Three mechanisms (ordered fastest → slowest):
+    // 0. SPIKE OVERRIDE: 1-2 bar move exceeding 2x ATR → instant direction flip
     // 1. DIRECTION VOTE: Price velocity + LTF DMI agree → counts as extra vote
     //    that can outvote lagged MTF+HTF (e.g. 1 LTF DMI + velocity vs 2 HTF/MTF)
     // 2. CANDLE OVERRIDE: Volume-confirmed engulfing pattern flips direction
     //    even when all 3 DMI timeframes disagree
     //
-    // Both set leadingSignalOverride=true → analysis agent lowers entry threshold.
+    // All set leadingSignalOverride=true → analysis agent lowers entry threshold.
     let leadingSignalOverride = false;
+
+    // --- Spike detection: instant direction flip on 1-2 bar explosive moves ---
+    // Catches moves like Mar 31 SPY 12:38-12:43 ($642→$649 in 3 min) that are
+    // too fast for velocity (5-bar) or DMI (14-bar) to detect.
+    const spike = detectSpike(ltfBars);
+    if (spike.detected && spike.direction !== 'neutral' && !reversalOverride) {
+      if (spike.direction !== direction) {
+        console.log(`[SignalAgent] Spike override: ${spike.atrMultiple.toFixed(1)}x ATR move (${spike.changePct > 0 ? '+' : ''}${spike.changePct.toFixed(2)}%) vol_confirmed=${spike.volumeConfirmed} → flipping ${direction}→${spike.direction}`);
+        direction = spike.direction;
+        leadingSignalOverride = true;
+        _leadingOverrideDir.set(ticker, spike.direction);
+        _leadingOverrideTs.set(ticker, Date.now());
+      } else {
+        // Spike confirms existing direction → extra conviction
+        leadingSignalOverride = true;
+      }
+    }
 
     // --- Price velocity direction vote ---
     // Compute raw velocity on LTF bars (fastest available data, zero smoothing)
@@ -226,7 +245,7 @@ export class SignalAgent {
     // When velocity strongly agrees with LTF DMI but opposes the majority direction,
     // AND velocity is accelerating (not just residual momentum), count LTF+velocity
     // as 2 votes → outvotes the 2 lagged MTF+HTF votes → flip direction.
-    if (velDir !== 'neutral' && !reversalOverride) {
+    if (velDir !== 'neutral' && !reversalOverride && !spike.detected) {
       const ltfAgrees = ltfDmi?.trend === velDir;
       const velocityOpposesDir = velDir !== direction;
       const accelerating = ltfVelocity.acceleration > 0.01;
