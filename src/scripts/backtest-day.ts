@@ -2110,6 +2110,169 @@ async function main() {
     const captureRate = dedupedMoves.length > 0 ? (caught.length / dedupedMoves.length * 100).toFixed(0) : 'N/A';
     console.log(`\n  Move capture rate: ${captureRate}%`);
 
+    // ── Entry Delay Analysis ─────────────────────────────────────────────────
+    // For each detected move, find when the system first generated a matching
+    // signal (right direction + mode ≠ none + confidence ≥ threshold). Measures
+    // detection lag and the price already given up before entry.
+    {
+      interface DelayRecord {
+        move: MarketMove;
+        status: 'CAUGHT' | 'CAUGHT_LATE' | 'MISSED';
+        delayMinutes: number | null;       // minutes from move start to first matching signal
+        entryCostPct: number | null;       // % price already moved by signal time
+        remainingMfePct: number | null;    // MFE from signal time forward
+        captureRatio: number | null;       // remainingMfe / fullMfe
+        signalTime: string | null;
+        signalTimeET: string | null;
+        signalConf: number | null;
+        signalMode: string | null;
+      }
+
+      const delayRecords: DelayRecord[] = [];
+
+      for (const mv of dedupedMoves) {
+        const mvStartTs = new Date(mv.startTime).getTime();
+        const mvStartIdx = mv.startIdx;
+
+        // Search allTicks from move start to move peak + 30min for first matching signal
+        const searchEndTs = new Date(mv.peakTime).getTime() + 30 * 60_000;
+
+        let firstMatchTick: typeof allTicks[0] | null = null;
+        for (const t of allTicks) {
+          const tTs = new Date(t.time).getTime();
+          if (tTs < mvStartTs) continue;
+          if (tTs > searchEndTs) break;
+          if (t.direction === mv.direction && t.signalMode !== 'none' && t.confidence >= MIN_CONFIDENCE) {
+            firstMatchTick = t;
+            break;
+          }
+        }
+
+        if (!firstMatchTick) {
+          delayRecords.push({
+            move: mv, status: 'MISSED', delayMinutes: null,
+            entryCostPct: null, remainingMfePct: null, captureRatio: null,
+            signalTime: null, signalTimeET: null, signalConf: null, signalMode: null,
+          });
+          continue;
+        }
+
+        const signalTs = new Date(firstMatchTick.time).getTime();
+        const delayMin = Math.round((signalTs - mvStartTs) / 60_000);
+
+        // Find the bar index closest to signal time to compute remaining MFE
+        let signalBarIdx = mvStartIdx;
+        for (let bi = mvStartIdx; bi < targetDateBars.length; bi++) {
+          if (new Date(targetDateBars[bi]!.timestamp).getTime() >= signalTs) {
+            signalBarIdx = bi;
+            break;
+          }
+        }
+        const signalPrice = targetDateBars[signalBarIdx]?.close ?? mv.startPrice;
+
+        // Entry cost: how much price already moved from move start to signal
+        const entryCostPct = Math.abs(signalPrice - mv.startPrice) / mv.startPrice * 100;
+
+        // Remaining MFE: max favorable from signal bar forward (120 bars)
+        let remainingMfe = 0;
+        for (let j = signalBarIdx + 1; j < Math.min(signalBarIdx + 121, targetDateBars.length); j++) {
+          const fb = targetDateBars[j]!;
+          const fav = mv.direction === 'bullish'
+            ? fb.high - signalPrice
+            : signalPrice - fb.low;
+          if (fav > remainingMfe) remainingMfe = fav;
+        }
+        const remainingMfePct = (remainingMfe / signalPrice) * 100;
+        const captureRatio = mv.mfePct > 0.01 ? remainingMfePct / mv.mfePct : 0;
+
+        delayRecords.push({
+          move: mv,
+          status: delayMin <= 3 ? 'CAUGHT' : 'CAUGHT_LATE',
+          delayMinutes: delayMin,
+          entryCostPct,
+          remainingMfePct,
+          captureRatio,
+          signalTime: firstMatchTick.time,
+          signalTimeET: firstMatchTick.timeET,
+          signalConf: firstMatchTick.confidence,
+          signalMode: firstMatchTick.signalMode,
+        });
+      }
+
+      // Report
+      const caughtDelay = delayRecords.filter(d => d.status !== 'MISSED');
+      const missedDelay = delayRecords.filter(d => d.status === 'MISSED');
+      const avgDelay = caughtDelay.length > 0 ? caughtDelay.reduce((s, d) => s + (d.delayMinutes ?? 0), 0) / caughtDelay.length : 0;
+      const medianDelay = (() => {
+        const sorted = caughtDelay.map(d => d.delayMinutes ?? 0).sort((a, b) => a - b);
+        if (sorted.length === 0) return 0;
+        const mid = Math.floor(sorted.length / 2);
+        return sorted.length % 2 ? sorted[mid]! : (sorted[mid - 1]! + sorted[mid]!) / 2;
+      })();
+      const avgCapture = caughtDelay.length > 0 ? caughtDelay.reduce((s, d) => s + (d.captureRatio ?? 0), 0) / caughtDelay.length : 0;
+      const overHalfLost = caughtDelay.filter(d => (d.captureRatio ?? 0) < 0.50).length;
+
+      console.log(`\n${'─'.repeat(80)}`);
+      console.log(`  ENTRY DELAY ANALYSIS (detection lag from move start to first matching signal)`);
+      console.log(`${'─'.repeat(80)}`);
+      console.log(`  Moves: ${dedupedMoves.length} | Detected: ${caughtDelay.length} | Missed: ${missedDelay.length} | Avg delay: ${avgDelay.toFixed(1)}m | Median: ${medianDelay}m`);
+
+      console.log(`\n  #   Move Start   Dir     Full MFE  Delay  Entry Cost  Remaining MFE  Capture  Signal`);
+      console.log(`  ${'─'.repeat(95)}`);
+      for (let di = 0; di < delayRecords.length; di++) {
+        const d = delayRecords[di]!;
+        const mv = d.move;
+        const dirIcon = mv.direction === 'bullish' ? '▲' : '▼';
+        const num = String(di + 1).padStart(2);
+        const timeStr = mv.startTimeET.padEnd(8);
+        const dir = `${dirIcon} ${mv.direction.slice(0, 4)}`.padEnd(8);
+        const fullMfe = `${mv.mfePct.toFixed(2)}%`.padStart(6);
+
+        if (d.status === 'MISSED') {
+          console.log(`  ${num}  ${timeStr}   ${dir} ${fullMfe}     —      MISSED         —           0%   ❌`);
+        } else {
+          const delay = `${d.delayMinutes}m`.padStart(4);
+          const cost = `${d.entryCostPct!.toFixed(2)}%`.padStart(6);
+          const remaining = `${d.remainingMfePct!.toFixed(2)}%`.padStart(6);
+          const capture = `${(d.captureRatio! * 100).toFixed(0)}%`.padStart(4);
+          const warn = d.captureRatio! < 0.50 ? ' ⚠️' : d.captureRatio! >= 0.80 ? ' ✅' : '';
+          const sig = `${d.signalTimeET} ${d.signalMode} ${((d.signalConf ?? 0) * 100).toFixed(0)}%`;
+          console.log(`  ${num}  ${timeStr}   ${dir} ${fullMfe}   ${delay}    ${cost}        ${remaining}       ${capture}${warn}   ${sig}`);
+        }
+      }
+
+      console.log(`\n  Summary:`);
+      console.log(`    Avg capture ratio:                   ${(avgCapture * 100).toFixed(0)}% (detected moves only)`);
+      console.log(`    Moves where delay cost >50% of MFE:  ${overHalfLost}/${dedupedMoves.length}`);
+      console.log(`    Missed entirely:                     ${missedDelay.length}/${dedupedMoves.length}`);
+      if (avgDelay > 10) {
+        console.log(`    ⚠️  Avg delay ${avgDelay.toFixed(0)}m — a faster detection path (e.g., spike detector) could improve capture`);
+      }
+
+      // Store for JSON output
+      (globalThis as any).__btDelayAnalysis = {
+        totalMoves: dedupedMoves.length,
+        detected: caughtDelay.length,
+        missed: missedDelay.length,
+        avgDelayMinutes: Math.round(avgDelay * 10) / 10,
+        medianDelayMinutes: medianDelay,
+        avgCaptureRatio: Math.round(avgCapture * 1000) / 1000,
+        movesOverHalfLost: overHalfLost,
+        moves: delayRecords.map(d => ({
+          startTime: d.move.startTime, startTimeET: d.move.startTimeET,
+          direction: d.move.direction, startPrice: d.move.startPrice,
+          fullMfePct: d.move.mfePct,
+          status: d.status,
+          delayMinutes: d.delayMinutes,
+          entryCostPct: d.entryCostPct != null ? Math.round(d.entryCostPct * 1000) / 1000 : null,
+          remainingMfePct: d.remainingMfePct != null ? Math.round(d.remainingMfePct * 1000) / 1000 : null,
+          captureRatio: d.captureRatio != null ? Math.round(d.captureRatio * 1000) / 1000 : null,
+          signalTime: d.signalTime, signalTimeET: d.signalTimeET,
+          signalConf: d.signalConf, signalMode: d.signalMode,
+        })),
+      };
+    }
+
     // ── Suppression & Threshold Analysis ──────────────────────────────────────
     // For each missed move, find the system's best opportunity within the move range
     // and analyze what suppressed it (threshold, gates, filters, wrong direction)
@@ -2334,6 +2497,12 @@ async function main() {
     if (moveScanner) {
       (jsonSummary as any).moveScanner = moveScanner;
       delete (globalThis as any).__btMoveScanner;
+    }
+    // Merge delay analysis data if available
+    const delayAnalysis = (globalThis as any).__btDelayAnalysis;
+    if (delayAnalysis) {
+      (jsonSummary as any).delayAnalysis = delayAnalysis;
+      delete (globalThis as any).__btDelayAnalysis;
     }
     console.log(`\n__JSON_START__${JSON.stringify(jsonSummary)}__JSON_END__`);
   }
