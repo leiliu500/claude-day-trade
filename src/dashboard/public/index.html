@@ -42,7 +42,15 @@
         <h3>Pending Approvals</h3>
         <div class="card-value" id="val-pending-approvals">—</div>
       </div>
+      <div class="card" id="card-delay">
+        <h3>Move Capture</h3>
+        <div class="card-value" id="val-delay">—</div>
+        <div class="card-sub" id="val-delay-detail"></div>
+      </div>
     </section>
+
+    <!-- Near-miss & filter-block alert banner -->
+    <div id="alert-banner" class="alert-banner" style="display:none"></div>
 
     <!-- Page navigation (top-level) -->
     <nav class="pages">
@@ -55,6 +63,7 @@
     <!-- Sub-tab navigation (per page) -->
     <nav class="tabs" id="tabs-trading">
       <button class="tab active" data-tab="positions">Positions</button>
+      <button class="tab" data-tab="market-moves">Market Moves</button>
       <button class="tab" data-tab="alpaca">Alpaca Live</button>
       <button class="tab" data-tab="orders">Orders</button>
       <button class="tab" data-tab="agents">Agent Team</button>
@@ -140,6 +149,42 @@
               <th>P&amp;L</th><th>P&amp;L%</th><th>Duration</th>
               <th>Direction</th><th>Decision</th><th>Grade</th>
               <th>Opened</th><th>Closed</th><th>Close Reason</th>
+            </tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </section>
+
+    <section id="tab-market-moves" class="tab-content">
+      <div class="agents-section-header">
+        Market Moves <small id="market-moves-count"></small>
+        <span style="float:right;font-size:0.8em;color:#8b949e">Auto-detected directional moves with detection delay analysis</span>
+      </div>
+      <!-- Delay summary bar -->
+      <div id="delay-summary-bar" class="delay-summary-bar"></div>
+      <!-- Moves table -->
+      <table id="tbl-market-moves">
+        <thead>
+          <tr>
+            <th>Start</th><th>Dir</th><th>Start $</th><th>Peak $</th>
+            <th>MFE</th><th>MAE</th><th>Duration</th><th>Active</th>
+            <th>Signal</th><th>Delay</th><th>Entry Cost</th><th>Remaining</th><th>Capture</th>
+            <th>Class</th><th>Priority</th><th>Action</th>
+          </tr>
+        </thead>
+        <tbody></tbody>
+      </table>
+      <!-- Near-miss & filter block feed -->
+      <div class="agents-history-section" style="margin-top:1.5rem">
+        <div class="agents-section-header">
+          Near Misses &amp; Filter Blocks <small id="near-miss-count"></small>
+        </div>
+        <table id="tbl-near-misses">
+          <thead>
+            <tr>
+              <th>Time</th><th>Ticker</th><th>Dir</th><th>Mode</th>
+              <th>Confidence</th><th>Threshold</th><th>Gap</th><th>Type</th><th>Rule</th>
             </tr>
           </thead>
           <tbody></tbody>

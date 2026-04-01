@@ -6,6 +6,7 @@ import { OrderAgentRegistry } from '../agents/order-agent-registry.js';
 import { cleanupSignalHistory, cleanupAllData } from '../db/repositories/cleanup.js';
 import { AlpacaStreamManager } from '../lib/alpaca-stream.js';
 import { config } from '../config.js';
+import { detectLiveMoves, computeDelaySummary, getRecentNearMisses, getRecentFilterBlocks } from '../lib/move-tracker.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -1103,6 +1104,45 @@ export function startDashboard(port: number): void {
         peakVsFinal,
         dispatchUrgency,
       });
+    } catch (err) {
+      res.status(500).json({ error: (err as Error).message });
+    }
+  });
+
+  // ── Market Move Tracker endpoints ──────────────────────────────────────────
+
+  // Live detected moves with signal matching + delay metrics
+  app.get('/api/market-moves', (req, res) => {
+    try {
+      const ticker = typeof req.query['ticker'] === 'string' && /^[A-Z]{1,10}$/.test(req.query['ticker'])
+        ? req.query['ticker']
+        : 'SPY';
+      const moves = detectLiveMoves(ticker);
+      res.json({ moves, ticker });
+    } catch (err) {
+      res.status(500).json({ error: (err as Error).message });
+    }
+  });
+
+  // Delay summary for dashboard card
+  app.get('/api/delay-summary', (req, res) => {
+    try {
+      const ticker = typeof req.query['ticker'] === 'string' && /^[A-Z]{1,10}$/.test(req.query['ticker'])
+        ? req.query['ticker']
+        : 'SPY';
+      const summary = computeDelaySummary(ticker);
+      res.json({ summary, ticker });
+    } catch (err) {
+      res.status(500).json({ error: (err as Error).message });
+    }
+  });
+
+  // Near-miss alerts + filter blocks for live feed
+  app.get('/api/near-misses', (_req, res) => {
+    try {
+      const nearMisses = getRecentNearMisses();
+      const filterBlocks = getRecentFilterBlocks();
+      res.json({ nearMisses, filterBlocks });
     } catch (err) {
       res.status(500).json({ error: (err as Error).message });
     }

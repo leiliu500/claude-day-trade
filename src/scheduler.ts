@@ -4,12 +4,19 @@ import { notifySignalAnalysis, notifyAlert } from './telegram/notifier.js';
 import { AlpacaStreamManager } from './lib/alpaca-stream.js';
 import { cancelAllOpenOrders, closeAllPositions } from './lib/alpaca-api.js';
 import { OrderAgentRegistry } from './agents/order-agent-registry.js';
-import { getEnabledTickers } from './ticker-configs.js';
+import { getEnabledTickers, getTickerConfig } from './ticker-configs.js';
 import {
   insertSchedulerRun,
   completeSchedulerRun,
   type TickerRunResult,
 } from './db/repositories/scheduler-runs.js';
+import {
+  recordSignalTick,
+  recordNearMiss,
+  recordFilterBlock,
+  type SignalTick,
+  type NearMissAlert,
+} from './lib/move-tracker.js';
 
 // AUTO tickers — loaded from per-symbol config (ticker-configs.ts)
 const AUTO_TICKERS = getEnabledTickers();
@@ -103,6 +110,57 @@ async function runOneTicker(
       decision: pipelineResult.decision,
       duration_ms: Date.now() - t0,
     };
+
+    // ── Record signal tick for move tracker ────────────────────────────────
+    const signalTick: SignalTick = {
+      time: new Date().toISOString(),
+      direction: (pipelineResult.direction ?? 'neutral') as 'bullish' | 'bearish' | 'neutral',
+      confidence: pipelineResult.confidence ?? 0,
+      mode: pipelineResult.analysis?.selectedMode ?? 'none',
+      ticker,
+    };
+    recordSignalTick(signalTick);
+
+    // ── Near-miss + filter-block alerts ─────────────────────────────────────
+    const tickerCfg = getTickerConfig(ticker);
+    const threshold = tickerCfg.minConfidence;
+    const conf = pipelineResult.confidence ?? 0;
+    const dir = signalTick.direction;
+    const mode = signalTick.mode;
+    const now_ = new Date().toISOString();
+    const nowET = new Date().toLocaleTimeString('en-US', {
+      hour: '2-digit', minute: '2-digit', hour12: false, timeZone: 'America/New_York',
+    });
+
+    if (dir !== 'neutral' && mode !== 'none') {
+      // Filter-blocked: confidence meets threshold but entry was blocked
+      if (conf >= threshold && pipelineResult.analysis?.entryBlockReason) {
+        const alert: NearMissAlert = {
+          ticker, time: now_, timeET: nowET, direction: dir as 'bullish' | 'bearish',
+          confidence: conf, threshold, gap: 0, mode,
+          moveMfePct: 0, filterRule: pipelineResult.analysis.entryBlockReason,
+        };
+        recordFilterBlock(alert);
+        void notifyAlert(
+          `🚫 <b>Filter blocked</b> ${ticker} ${dir.toUpperCase()} ${mode} ${(conf * 100).toFixed(0)}%\n` +
+          `Rule: ${pipelineResult.analysis.entryBlockReason}`
+        );
+      }
+      // Near-miss: right direction + mode but confidence just below threshold
+      else if (conf >= threshold - 0.03 && conf < threshold) {
+        const gap = threshold - conf;
+        const alert: NearMissAlert = {
+          ticker, time: now_, timeET: nowET, direction: dir as 'bullish' | 'bearish',
+          confidence: conf, threshold, gap, mode, moveMfePct: 0,
+        };
+        recordNearMiss(alert);
+        void notifyAlert(
+          `⚡ <b>Near-miss</b> ${ticker} ${dir.toUpperCase()} ${mode} ${(conf * 100).toFixed(0)}%\n` +
+          `${(gap * 100).toFixed(1)}% short of ${(threshold * 100).toFixed(0)}% threshold`
+        );
+      }
+    }
+
     if (pipelineResult.decision !== 'WAIT' || pipelineResult.orderSubmitted || pipelineResult.error) {
       await notifySignalAnalysis(pipelineResult);
     }

@@ -2249,6 +2249,260 @@ async function main() {
         console.log(`    ⚠️  Avg delay ${avgDelay.toFixed(0)}m — a faster detection path (e.g., spike detector) could improve capture`);
       }
 
+      // ── Miss Classification: Reasonable vs Tunable ──────────────────────────
+      // Classify each non-caught move as either "reasonable" (no action needed)
+      // or "tunable" (system should improve) with specific remediation hints.
+      type MissClass =
+        | 'CAUGHT'            // not a miss
+        // Reasonable — system correctly avoided or cannot improve
+        | 'FAST_REVERSAL'     // MFE/MAE < 2.0 or peak < 5 min — choppy, not tradeable
+        | 'COUNTER_TREND'     // counter-move against a sustained system direction
+        | 'NO_DATA'           // cache gap, insufficient bars
+        // Tunable — system should improve here
+        | 'NEAR_MISS'         // right dir + mode, confidence within 5% of threshold
+        | 'FILTER_COST'       // blocked by filter on a good (A/B grade) move
+        | 'DELAY_COST'        // detected but delay ate >50% of MFE
+        | 'WRONG_DIR_LATE'    // system pointed wrong dir for a sustained high-R move
+        | 'LOW_CONF_GOOD';    // right dir, conf far below threshold, but high MFE
+
+      interface ClassifiedMove {
+        move: MarketMove;
+        delayRecord: typeof delayRecords[0];
+        awarenessRecord: typeof awareness[0];
+        classification: MissClass;
+        actionHint: string;           // what to tune
+        priority: 'HIGH' | 'MEDIUM' | 'LOW';  // impact priority
+      }
+
+      const classified: ClassifiedMove[] = [];
+
+      for (let mi = 0; mi < awareness.length; mi++) {
+        const aw = awareness[mi]!;
+        const dr = delayRecords[mi]!;
+        const mv = aw.move;
+        const mfeOverMae = mv.maePct > 0.01 ? mv.mfePct / mv.maePct : 999;
+
+        // Already caught
+        if (aw.status === 'CAUGHT') {
+          // Check if caught late (delay cost > 50%)
+          if (dr.status === 'CAUGHT_LATE' && dr.captureRatio != null && dr.captureRatio < 0.50) {
+            classified.push({
+              move: mv, delayRecord: dr, awarenessRecord: aw,
+              classification: 'DELAY_COST',
+              actionHint: `Delay ${dr.delayMinutes}m ate ${(100 - dr.captureRatio * 100).toFixed(0)}% of MFE. Faster detection (spike detector, lower DMI lag) would help.`,
+              priority: mv.mfePct >= 0.50 ? 'HIGH' : 'MEDIUM',
+            });
+          } else {
+            classified.push({ move: mv, delayRecord: dr, awarenessRecord: aw, classification: 'CAUGHT', actionHint: '', priority: 'LOW' });
+          }
+          continue;
+        }
+
+        // ── Reasonable miss checks ──────────────────────────────────────────
+
+        // Fast reversal / choppy move: low MFE/MAE ratio or very short peak time
+        if (mfeOverMae < 2.0 || (mv.mfePeakMinutes <= 3 && mv.mfePct < 0.40)) {
+          classified.push({
+            move: mv, delayRecord: dr, awarenessRecord: aw,
+            classification: 'FAST_REVERSAL',
+            actionHint: `R=${mfeOverMae.toFixed(1)}, peak@${mv.mfePeakMinutes}m — too choppy for clean entry.`,
+            priority: 'LOW',
+          });
+          continue;
+        }
+
+        // No data / cache gap
+        if (aw.status === 'NO_SIGNAL' && aw.systemDirection === null) {
+          classified.push({
+            move: mv, delayRecord: dr, awarenessRecord: aw,
+            classification: 'NO_DATA',
+            actionHint: 'Cache gap — insufficient bars for indicator computation. Normal at session start.',
+            priority: 'LOW',
+          });
+          continue;
+        }
+
+        // Counter-trend: system was consistently in opposite direction AND the move is
+        // a short-lived counter-move (< 20 min peak) against a larger trend
+        if (aw.status === 'WRONG_DIRECTION' && mv.mfePeakMinutes <= 20 && mv.mfePct < 0.50) {
+          // Check if system direction was sustained (same direction for surrounding ticks)
+          const moveTicks = getSystemTicksForMove(mv);
+          const oppositeCount = moveTicks.filter(t => t.direction !== mv.direction && t.direction !== 'neutral').length;
+          if (oppositeCount > moveTicks.length * 0.7) {
+            classified.push({
+              move: mv, delayRecord: dr, awarenessRecord: aw,
+              classification: 'COUNTER_TREND',
+              actionHint: `System held ${aw.systemDirection} (${oppositeCount}/${moveTicks.length} ticks) — this was a counter-move.`,
+              priority: 'LOW',
+            });
+            continue;
+          }
+        }
+
+        // ── Tunable miss checks ─────────────────────────────────────────────
+
+        // Filter-blocked with good underlying move
+        if (aw.status === 'FILTER_BLOCKED') {
+          // Look up the grade for this move from filter-blocked entries
+          const fbMatch = filterBlockedEntries.find(fb => {
+            const fbTs = new Date(fb.time).getTime();
+            return Math.abs(fbTs - new Date(mv.startTime).getTime()) <= 5 * 60_000 && fb.direction === mv.direction;
+          }) ?? blockedEntries.find(e => {
+            const eTs = new Date(e.time).getTime();
+            return Math.abs(eTs - new Date(mv.startTime).getTime()) <= 5 * 60_000 && e.direction === mv.direction;
+          });
+          const grade = fbMatch?.entryGrade ?? '?';
+          const isGoodGrade = grade === 'A' || grade === 'B';
+          const rule = aw.filterRule ?? 'unknown';
+
+          classified.push({
+            move: mv, delayRecord: dr, awarenessRecord: aw,
+            classification: 'FILTER_COST',
+            actionHint: isGoodGrade
+              ? `Grade ${grade} move blocked by "${rule}". This filter cost a good entry — review rule.`
+              : `Grade ${grade} move blocked by "${rule}". Filter may be correct here.`,
+            priority: isGoodGrade && mv.mfePct >= 0.40 ? 'HIGH' : 'MEDIUM',
+          });
+          continue;
+        }
+
+        // Near-miss: right direction + mode but confidence just below threshold
+        if ((aw.status === 'LOW_CONFIDENCE' || aw.status === 'WRONG_MODE') && aw.systemDirection === mv.direction) {
+          const gap = MIN_CONFIDENCE - (aw.systemConf ?? 0);
+          if (gap <= 0.05 && gap > 0) {
+            classified.push({
+              move: mv, delayRecord: dr, awarenessRecord: aw,
+              classification: 'NEAR_MISS',
+              actionHint: `Conf ${((aw.systemConf ?? 0) * 100).toFixed(0)}% — just ${(gap * 100).toFixed(1)}% below ${(MIN_CONFIDENCE * 100).toFixed(0)}%. ` +
+                `Review confidence bonuses (DI spread, alignment, PA) for this pattern.`,
+              priority: mv.mfePct >= 0.50 ? 'HIGH' : 'MEDIUM',
+            });
+            continue;
+          }
+        }
+
+        // Wrong direction on a sustained, high-R move
+        if (aw.status === 'WRONG_DIRECTION' && mv.mfePeakMinutes > 15 && mfeOverMae >= 3.0) {
+          classified.push({
+            move: mv, delayRecord: dr, awarenessRecord: aw,
+            classification: 'WRONG_DIR_LATE',
+            actionHint: `System was ${aw.systemDirection?.toUpperCase()} while ${mv.direction} move ran ${mv.mfePeakMinutes}m (R=${mfeOverMae.toFixed(1)}). ` +
+              `DMI lag or missing reversal detection.`,
+            priority: mv.mfePct >= 0.60 ? 'HIGH' : 'MEDIUM',
+          });
+          continue;
+        }
+
+        // Right direction, but confidence too low on a good move
+        if (aw.systemDirection === mv.direction && mv.mfePct >= 0.40) {
+          classified.push({
+            move: mv, delayRecord: dr, awarenessRecord: aw,
+            classification: 'LOW_CONF_GOOD',
+            actionHint: `Right dir, conf=${((aw.systemConf ?? 0) * 100).toFixed(0)}% on ${mv.mfePct.toFixed(2)}% move. ` +
+              `Indicators underweighted this pattern — check which bonuses were missing.`,
+            priority: mv.mfePct >= 0.60 ? 'HIGH' : 'MEDIUM',
+          });
+          continue;
+        }
+
+        // Caught late (delay-based) for non-caught awareness statuses
+        if (dr.status !== 'MISSED' && dr.captureRatio != null && dr.captureRatio < 0.50) {
+          classified.push({
+            move: mv, delayRecord: dr, awarenessRecord: aw,
+            classification: 'DELAY_COST',
+            actionHint: `Delay ${dr.delayMinutes}m ate ${(100 - dr.captureRatio * 100).toFixed(0)}% of MFE.`,
+            priority: mv.mfePct >= 0.50 ? 'HIGH' : 'MEDIUM',
+          });
+          continue;
+        }
+
+        // Default: classify based on awareness status
+        if (aw.status === 'WRONG_DIRECTION') {
+          classified.push({
+            move: mv, delayRecord: dr, awarenessRecord: aw,
+            classification: 'COUNTER_TREND',
+            actionHint: `System was ${aw.systemDirection?.toUpperCase()} — may be correct trend call.`,
+            priority: 'LOW',
+          });
+        } else {
+          classified.push({
+            move: mv, delayRecord: dr, awarenessRecord: aw,
+            classification: 'LOW_CONF_GOOD',
+            actionHint: `Conf=${((aw.systemConf ?? 0) * 100).toFixed(0)}%, mode=${aw.systemMode}`,
+            priority: 'LOW',
+          });
+        }
+      }
+
+      // Report
+      const tunableClasses: MissClass[] = ['NEAR_MISS', 'FILTER_COST', 'DELAY_COST', 'WRONG_DIR_LATE', 'LOW_CONF_GOOD'];
+      const reasonableClasses: MissClass[] = ['FAST_REVERSAL', 'COUNTER_TREND', 'NO_DATA'];
+      const tunable = classified.filter(c => tunableClasses.includes(c.classification));
+      const reasonable = classified.filter(c => reasonableClasses.includes(c.classification));
+      const highPriority = tunable.filter(c => c.priority === 'HIGH');
+
+      console.log(`\n${'─'.repeat(80)}`);
+      console.log(`  MISS CLASSIFICATION (reasonable vs tunable)`);
+      console.log(`${'─'.repeat(80)}`);
+      console.log(`  Total moves: ${classified.length} | Caught: ${classified.filter(c => c.classification === 'CAUGHT').length} | Tunable: ${tunable.length} | Reasonable: ${reasonable.length}`);
+      console.log(`  High priority tunable: ${highPriority.length}`);
+
+      // Classification breakdown
+      const classCounts = new Map<MissClass, number>();
+      for (const c of classified) classCounts.set(c.classification, (classCounts.get(c.classification) ?? 0) + 1);
+      console.log(`\n  Classification breakdown:`);
+      const classLabels: Record<string, string> = {
+        CAUGHT: '✅ Caught',
+        FAST_REVERSAL: '✓  Fast reversal (choppy, not tradeable)',
+        COUNTER_TREND: '✓  Counter-trend (system on right side of bigger move)',
+        NO_DATA: '✓  No data (cache gap)',
+        NEAR_MISS: '⚠️  Near-miss threshold (conf within 5% of threshold)',
+        FILTER_COST: '⚠️  Filter blocked good move',
+        DELAY_COST: '⚠️  Delay cost (>50% MFE lost to lag)',
+        WRONG_DIR_LATE: '⚠️  Wrong direction on sustained move',
+        LOW_CONF_GOOD: '⚠️  Low confidence on good move',
+      };
+      for (const [cls, count] of classCounts) {
+        const totalMfe = classified.filter(c => c.classification === cls).reduce((s, c) => s + c.move.mfePct, 0);
+        console.log(`    ${classLabels[cls] ?? cls}: ${count} (${totalMfe.toFixed(2)}% total MFE)`);
+      }
+
+      // Tunable detail
+      if (tunable.length > 0) {
+        console.log(`\n  Tunable misses detail (sorted by priority + MFE):`);
+        const sorted = [...tunable].sort((a, b) => {
+          const priOrder: Record<string, number> = { HIGH: 0, MEDIUM: 1, LOW: 2 };
+          const priDiff = (priOrder[a.priority] ?? 2) - (priOrder[b.priority] ?? 2);
+          return priDiff !== 0 ? priDiff : b.move.mfePct - a.move.mfePct;
+        });
+        console.log(`  #   Time     Dir     MFE    R     Class                Priority  Action`);
+        console.log(`  ${'─'.repeat(110)}`);
+        for (let ti = 0; ti < sorted.length; ti++) {
+          const c = sorted[ti]!;
+          const mv = c.move;
+          const dirIcon = mv.direction === 'bullish' ? '▲' : '▼';
+          const mfeOverMae = mv.maePct > 0.01 ? (mv.mfePct / mv.maePct).toFixed(1) : '∞';
+          const priIcon = c.priority === 'HIGH' ? '🔴' : c.priority === 'MEDIUM' ? '🟡' : '⚪';
+          const classLabel = c.classification.replace(/_/g, ' ').toLowerCase();
+          console.log(`  ${String(ti + 1).padStart(2)}  ${mv.startTimeET}  ${dirIcon} ${mv.direction.slice(0, 4).padEnd(5)} ${mv.mfePct.toFixed(2).padStart(5)}%  ${String(mfeOverMae).padStart(5)}  ${classLabel.padEnd(22)} ${priIcon} ${c.priority.padEnd(8)} ${c.actionHint}`);
+        }
+      }
+
+      // Actionable summary
+      const nearMissCount = tunable.filter(c => c.classification === 'NEAR_MISS').length;
+      const filterCostCount = tunable.filter(c => c.classification === 'FILTER_COST').length;
+      const filterCostGoodCount = tunable.filter(c => c.classification === 'FILTER_COST' && c.priority === 'HIGH').length;
+      const delayCostCount = tunable.filter(c => c.classification === 'DELAY_COST').length;
+      const wrongDirCount = tunable.filter(c => c.classification === 'WRONG_DIR_LATE').length;
+
+      if (tunable.length > 0) {
+        console.log(`\n  Actionable recommendations:`);
+        if (nearMissCount > 0)      console.log(`    📊 Threshold: ${nearMissCount} near-miss(es) — lowering by 3-5% would capture these`);
+        if (filterCostGoodCount > 0) console.log(`    🔧 Filters: ${filterCostGoodCount} good grade (A/B) moves blocked — review filter rules`);
+        if (delayCostCount > 0)      console.log(`    ⏱️  Detection speed: ${delayCostCount} move(s) caught too late — spike detector or faster indicators needed`);
+        if (wrongDirCount > 0)       console.log(`    🔄 Direction: ${wrongDirCount} sustained move(s) missed — DMI lag or reversal detection gap`);
+      }
+
       // Store for JSON output
       (globalThis as any).__btDelayAnalysis = {
         totalMoves: dedupedMoves.length,
@@ -2270,6 +2524,19 @@ async function main() {
           signalTime: d.signalTime, signalTimeET: d.signalTimeET,
           signalConf: d.signalConf, signalMode: d.signalMode,
         })),
+        classification: {
+          tunable: tunable.length,
+          reasonable: reasonable.length,
+          highPriority: highPriority.length,
+          breakdown: Object.fromEntries(classCounts),
+          tunableMoves: tunable.map(c => ({
+            startTime: c.move.startTime, startTimeET: c.move.startTimeET,
+            direction: c.move.direction, mfePct: c.move.mfePct,
+            classification: c.classification,
+            priority: c.priority,
+            actionHint: c.actionHint,
+          })),
+        },
       };
     }
 

@@ -85,7 +85,7 @@ const paging = {
 
 // ── Page definitions ─────────────────────────────────────────────────────────
 const PAGE_TABS = {
-  trading:     ['positions', 'alpaca', 'orders', 'agents'],
+  trading:     ['positions', 'market-moves', 'alpaca', 'orders', 'agents'],
   signals:     ['signals', 'decisions', 'analysis', 'dispatches'],
   performance: ['evaluations', 'entry-analysis', 'agent-analysis'],
   system:      ['scheduler', 'activity', 'database'],
@@ -1897,10 +1897,168 @@ function renderAAdispatchImpact(rows) {
   </table>`;
 }
 
+// ── Market Moves + Delay Analysis ─────────────────────────────────────────────
+
+async function loadMarketMoves() {
+  const [movesData, nearMissData] = await Promise.all([
+    fetch(`${API}/api/market-moves`).then(r => r.json()).catch(() => ({ moves: [] })),
+    fetch(`${API}/api/near-misses`).then(r => r.json()).catch(() => ({ nearMisses: [], filterBlocks: [] })),
+  ]);
+
+  const moves = movesData.moves || [];
+  const count = document.getElementById('market-moves-count');
+  if (count) count.textContent = moves.length > 0 ? `(${moves.length} moves)` : '';
+
+  const rows = moves.map(m => {
+    const dirCls = m.direction === 'bullish' ? 'bullish' : 'bearish';
+    const dirIcon = m.direction === 'bullish' ? '&#9650;' : '&#9660;';
+    const statusMap = {
+      DETECTED: '<span class="bullish">&#10004; Detected</span>',
+      WRONG_DIR: '<span class="bearish">&#10008; Wrong dir</span>',
+      LOW_CONF: '<span style="color:#d29922">&#10008; Low conf</span>',
+      NO_SIGNAL: '<span style="color:#8b949e">&#10008; No signal</span>',
+      FILTER_BLOCKED: '<span style="color:#f0883e">&#10008; Filter</span>',
+    };
+    const signal = statusMap[m.signalStatus] || m.signalStatus;
+    const delay = m.delayMinutes != null ? m.delayMinutes + 'm' : '—';
+    const entryCost = m.entryCostPct != null ? m.entryCostPct.toFixed(2) + '%' : '—';
+    const remaining = m.remainingMfePct != null ? m.remainingMfePct.toFixed(2) + '%' : '—';
+    const capturePct = m.captureRatio != null ? (m.captureRatio * 100).toFixed(0) + '%' : '—';
+    const captureWarn = m.captureRatio != null && m.captureRatio < 0.5 ? ' capture-low' : m.captureRatio != null && m.captureRatio >= 0.8 ? ' capture-high' : '';
+    // Classification display
+    const tunableClasses = ['NEAR_MISS', 'FILTER_COST', 'DELAY_COST', 'WRONG_DIR_LATE', 'LOW_CONF_GOOD'];
+    const isTunable = tunableClasses.includes(m.classification);
+    const classLabels = {
+      CAUGHT: '&#10004; Caught', FAST_REVERSAL: '&#10003; Fast reversal', COUNTER_TREND: '&#10003; Counter-trend',
+      NO_DATA: '&#10003; No data', NEAR_MISS: '&#9888; Near miss', FILTER_COST: '&#9888; Filter cost',
+      DELAY_COST: '&#9888; Delay cost', WRONG_DIR_LATE: '&#9888; Wrong dir', LOW_CONF_GOOD: '&#9888; Low conf',
+    };
+    const classLabel = classLabels[m.classification] || m.classification;
+    const classCls = isTunable ? 'miss-tunable' : 'miss-reasonable';
+    const priColors = { HIGH: '#f85149', MEDIUM: '#d29922', LOW: '#8b949e' };
+    const priColor = priColors[m.priority] || '#8b949e';
+    return `
+      <tr class="${isTunable ? 'row-tunable' : ''}">
+        <td>${m.startTimeET}</td>
+        <td class="${dirCls}">${dirIcon} ${m.direction}</td>
+        <td>$${parseFloat(m.startPrice).toFixed(2)}</td>
+        <td>$${parseFloat(m.peakPrice).toFixed(2)}</td>
+        <td>${m.currentMfePct.toFixed(2)}%</td>
+        <td>${m.currentMaePct.toFixed(2)}%</td>
+        <td>${m.durationMinutes}m</td>
+        <td>${m.active ? '<span class="bullish">LIVE</span>' : '<span style="color:#8b949e">done</span>'}</td>
+        <td>${signal}</td>
+        <td>${delay}</td>
+        <td>${entryCost}</td>
+        <td>${remaining}</td>
+        <td class="${captureWarn}">${capturePct}</td>
+        <td class="${classCls}">${classLabel}</td>
+        <td style="color:${priColor}">${m.priority}</td>
+        <td class="reasoning" title="${m.actionHint || ''}">${m.actionHint || '—'}</td>
+      </tr>`;
+  });
+  setRows('tbl-market-moves', rows);
+
+  // Near misses + filter blocks
+  const nm = nearMissData.nearMisses || [];
+  const fb = nearMissData.filterBlocks || [];
+  const combined = [
+    ...nm.map(n => ({ ...n, type: 'NEAR_MISS' })),
+    ...fb.map(f => ({ ...f, type: 'FILTER_BLOCK' })),
+  ].sort((a, b) => new Date(b.time).getTime() - new Date(a.time).getTime());
+
+  const nmCount = document.getElementById('near-miss-count');
+  if (nmCount) nmCount.textContent = combined.length > 0 ? `(${combined.length})` : '';
+
+  const nmRows = combined.map(n => {
+    const dirCls = n.direction === 'bullish' ? 'bullish' : 'bearish';
+    const typeBadge = n.type === 'NEAR_MISS'
+      ? '<span style="color:#d29922">&#9889; Near miss</span>'
+      : '<span style="color:#f0883e">&#128683; Filter</span>';
+    return `
+      <tr>
+        <td>${n.timeET}</td>
+        <td><b>${n.ticker}</b></td>
+        <td class="${dirCls}">${n.direction}</td>
+        <td>${n.mode}</td>
+        <td>${(n.confidence * 100).toFixed(0)}%</td>
+        <td>${(n.threshold * 100).toFixed(0)}%</td>
+        <td>${n.type === 'NEAR_MISS' ? (n.gap * 100).toFixed(1) + '%' : '—'}</td>
+        <td>${typeBadge}</td>
+        <td class="reasoning">${n.filterRule || '—'}</td>
+      </tr>`;
+  });
+  setRows('tbl-near-misses', nmRows);
+
+  // Update alert banner (show most recent near-miss/filter-block)
+  updateAlertBanner(combined.slice(0, 3));
+}
+
+async function loadDelaySummary() {
+  const data = await fetch(`${API}/api/delay-summary`).then(r => r.json()).catch(() => ({ summary: null }));
+  const s = data.summary;
+  const valEl = document.getElementById('val-delay');
+  const detailEl = document.getElementById('val-delay-detail');
+  const summaryBar = document.getElementById('delay-summary-bar');
+
+  if (!s || s.totalMoves === 0) {
+    if (valEl) valEl.textContent = '—';
+    if (detailEl) detailEl.textContent = '';
+    if (summaryBar) summaryBar.innerHTML = '<span style="color:#8b949e">No moves detected yet</span>';
+    return;
+  }
+
+  const captureColor = s.avgCaptureRatio >= 0.7 ? '#3fb950' : s.avgCaptureRatio >= 0.5 ? '#d29922' : '#f85149';
+  if (valEl) {
+    valEl.innerHTML = `<span style="color:${captureColor}">${(s.avgCaptureRatio * 100).toFixed(0)}%</span>`;
+  }
+  if (detailEl) {
+    detailEl.innerHTML = `${s.detected}/${s.totalMoves} | ${s.avgDelayMinutes}m avg`;
+  }
+  if (summaryBar) {
+    summaryBar.innerHTML = `
+      <div class="delay-stat"><span class="delay-label">Moves</span><span class="delay-value">${s.totalMoves}</span></div>
+      <div class="delay-stat"><span class="delay-label">Detected</span><span class="delay-value">${s.detected}</span></div>
+      <div class="delay-stat"><span class="delay-label">Missed</span><span class="delay-value ${s.missed > 0 ? 'bearish' : ''}">${s.missed}</span></div>
+      <div class="delay-stat"><span class="delay-label">Avg Delay</span><span class="delay-value">${s.avgDelayMinutes}m</span></div>
+      <div class="delay-stat"><span class="delay-label">Median Delay</span><span class="delay-value">${s.medianDelayMinutes}m</span></div>
+      <div class="delay-stat"><span class="delay-label">Avg Capture</span><span class="delay-value" style="color:${captureColor}">${(s.avgCaptureRatio * 100).toFixed(0)}%</span></div>
+      <div class="delay-stat"><span class="delay-label">&gt;50% lost</span><span class="delay-value ${s.movesOverHalfLost > 0 ? 'bearish' : ''}">${s.movesOverHalfLost}</span></div>
+    `;
+  }
+}
+
+function updateAlertBanner(alerts) {
+  const banner = document.getElementById('alert-banner');
+  if (!banner) return;
+  if (!alerts || alerts.length === 0) {
+    banner.style.display = 'none';
+    return;
+  }
+  // Only show alerts from last 10 minutes
+  const cutoff = Date.now() - 10 * 60_000;
+  const recent = alerts.filter(a => new Date(a.time).getTime() > cutoff);
+  if (recent.length === 0) {
+    banner.style.display = 'none';
+    return;
+  }
+  const lines = recent.map(a => {
+    const icon = a.type === 'NEAR_MISS' ? '&#9889;' : '&#128683;';
+    const label = a.type === 'NEAR_MISS' ? 'Near miss' : 'Filter blocked';
+    const detail = a.type === 'NEAR_MISS'
+      ? `${(a.gap * 100).toFixed(1)}% short of ${(a.threshold * 100).toFixed(0)}%`
+      : a.filterRule || 'unknown';
+    return `${icon} <b>${label}</b> ${a.ticker} ${a.direction.toUpperCase()} ${a.mode} ${(a.confidence * 100).toFixed(0)}% &mdash; ${detail} (${a.timeET})`;
+  });
+  banner.innerHTML = lines.join('<br>');
+  banner.style.display = '';
+}
+
 // ── Main refresh ──────────────────────────────────────────────────────────────
 function loadTab(tab) {
   switch (tab) {
     case 'positions':       loadPositions();   break;
+    case 'market-moves':    loadMarketMoves(); loadDelaySummary(); break;
     case 'signals':         loadSignals();     break;
     case 'analysis':        loadAnalysis();    break;
     case 'decisions':       loadDecisions();   break;
@@ -1925,6 +2083,7 @@ async function refreshAll() {
   loadEvaluations();
   loadAgents();
   loadApprovals();   // keeps the pending-approvals card updated
+  loadDelaySummary(); // keeps the delay summary card updated
   loadTab(currentTab);
   document.getElementById('last-updated').textContent =
     `Last updated: ${new Date().toLocaleTimeString()}`;
