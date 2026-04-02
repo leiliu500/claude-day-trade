@@ -37,6 +37,7 @@ import { evaluateTrend, evaluateRange, evaluateBreakout, evaluateVwapReversion, 
 import { computeTrendConfidenceFn, computeRangeConfidenceFn, computeBreakoutConfidenceFn } from '../agents/analysis-agent.js';
 import { computeEntryMetrics } from '../lib/entry-context.js';
 import { getTickerConfig } from '../ticker-configs.js';
+import { detectDirection } from '../lib/direction-detector.js';
 
 // ── Config ────────────────────────────────────────────────────────────────────
 
@@ -402,13 +403,8 @@ async function main() {
   const filterBlockedEntries: FilterBlockedEntry[] = [];
   const allTicks: { time: string; timeET: string; price: number; direction: SignalDirection; alignment: AlignmentType; confidence: number; meetsThreshold: boolean; signalMode: string }[] = [];
 
-  // ── Leading override momentum persistence ────────────────────────────────
-  // Once a leading override flips direction, persist that direction as long as LTF DMI agrees.
-  // This prevents a single-bar spike from being detected at the moment of impact but lost on
-  // the next bar when velocity decays below threshold, even though LTF DMI still confirms.
-  // Expires after 10 minutes to prevent stale overrides from affecting later signals.
-  let leadingOverrideDir: SignalDirection | null = null;
-  let leadingOverrideTs = 0;
+  // ── Leading override momentum persistence (shared with signal-agent) ──────
+  const btPersistence = { dir: null as 'bullish' | 'bearish' | null, ts: 0 };
 
   // ── Trend persistence state ───────────────────────────────────────────────
   // Tracks recent signal direction+alignment for trend persistence bonus (mirrors live DB query)
@@ -595,114 +591,10 @@ async function main() {
 
     if (ltfBars.length < 14 || mtfBars.length < 14 || htfBars.length < 14) continue;
 
-    // First pass: DMI direction (LTF uses period 8 for faster detection)
-    const dmiOnly = [
-      computeDMI(ltfBars, 8, true),
-      computeDMI(mtfBars, 14, true),
-      computeDMI(htfBars, 14, true),
-    ];
-    const dirVotes: SignalDirection[] = dmiOnly.map(d => d.trend);
-    const bullish = dirVotes.filter(v => v === 'bullish').length;
-    const bearish = dirVotes.filter(v => v === 'bearish').length;
-    let direction: SignalDirection = bullish > bearish ? 'bullish' : bearish > bullish ? 'bearish' : 'neutral';
-
-    // Early reversal override (same logic as signal-agent.ts)
-    let reversalOverride = false;
-    const [ltfDmi, mtfDmi, htfDmi] = dmiOnly;
-    if (direction !== 'neutral' && ltfDmi && htfDmi) {
-      const ltfOpposesDir = direction === 'bullish' ? ltfDmi.trend === 'bearish'
-                                                     : ltfDmi.trend === 'bullish';
-      const htfFading = htfDmi.diSpreadSlope < -2;
-      const htfBarsForRange = htfBars.slice(-20);
-      let rangeHigh = -Infinity, rangeLow = Infinity;
-      for (const b of htfBarsForRange) {
-        if (b.high > rangeHigh) rangeHigh = b.high;
-        if (b.low < rangeLow) rangeLow = b.low;
-      }
-      const rangeSize = rangeHigh - rangeLow;
-      const lastPrice = htfBarsForRange[htfBarsForRange.length - 1]?.close ?? 0;
-      const rangePos = rangeSize > 0 ? (lastPrice - rangeLow) / rangeSize : 0.5;
-      const atExtreme = direction === 'bullish' ? rangePos >= 0.75 : rangePos <= 0.25;
-      const velForReversal = computePriceVelocity(ltfBars);
-      const velOpposesDir = (direction === 'bullish' && velForReversal.directionalVelocity < -0.05)
-                         || (direction === 'bearish' && velForReversal.directionalVelocity > 0.05);
-      if ((ltfOpposesDir || velOpposesDir) && htfFading && atExtreme) {
-        direction = direction === 'bullish' ? 'bearish' : 'bullish';
-        reversalOverride = true;
-      }
-    }
-
-    // ── Leading indicator direction override (mirrors signal-agent.ts) ──────
-    let leadingSignalOverride = false;
-
-    // Price velocity direction vote
-    const ltfVelocity = computePriceVelocity(ltfBars);
-    const velDir: 'bullish' | 'bearish' | 'neutral' =
-      ltfVelocity.directionalVelocity > 0.05 ? 'bullish' :
-      ltfVelocity.directionalVelocity < -0.05 ? 'bearish' : 'neutral';
-
-    if (velDir !== 'neutral' && !reversalOverride) {
-      const ltfAgrees = ltfDmi?.trend === velDir;
-      const velocityOpposesDir = velDir !== direction;
-      const accelerating = ltfVelocity.acceleration > 0.01;
-
-      // Don't let LTF+velocity override when HTF+MTF already agree on the opposite direction.
-      const htfMtfAgreeOnDir = mtfDmi?.trend === direction && htfDmi?.trend === direction;
-      if (ltfAgrees && velocityOpposesDir && accelerating && direction !== 'neutral' && !htfMtfAgreeOnDir) {
-        direction = velDir;
-        leadingSignalOverride = true;
-        leadingOverrideDir = velDir;
-        leadingOverrideTs = currentTs;
-      } else if (ltfAgrees && velDir === direction && accelerating) {
-        leadingSignalOverride = true;
-        // Persist confirmed direction too — if reversal override just flipped us,
-        // this ensures the new direction survives when the reversal override stops firing.
-        if (direction === 'bullish' || direction === 'bearish') {
-          leadingOverrideDir = direction;
-          leadingOverrideTs = currentTs;
-        }
-      }
-    }
-
-    // Momentum persistence: if a prior leading override set a direction and LTF DMI still agrees,
-    // maintain that direction even after velocity decays below the threshold.
-    // Expires after 15 minutes to prevent stale overrides from affecting later signals.
-    const PERSIST_MAX_MS = 15 * 60_000;
-    if (!leadingSignalOverride && !reversalOverride && leadingOverrideDir !== null) {
-      // Clear persistence when HTF+MTF both align against persisted direction
-      const htfMtfOpposePersisted = mtfDmi?.trend && htfDmi?.trend
-        && mtfDmi.trend !== leadingOverrideDir && htfDmi.trend !== leadingOverrideDir;
-      if (currentTs - leadingOverrideTs > PERSIST_MAX_MS || htfMtfOpposePersisted) {
-        leadingOverrideDir = null; // expired or higher TFs caught up
-      } else if (ltfDmi?.trend === leadingOverrideDir) {
-        if (leadingOverrideDir !== direction) direction = leadingOverrideDir;
-        leadingSignalOverride = true; // protect from mode evaluator overwrite
-      } else {
-        leadingOverrideDir = null; // LTF DMI no longer agrees — clear
-      }
-    }
-
-    // Volume-confirmed candle pattern direction override
-    if (!reversalOverride && !leadingSignalOverride) {
-      const ltfPatterns = detectAllPatterns(ltfBars);
-      const ltfVolume = computeVolumeSurge(ltfBars);
-      const hasVolumeSurge = ltfVolume.recentVolumeRatio > 2.0;
-
-      if (hasVolumeSurge) {
-        const bullishEngulf = ltfPatterns.bullishEngulfing.present;
-        const bearishEngulf = ltfPatterns.bearishEngulfing.present;
-
-        if (bullishEngulf && direction !== 'bullish') {
-          direction = 'bullish';
-          leadingSignalOverride = true;
-        } else if (bearishEngulf && direction !== 'bearish') {
-          direction = 'bearish';
-          leadingSignalOverride = true;
-        } else if ((bullishEngulf && direction === 'bullish') || (bearishEngulf && direction === 'bearish')) {
-          leadingSignalOverride = true;
-        }
-      }
-    }
+    // ── Direction detection (shared with signal-agent.ts) ───────────────────
+    const { direction: detectedDir, reversalOverride, leadingSignalOverride } =
+      detectDirection(ltfBars, mtfBars, htfBars, true, btPersistence, currentTs);
+    let direction = detectedDir;
 
     // Second pass: full indicators
     const tfIndicators: TimeframeIndicators[] = [
