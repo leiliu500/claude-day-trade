@@ -182,10 +182,10 @@ function spyShouldAllowEntry(ctx: EntryContext): true | string {
 
   if (signalMode === 'trend'
       && ctx.rangeExhaustion !== undefined && ctx.rangeExhaustion > 7.0
-      && ctx.choppiness !== undefined && ctx.choppiness >= 0.55) return `trend exhausted+choppy rExh=${ctx.rangeExhaustion.toFixed(1)} chop=${ctx.choppiness.toFixed(2)}`;
+      && ctx.choppiness !== undefined && ctx.choppiness >= 2.0) return `trend exhausted+choppy rExh=${ctx.rangeExhaustion.toFixed(1)} chop=${ctx.choppiness.toFixed(2)}`;
 
-  if (direction === 'bullish'
-      && ctx.rangeExhaustion !== undefined && ctx.rangeExhaustion >= 6.0) return `bullish rangeExhaustion ${ctx.rangeExhaustion.toFixed(1)} >= 6.0`;
+  // bullish rangeExhaustion >= 6.0 removed for trends: Q1 counterfactual net costly —
+  // exhausted+choppy (chop >= 2.0) now handles the high-risk cases
 
   if (direction === 'bullish'
       && ctx.displacementVelocity !== undefined && ctx.displacementVelocity < -0.04) return `bullish dvel ${ctx.displacementVelocity.toFixed(4)} < -0.04`;
@@ -200,7 +200,7 @@ function spyShouldAllowEntry(ctx: EntryContext): true | string {
   if (signalMode === 'breakout' && ctx.confidence < 0.74) return `breakout confidence ${(ctx.confidence * 100).toFixed(0)}% < 74%`;
 
   if (signalMode === 'breakout'
-      && ctx.rangeExhaustion !== undefined && ctx.rangeExhaustion >= 7.0
+      && ctx.rangeExhaustion !== undefined && ctx.rangeExhaustion >= 9.0
       && ctx.choppiness !== undefined && ctx.choppiness >= 1.0) return `breakout highExh+highChop rExh=${ctx.rangeExhaustion.toFixed(1)} chop=${ctx.choppiness.toFixed(2)}`;
 
   if (signalMode === 'breakout'
