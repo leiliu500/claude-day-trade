@@ -14,6 +14,8 @@ import {
   recordSignalTick,
   recordNearMiss,
   recordFilterBlock,
+  bufferMoves,
+  startMoveFlushTimer,
   type SignalTick,
   type NearMissAlert,
 } from './lib/move-tracker.js';
@@ -120,6 +122,7 @@ async function runOneTicker(
       ticker,
     };
     recordSignalTick(signalTick);
+    bufferMoves(ticker);
 
     // ── Near-miss + filter-block alerts ─────────────────────────────────────
     const tickerCfg = getTickerConfig(ticker);
@@ -273,6 +276,9 @@ function scheduleTradingTick(): void {
 export function startScheduler(): void {
   // Primary: stream-driven trigger (fires on each new 1-min bar)
   subscribeToStreamTrigger();
+
+  // Flush buffered market moves to DB every 5 min
+  startMoveFlushTimer();
 
   // Fallback: 3-min tick — only runs tickers not recently covered by stream
   scheduleTradingTick();

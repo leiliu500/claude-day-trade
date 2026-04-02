@@ -9,6 +9,7 @@ import { OrderAgentRegistry } from './agents/order-agent-registry.js';
 import { AlpacaStreamManager } from './lib/alpaca-stream.js';
 import { notifyStartup } from './telegram/notifier.js';
 import { startDashboard } from './dashboard/server.js';
+import { flushMovesNow } from './lib/move-tracker.js';
 
 async function main(): Promise<void> {
   console.log(`[Boot] claude-day-trade starting (${config.NODE_ENV})`);
@@ -57,6 +58,7 @@ async function main(): Promise<void> {
   // ── Graceful shutdown ───────────────────────────────────────────────────
   const shutdown = async (signal: string): Promise<void> => {
     console.log(`[Boot] ${signal} received — shutting down`);
+    await flushMovesNow().catch(() => {});
     AlpacaStreamManager.getInstance().disconnect();
     bot.stop(signal);
     await closePool();

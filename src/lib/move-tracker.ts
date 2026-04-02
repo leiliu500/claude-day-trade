@@ -11,6 +11,7 @@
 
 import { AlpacaStreamManager } from './alpaca-stream.js';
 import { getTickerConfig } from '../ticker-configs.js';
+import { getPool } from '../db/client.js';
 import type { OHLCVBar } from '../types/market.js';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
@@ -464,4 +465,101 @@ export function computeDelaySummary(ticker: string): DelaySummary | null {
     avgCaptureRatio: Math.round(avgCapture * 1000) / 1000,
     movesOverHalfLost: overHalfLost,
   };
+}
+
+// ── Async DB persistence ─────────────────────────────────────────────────────
+// Moves are buffered in memory on every tick (cheap — just a Map update).
+// A 5-minute interval flushes the buffer to the database asynchronously.
+// This way no data is lost between flushes, and DB writes are batched.
+
+/** In-memory buffer: keyed by "ticker|direction|startTime" for dedup */
+const _moveBuffer = new Map<string, MoveWithSignal>();
+let _flushTimer: ReturnType<typeof setInterval> | null = null;
+const FLUSH_INTERVAL_MS = 5 * 60_000;
+
+/**
+ * Buffer detected moves in memory. Called on every pipeline tick — O(n) scan
+ * of detectLiveMoves but no DB I/O. The buffer is flushed to DB every 5 min.
+ */
+export function bufferMoves(ticker: string): void {
+  try {
+    const moves = detectLiveMoves(ticker);
+    for (const mv of moves) {
+      const key = `${mv.ticker}|${mv.direction}|${mv.startTime}`;
+      _moveBuffer.set(key, mv);
+    }
+  } catch {
+    // never block pipeline
+  }
+}
+
+/** Start the 5-minute flush timer. Call once at boot. */
+export function startMoveFlushTimer(): void {
+  if (_flushTimer) return;
+  _flushTimer = setInterval(() => {
+    _flushToDb().catch(err => {
+      console.error('[MoveTracker] DB flush failed:', err.message);
+    });
+  }, FLUSH_INTERVAL_MS);
+  // Don't prevent process exit
+  if (_flushTimer.unref) _flushTimer.unref();
+}
+
+/** Flush all buffered moves to DB right now (e.g. on shutdown). */
+export async function flushMovesNow(): Promise<void> {
+  await _flushToDb();
+}
+
+const UPSERT_SQL = `
+  INSERT INTO trading.market_moves (
+    ticker, trade_date, direction, start_time, peak_time,
+    start_price, peak_price, mfe_pct, mae_pct, duration_minutes, active,
+    signal_status, delay_minutes, entry_cost_pct, remaining_mfe_pct, capture_ratio,
+    classification, priority, action_hint,
+    signal_direction, signal_confidence, signal_mode, updated_at
+  ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,NOW())
+  ON CONFLICT (ticker, direction, start_time)
+  DO UPDATE SET
+    peak_time = EXCLUDED.peak_time,
+    peak_price = EXCLUDED.peak_price,
+    mfe_pct = EXCLUDED.mfe_pct,
+    mae_pct = EXCLUDED.mae_pct,
+    duration_minutes = EXCLUDED.duration_minutes,
+    active = EXCLUDED.active,
+    signal_status = EXCLUDED.signal_status,
+    delay_minutes = EXCLUDED.delay_minutes,
+    entry_cost_pct = EXCLUDED.entry_cost_pct,
+    remaining_mfe_pct = EXCLUDED.remaining_mfe_pct,
+    capture_ratio = EXCLUDED.capture_ratio,
+    classification = EXCLUDED.classification,
+    priority = EXCLUDED.priority,
+    action_hint = EXCLUDED.action_hint,
+    signal_direction = EXCLUDED.signal_direction,
+    signal_confidence = EXCLUDED.signal_confidence,
+    signal_mode = EXCLUDED.signal_mode,
+    updated_at = NOW()
+`;
+
+async function _flushToDb(): Promise<void> {
+  if (_moveBuffer.size === 0) return;
+  // Snapshot and clear buffer so next tick can write fresh data
+  const snapshot = [..._moveBuffer.values()];
+  _moveBuffer.clear();
+
+  const pool = getPool();
+  for (const mv of snapshot) {
+    const todayStr = new Date(mv.startTime).toISOString().slice(0, 10);
+    await pool.query(UPSERT_SQL, [
+      mv.ticker, todayStr, mv.direction, mv.startTime, mv.peakTime,
+      mv.startPrice, mv.peakPrice, mv.currentMfePct, mv.currentMaePct,
+      mv.durationMinutes, mv.active,
+      mv.signalStatus, mv.delayMinutes, mv.entryCostPct,
+      mv.remainingMfePct, mv.captureRatio,
+      mv.classification, mv.priority, mv.actionHint,
+      mv.matchingSignal?.direction ?? null,
+      mv.matchingSignal?.confidence ?? null,
+      mv.matchingSignal?.mode ?? null,
+    ]);
+  }
+  console.log(`[MoveTracker] Flushed ${snapshot.length} moves to DB`);
 }
