@@ -16,6 +16,7 @@ import { qqqStrategy } from './strategies/qqq.js';
 import { spyStrategy } from './strategies/spy.js';
 import { iwmStrategy } from './strategies/iwm.js';
 import { nvdaStrategy } from './strategies/nvda.js';
+import { aaplStrategy } from './strategies/aapl.js';
 
 export interface TickerConfig {
   /** Ticker symbol (e.g. 'SPY') */
@@ -114,6 +115,14 @@ const TICKER_OVERRIDES: Record<string, Partial<Omit<TickerConfig, 'ticker' | 'st
     maxContracts: 5,
     enabled: true,
     strategy: nvdaStrategy,
+  },
+  AAPL: {
+    // Initial config — no backtest tuning yet
+    minConfidence: 0.65,
+    maxDailyEntries: 4,
+    maxContracts: 5,
+    enabled: true,
+    strategy: aaplStrategy,
   },
 };
 
