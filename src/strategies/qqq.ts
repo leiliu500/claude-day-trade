@@ -140,6 +140,34 @@ function qqqAdjustConfidence(cb: ConfidenceBreakdown, ctx: EntryContext): Confid
     adjusted.total = Math.min(adjusted.total, 0.64);
   }
 
+  // Strong trend continuation relief — mirrors SPY logic.
+  // When all timeframes align + ADX strong & rising, adxMaturity and moveExhaustion
+  // penalties over-penalize genuine continuation (especially on gap days where
+  // prior-day warmup bars inflate maturity counts).
+  // Apr 2: QQQ had same pattern as SPY — all_aligned bullish, conf stuck at 37-47%
+  // while 2.19% MFE move ran clean.
+  if (ctx.signalMode === 'trend'
+      && ctx.alignment === 'all_aligned'
+      && adjusted.trendPhaseBonus > 0          // ADX still rising
+      && adjusted.adxBonus >= 0.05             // ADX > 25
+      && adjusted.moveExhaustionPenalty <= -0.10) {
+    // Halve move exhaustion penalty
+    const exhRelief = -adjusted.moveExhaustionPenalty * 0.5;
+    adjusted.moveExhaustionPenalty *= 0.5;
+    adjusted.total += exhRelief;
+    // Halve ADX maturity penalty if severe
+    if (adjusted.adxMaturityPenalty <= -0.08) {
+      const matRelief = -adjusted.adxMaturityPenalty * 0.5;
+      adjusted.adxMaturityPenalty *= 0.5;
+      adjusted.total += matRelief;
+    }
+    // Unlock trendPersistenceBonus on gap days
+    if (adjusted.structureBonus <= 0) {
+      adjusted.structureBonus = 0.01;
+    }
+    adjusted.total = Math.max(0, Math.min(1, adjusted.total));
+  }
+
   return adjusted;
 }
 
@@ -159,8 +187,9 @@ function qqqShouldAllowEntry(ctx: EntryContext): true | string {
 
   // Block trend entries chasing accelerating displacement — mirrors SPY's proven filter.
   // High dvel = price already moved far from open = chasing the trend.
+  // Raised 0.05 → 0.10: Apr 2 grade-A entries had dvel 0.07-0.17 during morning rally.
   if (signalMode === 'trend' && ctx.displacementVelocity !== undefined
-      && ctx.displacementVelocity > 0.05) return `trend high dvel ${ctx.displacementVelocity.toFixed(4)} > 0.05 (chasing)`;
+      && ctx.displacementVelocity > 0.10) return `trend high dvel ${ctx.displacementVelocity.toFixed(4)} > 0.10 (chasing)`;
 
   if (signalMode === 'trend'
       && ctx.rangeExhaustion !== undefined && ctx.rangeExhaustion > 7.0
