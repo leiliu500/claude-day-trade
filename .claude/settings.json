@@ -91,7 +91,8 @@
       "Bash(bash /tmp/run-backtest-batch.sh)",
       "Bash(npx vitest:*)",
       "Bash(grep -E '\\(CONFIRMED.*BREAKOUT|CONFIRMED$|ATR.*Regime\\)')",
-      "Bash(grep -r \"BT_\\\\|BACKTEST\\\\|ESTIMATE\" /home/ec2-user/claude-day-trade --include=*.ts --include=*.js --include=*.env* --include=*.json)"
+      "Bash(grep -r \"BT_\\\\|BACKTEST\\\\|ESTIMATE\" /home/ec2-user/claude-day-trade --include=*.ts --include=*.js --include=*.env* --include=*.json)",
+      "Bash(BT_DEBUG=1 BT_DEBUG_MIN=0.40 npx tsx src/scripts/backtest-spy.ts 2026-04-01)"
     ],
     "additionalDirectories": [
       "/tmp"

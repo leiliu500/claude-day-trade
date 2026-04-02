@@ -156,9 +156,12 @@ export class SignalAgent {
       fetchBarsRest(ticker, '1d', 3),
     ]);
 
-    // First pass: compute DMI-based indicators to determine direction
+    // First pass: compute DMI-based indicators to determine direction.
+    // LTF uses period 8 (same as second-pass) for faster direction detection.
+    // Apr 1 SPY: period-14 LTF DMI stayed bullish 65 min into a bearish selloff,
+    // delaying the direction flip until the move was mostly over.
     const dmiOnly = [
-      computeDMI(ltfBars, 14, ltf !== '1d'),
+      computeDMI(ltfBars, 8, ltf !== '1d'),
       computeDMI(mtfBars, 14, mtf !== '1d'),
       computeDMI(htfBars, 14, htf !== '1d'),
     ];
@@ -176,7 +179,7 @@ export class SignalAgent {
     // Mar 20 SPY: price peaked at $653.80 (rangePos 0.88), LTF crossed bearish at 12:26 ET,
     // but MTF+HTF stayed bullish for 9 more min → missed $1.50 drop.
     let reversalOverride = false;
-    const [ltfDmi, , htfDmi] = dmiOnly;
+    const [ltfDmi, mtfDmi, htfDmi] = dmiOnly;
     if (direction !== 'neutral' && ltfDmi && htfDmi) {
       // Use LTF trend (not just fresh cross) — trend persists longer than the 2-bar cross window.
       const ltfOpposesDir = direction === 'bullish' ? ltfDmi.trend === 'bearish'
@@ -196,7 +199,14 @@ export class SignalAgent {
       const rangePos = rangeSize > 0 ? (lastPrice - rangeLow) / rangeSize : 0.5;
       const atExtreme = direction === 'bullish' ? rangePos >= 0.75 : rangePos <= 0.25;
 
-      if (ltfOpposesDir && htfFading && atExtreme) {
+      // Also treat strong opposing velocity as a reversal signal — velocity reacts
+      // faster than DMI (even 8-period) during gradual reversals.
+      // Apr 1 SPY: LTF DMI (8-period) stayed bullish 30+ min into selloff because
+      // the decline was steady, not sharp. Velocity detected it within minutes.
+      const velForReversal = computePriceVelocity(ltfBars);
+      const velOpposesDir = (direction === 'bullish' && velForReversal.directionalVelocity < -0.05)
+                         || (direction === 'bearish' && velForReversal.directionalVelocity > 0.05);
+      if ((ltfOpposesDir || velOpposesDir) && htfFading && atExtreme) {
         direction = direction === 'bullish' ? 'bearish' : 'bullish';
         reversalOverride = true;
       }
@@ -231,7 +241,12 @@ export class SignalAgent {
       const velocityOpposesDir = velDir !== direction;
       const accelerating = ltfVelocity.acceleration > 0.01;
 
-      if (ltfAgrees && velocityOpposesDir && accelerating && direction !== 'neutral') {
+      // Don't let LTF+velocity override when HTF+MTF already agree on the opposite direction.
+      // In that case LTF is lagging, not leading — the higher TFs have already confirmed.
+      // Apr 1 SPY: HTF+MTF both bearish but LTF DMI still bullish → override kept flipping
+      // bearish→bullish, missing the entire afternoon selloff.
+      const htfMtfAgreeOnDir = mtfDmi?.trend === direction && htfDmi?.trend === direction;
+      if (ltfAgrees && velocityOpposesDir && accelerating && direction !== 'neutral' && !htfMtfAgreeOnDir) {
         // LTF DMI + strong accelerating velocity vs MTF+HTF lagged DMI
         // → leading indicators outvote lagged → flip direction
         console.log(`[SignalAgent] Leading direction override: velocity=${ltfVelocity.directionalVelocity.toFixed(4)} accel=${ltfVelocity.acceleration.toFixed(4)} LTF_DMI=${ltfDmi?.trend} → flipping ${direction}→${velDir}`);
@@ -288,7 +303,16 @@ export class SignalAgent {
     if (!leadingSignalOverride && !reversalOverride) {
       const persistedDir = _leadingOverrideDir.get(ticker);
       const persistedTs = _leadingOverrideTs.get(ticker) ?? 0;
-      if (persistedDir && Date.now() - persistedTs > PERSIST_MAX_MS) {
+      // Clear persistence when HTF+MTF both align against the persisted direction —
+      // the higher timeframes have caught up and the leading override is stale.
+      // Apr 1 SPY: LTF bullish persistence kept flipping bearish→bullish during a clear
+      // macro bearish trend where HTF+MTF had already confirmed bearish.
+      const htfMtfOppose = persistedDir && mtfDmi?.trend && htfDmi?.trend
+        && mtfDmi.trend !== persistedDir && htfDmi.trend !== persistedDir;
+      if (persistedDir && (Date.now() - persistedTs > PERSIST_MAX_MS || htfMtfOppose)) {
+        if (htfMtfOppose) {
+          console.log(`[SignalAgent] Leading momentum persistence expired: HTF+MTF both ${htfDmi?.trend}, clearing persisted ${persistedDir}`);
+        }
         _leadingOverrideDir.delete(ticker);
         _leadingOverrideTs.delete(ticker);
       } else if (persistedDir && ltfDmi?.trend === persistedDir) {

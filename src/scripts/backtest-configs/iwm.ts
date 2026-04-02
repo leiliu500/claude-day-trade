@@ -1,19 +1,20 @@
 /**
  * IWM backtest configuration — parameters + custom code hooks.
  *
- * Tuned from Q4 2025 + Q1 2026 backtest (Oct 2025 – Mar 2026):
- *   Baseline: 5A/1B/6C/10F (27% good, 45% bad)
- *   Tuned:    5A/1B/5C/0F (100% good+marginal, 0% bad)
+ * Synced with live strategy (strategies/iwm.ts) to ensure backtest
+ * reproduces live system entry decisions accurately.
  *
- * IWM-specific filters:
- *   - Block negative displacement velocity (< -0.01): all 3 phase-change
- *     override F-grades + 2 confirmed F-grades had negative dvel.
- *   - Lower trendMaxExhaustion to 9.0: high-exhaustion trend entries at
- *     10.6, 11.5, 9.1 were all F-grade.
- *   - Block trend entries with RangeExh >= 7.0 + dvel < 0.10: catches
- *     exhausted trend entries where momentum is decelerating.
- *   - Block breakout entries at high regime (>= 75): Dec 9 breakout at
- *     regime=82 was F-grade; good breakout Jan 20 had regime=60.
+ * IWM-specific filters (mirrors strategies/iwm.ts iwmShouldAllowEntry):
+ *   - breakout atrPct < 0.08%
+ *   - breakout negative dvel < -0.05
+ *   - trend atrPct < 0.125%
+ *   - trend exhausted+choppy (rExh > 7.0 + chop >= 0.55)
+ *   - bullish rangeExhaustion >= 6.0
+ *   - bullish dvel < 0.08 (requires strong positive displacement)
+ *   - breakout early morning (rExh < 1.0)
+ *   - breakout chop+lowDvel, conf < 74%, highExh+highChop, extremeChop, extremeExhaustion
+ *   - breakout regime >= 80
+ *   - bullish breakout highExh+regime
  */
 
 import type { TickerBacktestConfig, EntryContext } from './types.js';
@@ -21,38 +22,34 @@ import type { ConfidenceBreakdown } from '../../types/analysis.js';
 import { simulateOrderAgentIwm } from '../../lib/order-agent-sim-iwm.js';
 
 /**
- * IWM entry filter — applies after all shared filters pass.
+ * IWM entry filter — mirrors strategies/iwm.ts iwmShouldAllowEntry exactly.
  */
 function iwmShouldAllowEntry(ctx: EntryContext): true | string {
-  const { signalMode, breakdown: cb } = ctx;
+  const { signalMode, direction, atr, currentPrice, displacementVelocity } = ctx;
+  const regime = ctx.regimeScore;
 
-  const atrPct = ctx.currentPrice > 0 ? (ctx.atr / ctx.currentPrice) * 100 : 0;
-  if (atrPct < 0.08) return `atrPct ${atrPct.toFixed(3)}% < 0.08%`;
-  if (signalMode === 'breakout' && atrPct < 0.13) return `breakout atrPct ${atrPct.toFixed(3)}% < 0.13%`;
-
-  // dvel: only apply to bullish — on bearish days, negative dvel is directionally correct.
-  // Mar 26-27: bearish entries blocked by dvel were 7 good vs 2 bad (net +5 costly);
-  // bullish entries blocked were 0 good vs 4 bad (all F-grade, net -4 helpful).
-  if (ctx.direction === 'bullish' && ctx.displacementVelocity < -0.02) return `dvel ${ctx.displacementVelocity.toFixed(4)} < -0.02`;
-
-  if (signalMode === 'trend') {
-    if (cb.trendPhaseBonus < 0) return `trend trendPhase ${cb.trendPhaseBonus.toFixed(3)} < 0`;
-    if (ctx.choppiness >= 0.55) return `trend choppiness ${ctx.choppiness.toFixed(2)} >= 0.55`;
-    if (ctx.rangeExhaustion >= 7.0 && ctx.displacementVelocity < 0.10) return `trend exhausted+lowDvel rExh=${ctx.rangeExhaustion.toFixed(1)} dvel=${ctx.displacementVelocity.toFixed(4)}`;
-  }
-
-  if (signalMode === 'breakout') {
-    // breakout structureBonus <= 0 removed: Q4+Q1 net +8 costly
-    // breakout regime lowered from 60 to 55: Mar 26 12:31 A (regime=57), 12:36 A (regime=59) were blocked.
-    if (ctx.regimeScore < 55) return `breakout regime ${ctx.regimeScore} < 55`;
-    // breakout choppiness raised from 0.95 to 1.00: Mar 26 12:39 A-grade (chop=0.95) was blocked.
-    if (ctx.choppiness >= 1.00) return `breakout choppiness ${ctx.choppiness.toFixed(2)} >= 1.00`;
-    // breakout regime >= 75 removed: Q4+Q1 net +5 costly
-    // breakout lowDvel lowered from 0.06 to 0.05: Mar 26 12:48 B (dvel=0.0502), Mar 27 13:59 B (dvel=0.0553) missed.
-    // Still blocks F entries at 0.0451/0.0203.
-    if (ctx.displacementVelocity !== undefined && ctx.displacementVelocity < 0.05
-        && ctx.displacementVelocity >= 0) return `breakout lowDvel ${ctx.displacementVelocity.toFixed(4)} < 0.05`;
-  }
+  const atrPct = currentPrice > 0 ? (atr / currentPrice) * 100 : 0;
+  if (signalMode === 'breakout' && atrPct < 0.08) return `breakout atrPct ${atrPct.toFixed(3)}% < 0.08%`;
+  if (signalMode === 'breakout' && displacementVelocity < -0.05) return `breakout dvel ${displacementVelocity.toFixed(4)} < -0.05`;
+  if (signalMode === 'trend' && atrPct < 0.125) return `trend atrPct ${atrPct.toFixed(3)}% < 0.125%`;
+  if (signalMode === 'trend'
+      && ctx.rangeExhaustion > 7.0
+      && ctx.choppiness >= 0.55) return `trend exhausted+choppy rExh=${ctx.rangeExhaustion.toFixed(1)} chop=${ctx.choppiness.toFixed(2)}`;
+  if (direction === 'bullish' && ctx.rangeExhaustion >= 6.0) return `bullish rangeExhaustion ${ctx.rangeExhaustion.toFixed(1)} >= 6.0`;
+  if (direction === 'bullish' && displacementVelocity < 0.08) return `bullish dvel ${displacementVelocity.toFixed(4)} < 0.08`;
+  if (signalMode === 'breakout' && ctx.rangeExhaustion < 1.0) return `breakout rangeExhaustion ${ctx.rangeExhaustion.toFixed(1)} < 1.0 (early morning)`;
+  if (signalMode === 'breakout'
+      && ctx.choppiness >= 0.90 && displacementVelocity < 0.10) return `breakout chop+lowDvel chop=${ctx.choppiness.toFixed(2)} dvel=${displacementVelocity.toFixed(4)}`;
+  if (signalMode === 'breakout' && ctx.confidence < 0.74) return `breakout confidence ${(ctx.confidence * 100).toFixed(0)}% < 74%`;
+  if (signalMode === 'breakout'
+      && ctx.rangeExhaustion >= 7.0 && ctx.choppiness >= 1.0) return `breakout highExh+highChop rExh=${ctx.rangeExhaustion.toFixed(1)} chop=${ctx.choppiness.toFixed(2)}`;
+  if (signalMode === 'breakout'
+      && ctx.choppiness >= 2.0) return `breakout extremeChop ${ctx.choppiness.toFixed(2)} >= 2.0`;
+  if (signalMode === 'breakout'
+      && ctx.rangeExhaustion >= 9.0) return `breakout extremeExhaustion ${ctx.rangeExhaustion.toFixed(1)} >= 9.0`;
+  if (signalMode === 'breakout' && regime >= 80) return `breakout regime ${regime} >= 80`;
+  if (signalMode === 'breakout' && direction === 'bullish'
+      && ctx.rangeExhaustion >= 4.5 && regime >= 65) return `bullish breakout highExh+regime rExh=${ctx.rangeExhaustion.toFixed(1)} regime=${regime}`;
 
   return true;
 }
@@ -75,8 +72,11 @@ export const IWM_CONFIG: Partial<TickerBacktestConfig> = {
   breakoutMinConfidence: 0,
   breakoutStopMult: 0.7,
   breakoutTpMult: 1.8,
-  // trendMaxExhaustion disabled: Q4+Q1 counterfactual net +19 costly (45 good vs 26 bad)
   trendMaxExhaustion: 999,
+
+  // No trend cooldown — matches live decision-orchestrator which has no trend cooldown
+  // (only range=20m, breakout=30m, vwap_rev=15m have cooldowns in live)
+  trendCooldownMin: 0,
 
   shouldAllowEntry: iwmShouldAllowEntry,
   adjustConfidence: iwmAdjustConfidence,

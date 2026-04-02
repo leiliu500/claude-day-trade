@@ -70,6 +70,8 @@ export interface TickerBacktestConfig {
   entryWindowStartMin: number;
   /** Entry window: latest entry in minutes since market open (default 390 = close) */
   entryWindowEndMin: number;
+  /** Trend: minimum minutes between trend entries (default 15). Set 0 to disable (matches live). */
+  trendCooldownMin: number;
 
   // ── Code hooks — override with custom per-ticker logic ─────────────────────
 
@@ -122,6 +124,7 @@ export const DEFAULT_BT_CONFIG: TickerBacktestConfig = {
   trendStrongSignalMinConf: 0.75,
   entryWindowStartMin: 0,
   entryWindowEndMin: 390,
+  trendCooldownMin: 15,
   shouldAllowEntry: () => true,
   adjustConfidence: (cb) => cb,
   simulate: simulateOrderAgent,

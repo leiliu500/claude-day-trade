@@ -171,7 +171,7 @@ function spyShouldAllowEntry(ctx: EntryContext): true | string {
   if (signalMode === 'breakout' && ctx.displacementVelocity !== undefined
       && ctx.displacementVelocity < -0.05) return `breakout dvel ${ctx.displacementVelocity.toFixed(4)} < -0.05`;
 
-  if (signalMode === 'trend' && atr < 0.70) return `trend atr ${atr.toFixed(3)} < 0.70`;
+  if (signalMode === 'trend' && atr < 0.65) return `trend atr ${atr.toFixed(3)} < 0.65`;
 
   // trend_regime >= 80 removed: Q4+Q1 counterfactual net +12 costly (97 good missed vs 85 bad avoided).
   // trend_exhausted_reverting (rExh>7 + dvel<0) and trend_exhausted_choppy already catch actual reversals.
@@ -184,7 +184,7 @@ function spyShouldAllowEntry(ctx: EntryContext): true | string {
       && ctx.rangeExhaustion !== undefined && ctx.rangeExhaustion >= 6.0) return `bullish rangeExhaustion ${ctx.rangeExhaustion.toFixed(1)} >= 6.0`;
 
   if (direction === 'bullish'
-      && ctx.displacementVelocity !== undefined && ctx.displacementVelocity < 0.08) return `bullish dvel ${ctx.displacementVelocity.toFixed(4)} < 0.08`;
+      && ctx.displacementVelocity !== undefined && ctx.displacementVelocity < -0.02) return `bullish dvel ${ctx.displacementVelocity.toFixed(4)} < -0.02`;
 
   if (signalMode === 'breakout'
       && ctx.rangeExhaustion !== undefined && ctx.rangeExhaustion < 1.0) return `breakout rangeExhaustion ${ctx.rangeExhaustion.toFixed(1)} < 1.0 (early morning)`;

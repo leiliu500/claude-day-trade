@@ -35,6 +35,8 @@ import { DecisionOrchestrator } from '../agents/decision-orchestrator.js';
 import type { SimResult } from '../lib/order-agent-sim.js';
 import { evaluateTrend, evaluateRange, evaluateBreakout, evaluateVwapReversion, resolveMode } from '../strategies/default.js';
 import { computeTrendConfidenceFn, computeRangeConfidenceFn, computeBreakoutConfidenceFn } from '../agents/analysis-agent.js';
+import { computeEntryMetrics } from '../lib/entry-context.js';
+import { getTickerConfig } from '../ticker-configs.js';
 
 // ── Config ────────────────────────────────────────────────────────────────────
 
@@ -44,10 +46,13 @@ const TARGET_DATE = process.argv.filter(a => !a.startsWith('--'))[2] || '2026-03
 const TICKER = process.argv.filter(a => !a.startsWith('--'))[3] || 'SPY';
 const PROFILE = 'S' as const; // Scalp: 1m, 3m, 5m
 
-// ── Per-ticker config (loaded from backtest-configs/<ticker>.ts) ────────────
+// ── Per-ticker config ────────────────────────────────────────────────────────
+// Backtest config: sim parameters, entry window, daily limits, etc.
 import { loadBacktestConfig } from './backtest-configs/index.js';
 const TCFG = loadBacktestConfig(TICKER);
 const MIN_CONFIDENCE = parseFloat(process.env.BT_THRESHOLD ?? '') || TCFG.minConfidence;
+// Live ticker config: provides the REAL strategy hooks (shouldAllowEntry, adjustConfidence, detectMode)
+const LIVE_TICKER_CFG = getTickerConfig(TICKER);
 
 // Market hours in UTC (ET + 4 during EDT, ET + 5 during EST)
 // March 18 2026 is EDT → 9:30 ET = 13:30 UTC, 16:00 ET = 20:00 UTC
@@ -299,6 +304,11 @@ interface EntryRecord {
   outcome: 'GOOD' | 'BAD' | 'MARGINAL';
   atr: number;
   mfePeakMinutes: number;  // minutes after entry when MFE peaks
+  // Sequence-aware grading (MFE-before-MAE)
+  seqMfePct: number;       // MFE reached before stop threshold hit (%)
+  seqMaePct: number;       // MAE at point of stop or end of window (%)
+  stoppedOut: boolean;     // whether adverse hit stop threshold before MFE peaked
+  stopThresholdPct: number; // ATR-based stop threshold used (%)
   // Simulated order-agent result (secondary — not fully accurate for options)
   sim: SimResult;
   breakdown: ConfidenceBreakdown;
@@ -432,30 +442,17 @@ async function main() {
   // ── Trend mode state ────────────────────────────────────────────────────
   let lastTrendEntryTs = 0;
   let trendEntryCount = 0;
-  const TREND_COOLDOWN_MIN = 15;    // min minutes between trend entries
+  const TREND_COOLDOWN_MIN = TCFG.trendCooldownMin;  // per-ticker (0 = no cooldown, matches live)
   const MAX_TREND_ENTRIES = 6;       // max trend entries per day
 
-  // ── Displacement-based regime detection ──────────────────────────────────────
-  // Tracks how far price has moved from open and how much daily range is consumed.
-  // High displacement = late entry risk for trend/breakout, mean-reversion for range.
-  let directionFlipCount = 0;
-  let prevTickDirection: SignalDirection = 'neutral';
-  let intradayHigh = -Infinity;
-  let intradayLow = Infinity;
-  let regimeScore = 50; // composite: >60 trending, <40 range/choppy
+  // ── Regime score (display only — live strategy computes its own via detectMode) ──
+  let regimeScore = 50;
 
-  // ── Displacement velocity ─────────────────────────────────────────────────
-  // Tracks rate of change in displacement — accelerating vs decelerating moves.
-  const displacementHistory: number[] = []; // rolling window of displacement values (1 per tick)
-
-  // ── Intraday trend tracking (for range mode filtering) ────────────────────
-  // Counts consecutive 5m bars making higher highs/lower lows to detect trending days early
+  // ── Intraday trend tracking ────────────────────────────────────────────────
   let consecHigherCloses = 0;
   let consecLowerCloses = 0;
   let prevTickClose = 0;
-  let intradayTrendStrength = 0; // positive = trending up, negative = trending down, 0 = choppy
-  // Rolling window of closes for VWAP-side tracking
-  const vwapSideHistory: ('above' | 'below' | 'at')[] = [];
+  let intradayTrendStrength = 0;
 
   // ── Intraday loss tracker ────────────────────────────────────────────────
   // Tracks confirmed entries that go against within 5 min. After N quick losses,
@@ -598,20 +595,20 @@ async function main() {
 
     if (ltfBars.length < 14 || mtfBars.length < 14 || htfBars.length < 14) continue;
 
-    // First pass: DMI direction
+    // First pass: DMI direction (LTF uses period 8 for faster detection)
     const dmiOnly = [
-      computeDMI(ltfBars, 14, true),
+      computeDMI(ltfBars, 8, true),
       computeDMI(mtfBars, 14, true),
       computeDMI(htfBars, 14, true),
     ];
-    const dirVotes = dmiOnly.map(d => d.trend);
+    const dirVotes: SignalDirection[] = dmiOnly.map(d => d.trend);
     const bullish = dirVotes.filter(v => v === 'bullish').length;
     const bearish = dirVotes.filter(v => v === 'bearish').length;
     let direction: SignalDirection = bullish > bearish ? 'bullish' : bearish > bullish ? 'bearish' : 'neutral';
 
     // Early reversal override (same logic as signal-agent.ts)
     let reversalOverride = false;
-    const [ltfDmi, , htfDmi] = dmiOnly;
+    const [ltfDmi, mtfDmi, htfDmi] = dmiOnly;
     if (direction !== 'neutral' && ltfDmi && htfDmi) {
       const ltfOpposesDir = direction === 'bullish' ? ltfDmi.trend === 'bearish'
                                                      : ltfDmi.trend === 'bullish';
@@ -626,7 +623,10 @@ async function main() {
       const lastPrice = htfBarsForRange[htfBarsForRange.length - 1]?.close ?? 0;
       const rangePos = rangeSize > 0 ? (lastPrice - rangeLow) / rangeSize : 0.5;
       const atExtreme = direction === 'bullish' ? rangePos >= 0.75 : rangePos <= 0.25;
-      if (ltfOpposesDir && htfFading && atExtreme) {
+      const velForReversal = computePriceVelocity(ltfBars);
+      const velOpposesDir = (direction === 'bullish' && velForReversal.directionalVelocity < -0.05)
+                         || (direction === 'bearish' && velForReversal.directionalVelocity > 0.05);
+      if ((ltfOpposesDir || velOpposesDir) && htfFading && atExtreme) {
         direction = direction === 'bullish' ? 'bearish' : 'bullish';
         reversalOverride = true;
       }
@@ -646,7 +646,9 @@ async function main() {
       const velocityOpposesDir = velDir !== direction;
       const accelerating = ltfVelocity.acceleration > 0.01;
 
-      if (ltfAgrees && velocityOpposesDir && accelerating && direction !== 'neutral') {
+      // Don't let LTF+velocity override when HTF+MTF already agree on the opposite direction.
+      const htfMtfAgreeOnDir = mtfDmi?.trend === direction && htfDmi?.trend === direction;
+      if (ltfAgrees && velocityOpposesDir && accelerating && direction !== 'neutral' && !htfMtfAgreeOnDir) {
         direction = velDir;
         leadingSignalOverride = true;
         leadingOverrideDir = velDir;
@@ -667,8 +669,11 @@ async function main() {
     // Expires after 15 minutes to prevent stale overrides from affecting later signals.
     const PERSIST_MAX_MS = 15 * 60_000;
     if (!leadingSignalOverride && !reversalOverride && leadingOverrideDir !== null) {
-      if (currentTs - leadingOverrideTs > PERSIST_MAX_MS) {
-        leadingOverrideDir = null; // expired
+      // Clear persistence when HTF+MTF both align against persisted direction
+      const htfMtfOpposePersisted = mtfDmi?.trend && htfDmi?.trend
+        && mtfDmi.trend !== leadingOverrideDir && htfDmi.trend !== leadingOverrideDir;
+      if (currentTs - leadingOverrideTs > PERSIST_MAX_MS || htfMtfOpposePersisted) {
+        leadingOverrideDir = null; // expired or higher TFs caught up
       } else if (ltfDmi?.trend === leadingOverrideDir) {
         if (leadingOverrideDir !== direction) direction = leadingOverrideDir;
         leadingSignalOverride = true; // protect from mode evaluator overwrite
@@ -783,44 +788,20 @@ async function main() {
     // No qualifying regime — skip this bar (no default fallback)
     if (signalMode === 'none') continue;
 
-    // ── Displacement-based regime detection ─────────────────────────────────────
-    // Core insight: High displacement = trend already mature = late entry risk for trend/breakout
-    // but mean-reversion opportunity for range mode. This inverts per mode.
-
-    // Track running intraday extremes
-    if (currentPrice > intradayHigh) intradayHigh = currentPrice;
-    if (currentPrice < intradayLow) intradayLow = currentPrice;
-
-    // A. Running displacement: how far price has moved from open (%)
-    const runningDisplacement = Math.abs(currentPrice - dayOpen) / dayOpen * 100;
-
-    // B. Range exhaustion: what fraction of expected daily range is consumed
-    const intradayRange = intradayHigh - intradayLow;
-    const dailyATR = atr > 0 ? atr : intradayRange; // fallback if ATR not available
-    const rangeExhaustion = dailyATR > 0 ? intradayRange / dailyATR : 0;
-
-    // C. Direction flip counter (choppiness proxy)
-    if (direction !== 'neutral' && direction !== prevTickDirection && prevTickDirection !== 'neutral') {
-      directionFlipCount++;
-    }
-    if (direction !== 'neutral') prevTickDirection = direction;
+    // ── Entry metrics — uses shared computeEntryMetrics() (same code as live) ──
+    // Get today's bars up to the current tick for metrics computation.
+    const todayBarsToNow = targetDateBars.filter(b => {
+      const bt = new Date(b.timestamp).getTime();
+      return bt <= currentTs;
+    });
+    const htfAtr = (tfIndicators[2] ?? tfIndicators[0])?.atr.atr ?? atr;
+    const entryMetrics = computeEntryMetrics(todayBarsToNow, htfAtr);
+    const displacementVelocity = entryMetrics?.displacementVelocity ?? 0;
+    const rangeExhaustion = entryMetrics?.rangeExhaustion ?? 0;
+    const choppiness = entryMetrics?.choppiness ?? 0;
     const minutesSinceOpen = (currentTs - openTime.getTime()) / 60_000;
-    const expectedFlips = Math.max(1, minutesSinceOpen / 15);
-    const choppiness = directionFlipCount / expectedFlips; // >1.5 = choppy, <0.8 = trending
 
-    // D. Displacement velocity: rate of change in displacement over last 10 ticks
-    displacementHistory.push(runningDisplacement);
-    if (displacementHistory.length > 20) displacementHistory.shift();
-    let displacementVelocity = 0; // positive = displacement increasing (trending), negative = reverting
-    if (displacementHistory.length >= 10) {
-      const recent5 = displacementHistory.slice(-5);
-      const prior5 = displacementHistory.slice(-10, -5);
-      const recentAvg = recent5.reduce((a, b) => a + b, 0) / 5;
-      const priorAvg = prior5.reduce((a, b) => a + b, 0) / 5;
-      displacementVelocity = recentAvg - priorAvg; // >0 = accelerating away from open, <0 = reverting
-    }
-
-    // E. Intraday trend tracking: consecutive directional closes
+    // Intraday trend tracking: consecutive directional closes
     if (prevTickClose > 0) {
       if (currentPrice > prevTickClose) {
         consecHigherCloses = Math.max(1, consecHigherCloses + 1);
@@ -831,31 +812,32 @@ async function main() {
       }
     }
     prevTickClose = currentPrice;
-    // Trend strength: positive = bullish trend, negative = bearish trend
     intradayTrendStrength = consecHigherCloses >= 3 ? consecHigherCloses
       : consecLowerCloses >= 3 ? -consecLowerCloses : 0;
 
-    // F. VWAP-side consistency: how often price stays on one side of VWAP
-    const ltfVwap = tfIndicators[0]?.vwap.priceVsVwap ?? 0;
-    vwapSideHistory.push(ltfVwap > 0.05 ? 'above' : ltfVwap < -0.05 ? 'below' : 'at');
-    if (vwapSideHistory.length > 30) vwapSideHistory.shift();
-    let vwapConsistency = 0; // 0-1: how consistently price stays on one side
-    if (vwapSideHistory.length >= 10) {
-      const recent = vwapSideHistory.slice(-20);
-      const aboveCount = recent.filter(s => s === 'above').length;
-      const belowCount = recent.filter(s => s === 'below').length;
-      vwapConsistency = Math.max(aboveCount, belowCount) / recent.length;
+    // ── Regime score — call live per-ticker strategy's detectMode ──
+    // This triggers computeRegimeScore() as a side effect in IWM/SPY/QQQ strategies,
+    // which sets the module-level _lastRegimeScore used by shouldAllowEntry.
+    // We call it here to keep regime in sync — same as the live signal-agent pipeline.
+    LIVE_TICKER_CFG.strategy.detectMode(tfIndicators, direction, currentPrice);
+    // Compute a display-only regime score for reporting (uses the same method as live strategies)
+    {
+      const ltfBars = tfIndicators[0]?.bars;
+      const ltfVwapPriceVs = tfIndicators[0]?.vwap?.priceVsVwap ?? 0;
+      const ltfAdx = tfIndicators[0]?.dmi?.adx ?? 0;
+      if (ltfBars && ltfBars.length >= 20) {
+        // Use the live strategy's regime computation via detectMode side effect.
+        // For display, compute a simple composite from the shared metrics.
+        const trendStrComponent = Math.min(10, Math.abs(intradayTrendStrength) * 2.5);
+        const choppinessComponent = (1 - choppiness) * 15;
+        const velocityComponent = Math.min(10, Math.max(-10, displacementVelocity * 15));
+        const adxComponent = ltfAdx >= 20 ? Math.min(15, (ltfAdx - 20) * 1.0) : 0;
+        const vwapComponent = Math.min(10, Math.abs(ltfVwapPriceVs) / 0.20 * 10);
+        regimeScore = Math.round(Math.max(0, Math.min(100,
+          50 + choppinessComponent + velocityComponent + trendStrComponent + adxComponent + vwapComponent
+        )));
+      }
     }
-
-    // ── Composite regime score ──────────────────────────────────────────────
-    // >65 = trending (favor trend/breakout), <35 = range/choppy (favor range), 35-65 = mixed
-    const trendingComponent = (1 - choppiness) * 20;           // less choppy = more trending
-    const velocityComponent = displacementVelocity * 15;       // accelerating displacement = trending
-    const vwapComponent = (vwapConsistency - 0.5) * 20;        // consistent VWAP side = trending
-    const trendStrComponent = Math.min(10, Math.abs(intradayTrendStrength) * 2.5); // consecutive closes
-    regimeScore = Math.round(Math.max(0, Math.min(100,
-      50 + trendingComponent + velocityComponent + vwapComponent + trendStrComponent
-    )));
 
     const optionEval = mockOptionEval(signal);
     // Live functions compute theta=0 with null winnerCandidate; apply backtest theta as post-processing
@@ -882,7 +864,8 @@ async function main() {
       ltfBars,
       ltfVwapPriceVs: tfIndicators[0]?.vwap?.priceVsVwap ?? 0,
     };
-    let cb = TCFG.adjustConfidence(cbRaw, entryCtx);
+    // Use live strategy's adjustConfidence — same code that runs in production
+    let cb = LIVE_TICKER_CFG.strategy.adjustConfidence(cbRaw, entryCtx);
 
     // ── Trend persistence bonus (mirrors live AnalysisAgent logic) ─────────────
     // Count consecutive same-direction aligned signals from history, apply +0.03/bar (cap +0.12)
@@ -1000,22 +983,44 @@ async function main() {
       const move15mPct = computeMovePct(p15m);
       const move30mPct = computeMovePct(p30m);
 
-      // Direction correct: price moved favorably > 0.10% within 30min
-      // (0.10% ≈ $0.65 for SPY — meaningful directional move at checkpoints)
-      const bestMoveIn30m = [move5mPct, move10mPct, move15mPct, move30mPct]
-        .filter((v): v is number => v !== null);
-      const directionCorrect = bestMoveIn30m.length > 0 && Math.max(...bestMoveIn30m) > 0.10;
+      // ── Sequence-aware grading (MFE-before-MAE) ──
+      // Walk 1m bar OPENS only — opens are the first price in each bar,
+      // so the sequence is unambiguous (unlike high/low within a bar).
+      // Grade is based on how much favorable move is reached BEFORE the
+      // adverse move hits the stop threshold (ATR-based).
+      const stopThresholdPct = (atr / currentPrice) * 100 * 0.40; // 40% of ATR as stop
+      let seqMfePct = 0;   // running max favorable excursion (%)
+      let seqMaePct = 0;   // running max adverse excursion (%)
+      let stoppedOut = false;
+      let seqMfePeakMin = 0;
+      for (const fb of futureBars) {
+        const favMove = direction === 'bullish'
+          ? ((fb.open - currentPrice) / currentPrice) * 100
+          : ((currentPrice - fb.open) / currentPrice) * 100;
+        const advMove = favMove < 0 ? -favMove : 0;
+        const favGain = favMove > 0 ? favMove : 0;
+        if (advMove > seqMaePct) seqMaePct = advMove;
+        if (seqMaePct >= stopThresholdPct) { stoppedOut = true; break; }
+        if (favGain > seqMfePct) {
+          seqMfePct = favGain;
+          seqMfePeakMin = Math.round((new Date(fb.timestamp).getTime() - currentTs) / 60_000);
+        }
+      }
 
-      // Entry grade: stock-price-based classification
-      //   A: MFE > 0.4% AND MFE/MAE > 2.0 — strong directional move with low risk
-      //   B: MFE > 0.25% AND MFE/MAE > 1.2 — good move with acceptable risk
-      //   C: MFE > 0.15% AND direction correct — moved right way but modest
-      //   D: direction correct but weak (MFE < 0.15% or MFE/MAE < 0.8)
-      //   F: direction wrong or no meaningful favorable move
+      // Direction correct: based on sequence-aware MFE (reached before stop)
+      const directionCorrect = seqMfePct > 0.10;
+
+      // Entry grade: sequence-aware (MFE-before-MAE)
+      //   Measures favorable move reached BEFORE adverse hits stop threshold.
+      //   A: reached +0.4% before stop — strong capturable move
+      //   B: reached +0.25% before stop — good capturable move
+      //   C: reached +0.15% before stop — modest move, direction correct
+      //   D: direction correct but weak (< 0.15% before stop)
+      //   F: stopped out before any meaningful favorable move, or wrong direction
       let entryGrade: 'A' | 'B' | 'C' | 'D' | 'F';
-      if (mfePct > 0.40 && mfeOverMae > 2.0) entryGrade = 'A';
-      else if (mfePct > 0.25 && mfeOverMae > 1.2) entryGrade = 'B';
-      else if (mfePct > 0.15 && directionCorrect) entryGrade = 'C';
+      if (seqMfePct > 0.40) entryGrade = 'A';
+      else if (seqMfePct > 0.25) entryGrade = 'B';
+      else if (seqMfePct > 0.15 && directionCorrect) entryGrade = 'C';
       else if (directionCorrect) entryGrade = 'D';
       else entryGrade = 'F';
 
@@ -1041,6 +1046,7 @@ async function main() {
         move5mPct, move10mPct, move15mPct, move30mPct, entryGrade, outcome, sim,
         priceAt5m: p5m, priceAt10m: p10m, priceAt15m: p15m, priceAt30m: p30m,
         mfePeakMinutes,
+        seqMfePct, seqMaePct, stoppedOut, stopThresholdPct,
       };
     };
 
@@ -1158,7 +1164,8 @@ async function main() {
       }
 
       // Per-ticker entry filter hook — allows QQQ etc. to block entries with custom logic
-      const tickerAllowsResult = !meetsThreshold || TCFG.shouldAllowEntry(entryCtx);
+      // Use live strategy's shouldAllowEntry — same code that runs in production
+      const tickerAllowsResult = !meetsThreshold || LIVE_TICKER_CFG.strategy.shouldAllowEntry(entryCtx);
       const tickerAllows = tickerAllowsResult === true;
       if (meetsThreshold && !tickerAllows && typeof tickerAllowsResult === 'string') {
         pushFilterBlocked(tickerAllowsResult);
@@ -1278,7 +1285,10 @@ async function main() {
         const trendUnderLimit = trendEntryCount < MAX_TREND_ENTRIES;
         if (!trendCooldownOk || !trendUnderLimit) {
           // Over daily trend limit or in cooldown — skip
-        } else if (rangeExhaustion > TCFG.trendExhaustedRevertMinExh && displacementVelocity < 0) {
+        } else if (rangeExhaustion > TCFG.trendExhaustedRevertMinExh && displacementVelocity < 0
+          // Exempt when all timeframes align + ADX > 25 + rising: trend still strengthening
+          && !((alignment === 'all_aligned' || alignment === 'htf_mtf_aligned')
+               && (tfIndicators[2]?.dmi.adx ?? 0) > 25 && (tfIndicators[2]?.dmi.adxSlope ?? 0) > 0)) {
           pushFilterBlocked(`trend_exhausted_reverting: rExh=${rangeExhaustion.toFixed(1)} dvel=${displacementVelocity?.toFixed(4)}`);
           // Late exhausted trend: daily range consumed >7x ATR and momentum reverting — skip.
         } else if (rangeExhaustion > TCFG.trendMaxExhaustion) {
@@ -1540,8 +1550,10 @@ async function main() {
     console.log(`    Direction:  ${e.direction.toUpperCase()} ${dirTag} | Alignment: ${e.alignment} | Strength: ${e.strengthScore}${e.signalMode === 'range' ? ' | Mode: RANGE' : ''}`);
     console.log(`    Price:      $${e.price.toFixed(2)} | Confidence: ${(e.confidence * 100).toFixed(1)}%${e.stage1Conf !== undefined ? ` (Stage-1 was ${(e.stage1Conf * 100).toFixed(1)}%)` : ''}`);
     console.log(`    ATR: $${e.atr.toFixed(3)} | Regime: ${e.regimeScore ?? '-'} | RangeExh: ${e.rangeExhaustion?.toFixed(1) ?? '-'} | DispVel: ${e.displacementVelocity?.toFixed(3) ?? '-'} | Chop: ${e.choppiness?.toFixed(2) ?? '-'} | TrendStr: ${e.intradayTrendStrength ?? '-'}`);
-    // Entry quality (stock-price-based — primary metric)
-    console.log(`    Entry Quality: MFE=${e.mfePct.toFixed(2)}% | MAE=${e.maePct.toFixed(2)}% | MFE/MAE=${e.mfeOverMae.toFixed(1)} | Fav=$${e.maxFavorable.toFixed(2)} | Adv=$${e.maxAdverse.toFixed(2)}`);
+    // Entry quality — sequence-aware (MFE reached before stop hit)
+    const seqTag = e.stoppedOut ? '🛑 stopped' : '✅ held';
+    console.log(`    Entry Quality: SeqMFE=${e.seqMfePct.toFixed(2)}% ${seqTag} | Stop@${e.stopThresholdPct.toFixed(2)}% | SeqMAE=${e.seqMaePct.toFixed(2)}%`);
+    console.log(`    Raw 2h window: MFE=${e.mfePct.toFixed(2)}% | MAE=${e.maePct.toFixed(2)}% | MFE/MAE=${e.mfeOverMae.toFixed(1)} | Fav=$${e.maxFavorable.toFixed(2)} | Adv=$${e.maxAdverse.toFixed(2)}`);
     // Directional moves at intervals
     const fmtMove = (label: string, pct: number | null, price: number | null) => {
       if (pct === null || price === null) return '';
@@ -1599,9 +1611,9 @@ async function main() {
   const confirmedMarginal = confirmedEntries.length - confirmedGood - confirmedBad;
   const dirCorrectCount = confirmedEntries.filter(e => e.directionCorrect).length;
   const dirAccuracy = confirmedEntries.length > 0 ? (dirCorrectCount / confirmedEntries.length * 100) : 0;
-  const avgMfePct = confirmedEntries.length > 0 ? confirmedEntries.reduce((s, e) => s + e.mfePct, 0) / confirmedEntries.length : 0;
-  const avgMaePct = confirmedEntries.length > 0 ? confirmedEntries.reduce((s, e) => s + e.maePct, 0) / confirmedEntries.length : 0;
-  const avgMfeOverMae = confirmedEntries.length > 0 ? confirmedEntries.reduce((s, e) => s + e.mfeOverMae, 0) / confirmedEntries.length : 0;
+  const avgSeqMfePct = confirmedEntries.length > 0 ? confirmedEntries.reduce((s, e) => s + e.seqMfePct, 0) / confirmedEntries.length : 0;
+  const avgSeqMaePct = confirmedEntries.length > 0 ? confirmedEntries.reduce((s, e) => s + e.seqMaePct, 0) / confirmedEntries.length : 0;
+  const stoppedOutCount = confirmedEntries.filter(e => e.stoppedOut).length;
   const gradeA = confirmedEntries.filter(e => e.entryGrade === 'A').length;
   const gradeB = confirmedEntries.filter(e => e.entryGrade === 'B').length;
   const gradeC = confirmedEntries.filter(e => e.entryGrade === 'C').length;
@@ -1609,11 +1621,11 @@ async function main() {
   const gradeF = confirmedEntries.filter(e => e.entryGrade === 'F').length;
 
   console.log(`${'─'.repeat(80)}`);
-  console.log(`  ENTRY QUALITY (stock-price-based — primary metric)`);
+  console.log(`  ENTRY QUALITY (sequence-aware — MFE before stop hit)`);
   console.log(`${'─'.repeat(80)}`);
   console.log(`  Entries:      ${confirmedEntries.length} confirmed | ${blockedEntries.length} blocked`);
   console.log(`  Direction:    ${dirCorrectCount}/${confirmedEntries.length} correct (${dirAccuracy.toFixed(0)}%)`);
-  console.log(`  Avg MFE:      ${avgMfePct.toFixed(3)}% | Avg MAE: ${avgMaePct.toFixed(3)}% | Avg MFE/MAE: ${avgMfeOverMae.toFixed(1)}`);
+  console.log(`  Avg SeqMFE:   ${avgSeqMfePct.toFixed(3)}% | Avg SeqMAE: ${avgSeqMaePct.toFixed(3)}% | Stopped out: ${stoppedOutCount}/${confirmedEntries.length}`);
   console.log(`  Grades:       🟢 A:${gradeA}  🔵 B:${gradeB}  🟡 C:${gradeC}  🟠 D:${gradeD}  🔴 F:${gradeF}`);
   console.log(`  Outcome:      ✅ ${confirmedGood} good (A+B) | ❌ ${confirmedBad} bad (F) | ⚠️  ${confirmedMarginal} marginal (C+D)`);
 
@@ -1624,10 +1636,10 @@ async function main() {
   if (rangeEntries.length > 0 || breakoutEntries.length > 0) {
     const modeSummary = (label: string, entries: typeof confirmedEntries) => {
       const correct = entries.filter(e => e.directionCorrect).length;
-      const mfe = entries.reduce((s, e) => s + e.mfePct, 0) / (entries.length || 1);
-      const mae = entries.reduce((s, e) => s + e.maePct, 0) / (entries.length || 1);
+      const mfe = entries.reduce((s, e) => s + e.seqMfePct, 0) / (entries.length || 1);
+      const mae = entries.reduce((s, e) => s + e.seqMaePct, 0) / (entries.length || 1);
       const grades = entries.map(e => e.entryGrade).join('');
-      return `${label}: ${correct}/${entries.length} dir (${mfe.toFixed(2)}/${mae.toFixed(2)} MFE/MAE) [${grades}]`;
+      return `${label}: ${correct}/${entries.length} dir (${mfe.toFixed(2)}/${mae.toFixed(2)} SeqMFE/MAE) [${grades}]`;
     };
     const parts = [];
     if (rangeEntries.length > 0) parts.push(modeSummary('RANGE', rangeEntries));
@@ -1767,7 +1779,7 @@ async function main() {
       return eDiff < step * 60_000;
     });
     const marker = entryHere
-      ? ` ${({ A: '🟢', B: '🔵', C: '🟡', D: '🟠', F: '🔴' })[entryHere.entryGrade]} ${entryHere.entryGrade} MFE=${entryHere.mfePct.toFixed(2)}%`
+      ? ` ${({ A: '🟢', B: '🔵', C: '🟡', D: '🟠', F: '🔴' })[entryHere.entryGrade]} ${entryHere.entryGrade} SeqMFE=${entryHere.seqMfePct.toFixed(2)}%${entryHere.stoppedOut ? '🛑' : ''}`
       : '';
     const dir = tick.direction === 'bullish' ? '▲' : tick.direction === 'bearish' ? '▼' : '─';
     const confBar = '█'.repeat(Math.round(tick.confidence * 20));

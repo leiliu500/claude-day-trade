@@ -121,6 +121,16 @@ function iwmShouldAllowEntry(ctx: EntryContext): true | string {
   // SPY uses absolute atr < 0.70 (~0.125% of $560); equivalent atrPct for IWM
   if (signalMode === 'trend' && atrPct < 0.125) return `trend atrPct ${atrPct.toFixed(3)}% < 0.125%`;
 
+  // Block early trend entries before range establishes — rExh=0 + chop=0 entries were all F-grade.
+  // Mar 27 09:42 F (rExh=0.0), Apr 1 09:38 F (rExh=0.0). No good trend entries had rExh < 1.0.
+  // Excludes breakout: ORB breakouts at the open can be valid.
+  if (signalMode === 'trend' && ctx.rangeExhaustion !== undefined && ctx.rangeExhaustion < 1.0
+      && ctx.choppiness !== undefined && ctx.choppiness < 0.01) return `trend early morning rExh=${ctx.rangeExhaustion.toFixed(1)} chop=${ctx.choppiness.toFixed(2)} (insufficient range)`;
+
+  // Block low-ATR trend entries — all F-grade entries had atrPct < 0.22%, all A/B had >= 0.22%.
+  // Mar 24 A: 0.34%, B: 0.33%. Mar 27 B: 0.23%. Apr 1 F: 0.18%, F: 0.21%.
+  if (signalMode === 'trend' && atrPct < 0.22) return `trend atrPct ${atrPct.toFixed(3)}% < 0.22% (low volatility)`;
+
   if (signalMode === 'trend'
       && ctx.rangeExhaustion !== undefined && ctx.rangeExhaustion > 7.0
       && ctx.choppiness !== undefined && ctx.choppiness >= 0.55) return `trend exhausted+choppy rExh=${ctx.rangeExhaustion.toFixed(1)} chop=${ctx.choppiness.toFixed(2)}`;

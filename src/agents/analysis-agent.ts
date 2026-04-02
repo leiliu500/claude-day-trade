@@ -5,6 +5,7 @@ import type { SignalPayload } from '../types/signal.js';
 import type { OptionEvaluation } from '../types/options.js';
 import type { AnalysisResult, ConfidenceBreakdown } from '../types/analysis.js';
 import { getRecentSignals } from '../db/repositories/signals.js';
+import { computeEntryMetrics } from '../lib/entry-context.js';
 
 const openai = new OpenAI({ apiKey: config.OPENAI_API_KEY });
 
@@ -271,11 +272,24 @@ function computeConfidence(signal: SignalPayload, option: OptionEvaluation): Con
   // NOTE: Removed 1.5x amplifier for ADX >= 40 with fading slope — phase/accel penalties
   // already capture fading momentum; amplifying maturity triple-counted the same phenomenon,
   // blocking all_aligned entries across SPY/QQQ/IWM (maturity=-0.225 + phase=-0.08 + accel=-0.06).
-  if (adxMaturityPenalty < 0 && signal.alignment === 'all_aligned' && htf.dmi.adx >= 20) {
+  if (adxMaturityPenalty < 0 && (signal.alignment === 'all_aligned' || signal.alignment === 'htf_mtf_aligned') && htf.dmi.adx >= 20) {
     const dirSpread = signal.direction === 'bullish'
       ? htf.dmi.plusDI - htf.dmi.minusDI
       : htf.dmi.minusDI - htf.dmi.plusDI;
     if (dirSpread > 0 && htf.dmi.diSpreadSlope > 0) {
+      adxMaturityPenalty *= 0.5;
+    }
+  }
+
+  // Halve maturity when MTF or LTF recently crossed in the signal direction.
+  // A fresh cross on a faster timeframe means direction recently reversed — the high
+  // adxBarsAbove25 on HTF is inherited from the OLD trend, not the current direction.
+  // Apr 1 SPY: bearish reversal after strong bullish morning had adxBarsAbove25=20+ from
+  // the prior bullish run. MTF crossed bearish at ~14:05 ET but maturity stayed at -0.15.
+  if (adxMaturityPenalty < 0) {
+    const mtfFreshCross = signal.direction === 'bullish' ? mtf.dmi.recentCrossUp : mtf.dmi.recentCrossDown;
+    const ltfFreshCross = ltf && (signal.direction === 'bullish' ? ltf.dmi.recentCrossUp : ltf.dmi.recentCrossDown);
+    if (mtfFreshCross || ltfFreshCross) {
       adxMaturityPenalty *= 0.5;
     }
   }
@@ -431,6 +445,18 @@ function computeConfidence(signal: SignalPayload, option: OptionEvaluation): Con
       else if (abovePDH)         structureBonus = -0.08;
     }
     structureBonus = Math.max(-0.08, Math.min(0.06, structureBonus));
+    // Zero structure penalty when all timeframes align + very strong active trend.
+    // Prior day levels reflect the old market regime; a strong aligned trend today
+    // legitimately pushes price through yesterday's levels. Only for ADX > 30 + rising
+    // to avoid suppressing the penalty for weak or fading trends.
+    // Halve for moderate trends (ADX > 25 + rising).
+    if (structureBonus < 0 && (signal.alignment === 'all_aligned' || signal.alignment === 'htf_mtf_aligned')) {
+      if (htf.dmi.adx > 30 && htf.dmi.adxSlope > 0) {
+        structureBonus = 0;
+      } else if (htf.dmi.adx > 25 && htf.dmi.adxSlope > 0) {
+        structureBonus *= 0.5;
+      }
+    }
   }
 
   // Opening Range Breakout bonus — confirms or contradicts entry direction vs ORB.
@@ -648,9 +674,12 @@ function computeConfidence(signal: SignalPayload, option: OptionEvaluation): Con
         // NOTE: Price action confirmation does NOT reduce exhaustion penalty.
         // At the tail end of an exhausted move, recent bars still confirm direction
         // — that's what "chasing" looks like, not fresh momentum.
-        // However, when ALL timeframes align + momentum still accelerating AND the
-        // exhaustion is moderate (not severe 2.5+ ATR), the trend may be continuing.
-        if (moveExhaustionPenalty > -0.15 && moveExhaustionPenalty < 0 && signal.alignment === 'all_aligned' && htf.dmi.adx >= 20 && momentumAccelBonus > 0) {
+        // However, when ALL timeframes align + momentum still accelerating, the trend
+        // may be continuing. Halve the penalty (including severe) — all-aligned with
+        // rising ADX is the strongest continuation signal we have.
+        // Apr 1 SPY 14:25: bearish all_aligned, adxSlope=+2.1, accel=+0.05,
+        // but mex=-0.15 blocked entry despite clear trend acceleration.
+        if (moveExhaustionPenalty < 0 && (signal.alignment === 'all_aligned' || signal.alignment === 'htf_mtf_aligned') && htf.dmi.adx >= 20 && momentumAccelBonus > 0) {
           moveExhaustionPenalty *= 0.5;
         }
       }
@@ -745,7 +774,7 @@ function computeConfidence(signal: SignalPayload, option: OptionEvaluation): Con
     // Only halve for very strong active trends (ADX > 30 and rising) — these genuinely
     // break through levels. Weaker trends bounce off support/resistance.
     if (nearLevelPenalty < 0 && signal.alignment === 'all_aligned' && htf.dmi.adx > 30 && htf.dmi.adxSlope > 0) {
-      nearLevelPenalty *= 0.5;
+      nearLevelPenalty = 0; // strong active trend breaks through levels
     }
     // When swing low/high was set very recently (within last 2 bars), price is actively
     // making new lows/highs — the level is breaking down, not acting as support/resistance.
@@ -956,6 +985,10 @@ function computeConfidence(signal: SignalPayload, option: OptionEvaluation): Con
     if (diSpreadBonus < 0) diSpreadBonus = 0;   // MTF/HTF show old direction's DI dominance
     if (lowVolPenalty < 0) lowVolPenalty = 0;    // low ADX = old trend weakening, expected
     if (vwapBonus === 0) vwapBonus = 0.06;       // restore VWAP bonus killed by fading diSpreadSlope
+    // ADX maturity reflects the OLD trend's age, not the new direction.
+    // Apr 1 SPY: bearish reversal after strong bullish morning had adxBarsAbove25=20+
+    // because ADX stayed high from the prior trend → -0.15 penalty on a fresh move.
+    if (adxMaturityPenalty < 0) adxMaturityPenalty = 0;
   }
 
   // Leading signal override adjustments: when direction was set/confirmed by leading
@@ -1027,7 +1060,7 @@ function computeConfidence(signal: SignalPayload, option: OptionEvaluation): Con
   // elevated confidence from other factors to pass.
   // Exempt all_aligned with ADX >= 20 — genuine trend continuation across all timeframes.
   // Require ADX >= 20 alongside all_aligned: very low ADX + all_aligned is noise, not trend.
-  if (adxMaturityPenalty <= -0.15 && !(signal.alignment === 'all_aligned' && htf.dmi.adx >= 20)) {
+  if (adxMaturityPenalty <= -0.15 && !((signal.alignment === 'all_aligned' || signal.alignment === 'htf_mtf_aligned') && htf.dmi.adx >= 20)) {
     if (recentPriceActionBonus > 0) {
       total = Math.min(total, 0.64);
     } else {
@@ -1073,7 +1106,7 @@ function computeConfidence(signal: SignalPayload, option: OptionEvaluation): Con
   // easy money is gone and reversal risk is high.
   // Exempt all_aligned + ADX >= 20: all timeframes confirming + established trend = genuine
   // continuation.  Trend persistence bonus (applied later) handles the conviction signal.
-  if (adxMaturityPenalty <= -0.07 && !(signal.alignment === 'all_aligned' && htf.dmi.adx >= 20)) {
+  if (adxMaturityPenalty <= -0.07 && !((signal.alignment === 'all_aligned' || signal.alignment === 'htf_mtf_aligned') && htf.dmi.adx >= 20)) {
     total = Math.min(total, 0.64);
   }
 
@@ -1131,9 +1164,14 @@ function computeConfidence(signal: SignalPayload, option: OptionEvaluation): Con
       // Displacement velocity: compare displacement of recent 5 bars vs prior 5 bars
       // Extremely extended day: >12x ATR consumed. Move is done regardless of velocity.
       // Feb+Mar: 0 trend winners at >12x, 2 losers.
-      if (rangeExhaustion > 12.0) {
+      // Exempt all_aligned with rising ADX: the trend is still strengthening despite the
+      // wide day range. Apr 1 SPY: 12.7x ATR at 14:25 capped conf to 0.55 while ADX was
+      // rising (+2.1) and all timeframes aligned bearish.
+      const trendStillStrengthening = (signal.alignment === 'all_aligned' || signal.alignment === 'htf_mtf_aligned')
+        && htf.dmi.adx > 25 && htf.dmi.adxSlope > 0;
+      if (rangeExhaustion > 12.0 && !trendStillStrengthening) {
         total = Math.min(total, 0.55);
-      } else if (rangeExhaustion > 7.0 && ltfBars.length >= 10) {
+      } else if (rangeExhaustion > 7.0 && !trendStillStrengthening && ltfBars.length >= 10) {
         const dayOpen = ltfBars[0]!.open;
         const recent5 = ltfBars.slice(-5);
         const prior5 = ltfBars.slice(-10, -5);
@@ -1791,7 +1829,7 @@ export class AnalysisAgent {
     };
 
     // ── Build per-symbol entry context (shared by adjustConfidence + shouldAllowEntry) ──
-    // Computed from LTF bars filtered to today's regular session.
+    // Uses shared computeEntryMetrics() — single source of truth for dvel/rExh/choppiness.
     let displacementVelocity: number | undefined;
     let rangeExhaustion: number | undefined;
     let choppiness: number | undefined;
@@ -1801,37 +1839,11 @@ export class AnalysisAgent {
       if (ltfBars && ltfBars.length >= 10) {
         const todayStr = new Date().toISOString().slice(0, 10);
         const todayBars = ltfBars.filter(b => b.timestamp.startsWith(todayStr));
-
-        // Displacement velocity: avg displacement of last 5 bars minus prior 5 bars
-        if (todayBars.length >= 10) {
-          const dayOpen = todayBars[0]!.open;
-          if (dayOpen > 0) {
-            const recent5 = todayBars.slice(-5);
-            const prior5 = todayBars.slice(-10, -5);
-            const avgRecent = recent5.reduce((s, b) => s + Math.abs(b.close - dayOpen) / dayOpen * 100, 0) / 5;
-            const avgPrior = prior5.reduce((s, b) => s + Math.abs(b.close - dayOpen) / dayOpen * 100, 0) / 5;
-            displacementVelocity = avgRecent - avgPrior;
-          }
-        }
-
-        // Range exhaustion: (dayHigh - dayLow) / HTF ATR
-        if (htfAtr > 0 && todayBars.length >= 20) {
-          let dayHigh = -Infinity, dayLow = Infinity;
-          for (const b of todayBars) { if (b.high > dayHigh) dayHigh = b.high; if (b.low < dayLow) dayLow = b.low; }
-          rangeExhaustion = (dayHigh - dayLow) / htfAtr;
-        }
-
-        // Choppiness: direction flip frequency in last 30 bars
-        if (todayBars.length >= 15) {
-          const recent = todayBars.slice(-30);
-          let flips = 0;
-          let prevDir: string | null = null;
-          for (const bar of recent) {
-            const dir = bar.close >= bar.open ? 'up' : 'down';
-            if (prevDir && dir !== prevDir) flips++;
-            prevDir = dir;
-          }
-          choppiness = flips / Math.max(1, recent.length / 4);
+        const metrics = computeEntryMetrics(todayBars, htfAtr);
+        if (metrics) {
+          displacementVelocity = metrics.displacementVelocity;
+          rangeExhaustion = metrics.rangeExhaustion;
+          choppiness = metrics.choppiness;
         }
       }
     }
