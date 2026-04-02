@@ -37,7 +37,7 @@ function spyShouldAllowEntry(ctx: EntryContext): true | string {
   if (signalMode === 'trend' && atr < 0.65) return `trend atr ${atr.toFixed(3)} < 0.65`;
   // trend_regime >= 80 removed: Q4+Q1 counterfactual net +12 costly
   if (signalMode === 'trend'
-      && ctx.rangeExhaustion > 7.0
+      && ctx.rangeExhaustion > 6.0
       && ctx.choppiness >= 2.0) return `trend exhausted+choppy rExh=${ctx.rangeExhaustion.toFixed(1)} chop=${ctx.choppiness.toFixed(2)}`;
   // bullish rangeExhaustion >= 6.0 removed for trends: Q1 counterfactual net costly
   if (direction === 'bullish' && displacementVelocity < -0.04) return `bullish dvel ${displacementVelocity.toFixed(4)} < -0.04`;

@@ -175,13 +175,12 @@ function spyShouldAllowEntry(ctx: EntryContext): true | string {
 
   // Block trend entries chasing accelerating displacement — all A-grade entries had dvel <= 0.024,
   // all F-grade entries had dvel >= 0.023. High dvel = price already moved far = chasing.
-  // Mar 24: 3F blocked (dvel 0.054-0.231). Mar 26: 2F blocked (dvel 0.063-0.091), 4A kept (dvel <= 0.024).
-  // Mar 31: 1F blocked (dvel 0.067). Apr 1: 2F blocked (dvel 0.075-0.077).
+  // Mar 24: 3F blocked. Mar 26: 2F blocked, 4A kept. Mar 31: 1F blocked. Apr 1: 2F blocked.
   if (signalMode === 'trend' && ctx.displacementVelocity !== undefined
       && ctx.displacementVelocity > 0.05) return `trend high dvel ${ctx.displacementVelocity.toFixed(4)} > 0.05 (chasing)`;
 
   if (signalMode === 'trend'
-      && ctx.rangeExhaustion !== undefined && ctx.rangeExhaustion > 7.0
+      && ctx.rangeExhaustion !== undefined && ctx.rangeExhaustion > 6.0
       && ctx.choppiness !== undefined && ctx.choppiness >= 2.0) return `trend exhausted+choppy rExh=${ctx.rangeExhaustion.toFixed(1)} chop=${ctx.choppiness.toFixed(2)}`;
 
   // bullish rangeExhaustion >= 6.0 removed for trends: Q1 counterfactual net costly —
