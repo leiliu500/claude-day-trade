@@ -9,10 +9,10 @@
  *     computes and caches regime score for entry filter
  *   - adjustConfidence: penalizes high-exhaustion breakouts and choppy trends
  *   - shouldAllowEntry: blocks low ATR% (< 0.07 all modes, < 0.09 bearish trend),
- *     trend entries with negative trendPhase, near-level risk, weak DI spread,
- *     high choppiness (>= 0.55), bearish trend at high regime + near-zero dvel;
- *     blocks breakout entries missing structure confirmation, low regime (< 60),
- *     or high choppiness (>= 0.95)
+ *     trend entries chasing accelerating displacement (dvel > 0.05),
+ *     trend exhausted+choppy (rExh > 7 + chop >= 2.0), bullish entries with
+ *     strong reversion (dvel < -0.04); blocks breakout entries missing structure
+ *     confirmation, low regime (< 60), or high choppiness (>= 0.95)
  */
 
 import type { PartialTickerStrategy, ModeDetectionResult, EntryContext } from './strategy.js';
@@ -157,15 +157,20 @@ function qqqShouldAllowEntry(ctx: EntryContext): true | string {
   // SPY uses absolute atr < 0.70 (~0.125% of $560); equivalent atrPct for QQQ
   if (signalMode === 'trend' && atrPct < 0.125) return `trend atrPct ${atrPct.toFixed(3)}% < 0.125%`;
 
+  // Block trend entries chasing accelerating displacement — mirrors SPY's proven filter.
+  // High dvel = price already moved far from open = chasing the trend.
+  if (signalMode === 'trend' && ctx.displacementVelocity !== undefined
+      && ctx.displacementVelocity > 0.05) return `trend high dvel ${ctx.displacementVelocity.toFixed(4)} > 0.05 (chasing)`;
+
   if (signalMode === 'trend'
       && ctx.rangeExhaustion !== undefined && ctx.rangeExhaustion > 7.0
-      && ctx.choppiness !== undefined && ctx.choppiness >= 0.55) return `trend exhausted+choppy rExh=${ctx.rangeExhaustion.toFixed(1)} chop=${ctx.choppiness.toFixed(2)}`;
+      && ctx.choppiness !== undefined && ctx.choppiness >= 2.0) return `trend exhausted+choppy rExh=${ctx.rangeExhaustion.toFixed(1)} chop=${ctx.choppiness.toFixed(2)}`;
+
+  // bullish rangeExhaustion >= 6.0 removed: Mar 31 blocked Grade A 1.45% move.
+  // SPY already removed this — exhausted+choppy (chop >= 2.0) handles the high-risk cases.
 
   if (direction === 'bullish'
-      && ctx.rangeExhaustion !== undefined && ctx.rangeExhaustion >= 6.0) return `bullish rangeExhaustion ${ctx.rangeExhaustion.toFixed(1)} >= 6.0`;
-
-  if (direction === 'bullish'
-      && ctx.displacementVelocity !== undefined && ctx.displacementVelocity < 0.08) return `bullish dvel ${ctx.displacementVelocity.toFixed(4)} < 0.08`;
+      && ctx.displacementVelocity !== undefined && ctx.displacementVelocity < -0.04) return `bullish dvel ${ctx.displacementVelocity.toFixed(4)} < -0.04`;
 
   if (signalMode === 'breakout'
       && ctx.rangeExhaustion !== undefined && ctx.rangeExhaustion < 1.0) return `breakout rangeExhaustion ${ctx.rangeExhaustion.toFixed(1)} < 1.0 (early morning)`;

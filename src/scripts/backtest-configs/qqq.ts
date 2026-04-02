@@ -38,10 +38,10 @@ function qqqShouldAllowEntry(ctx: EntryContext): true | string {
     if (ctx.choppiness >= 0.55) return `trend choppiness ${ctx.choppiness.toFixed(2)} >= 0.55`;
     if (ctx.direction === 'bearish' && ctx.regimeScore >= 85
         && ctx.displacementVelocity !== undefined && Math.abs(ctx.displacementVelocity) < 0.03) return `bearish trend regime ${ctx.regimeScore} >= 85 + dvel ${ctx.displacementVelocity.toFixed(4)} near zero`;
+    // Block trend entries chasing accelerating displacement — mirrors SPY's proven filter.
+    if (ctx.displacementVelocity !== undefined
+        && ctx.displacementVelocity > 0.05) return `trend high dvel ${ctx.displacementVelocity.toFixed(4)} > 0.05 (chasing)`;
     // Exhaustion filter: block when day is extended AND momentum has stalled (abs(dvel) near zero).
-    // Uses abs(dvel) because negative dvel means trend is still extending (displacement growing) —
-    // only near-zero dvel in either direction indicates true exhaustion/stalling.
-    // Previous thresholds (rExh >= 7, dvel < 0.05) killed all afternoon entries on trending days.
     if (ctx.rangeExhaustion >= 10.0
         && ctx.displacementVelocity !== undefined && Math.abs(ctx.displacementVelocity) < 0.03) return `trend exhausted+lowDvel rExh=${ctx.rangeExhaustion.toFixed(1)} dvel=${ctx.displacementVelocity.toFixed(4)}`;
   }
