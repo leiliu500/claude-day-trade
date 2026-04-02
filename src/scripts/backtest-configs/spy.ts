@@ -40,7 +40,7 @@ function spyShouldAllowEntry(ctx: EntryContext): true | string {
       && ctx.rangeExhaustion > 7.0
       && ctx.choppiness >= 0.55) return `trend exhausted+choppy rExh=${ctx.rangeExhaustion.toFixed(1)} chop=${ctx.choppiness.toFixed(2)}`;
   if (direction === 'bullish' && ctx.rangeExhaustion >= 6.0) return `bullish rangeExhaustion ${ctx.rangeExhaustion.toFixed(1)} >= 6.0`;
-  if (direction === 'bullish' && displacementVelocity < -0.02) return `bullish dvel ${displacementVelocity.toFixed(4)} < -0.02`;
+  if (direction === 'bullish' && displacementVelocity < -0.04) return `bullish dvel ${displacementVelocity.toFixed(4)} < -0.04`;
   if (signalMode === 'breakout' && ctx.rangeExhaustion < 1.0) return `breakout rangeExhaustion ${ctx.rangeExhaustion.toFixed(1)} < 1.0 (early morning)`;
   if (signalMode === 'breakout'
       && ctx.choppiness >= 0.90 && ctx.displacementVelocity < 0.10) return `breakout chop+lowDvel chop=${ctx.choppiness.toFixed(2)} dvel=${ctx.displacementVelocity.toFixed(4)}`;

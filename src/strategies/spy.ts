@@ -188,7 +188,7 @@ function spyShouldAllowEntry(ctx: EntryContext): true | string {
       && ctx.rangeExhaustion !== undefined && ctx.rangeExhaustion >= 6.0) return `bullish rangeExhaustion ${ctx.rangeExhaustion.toFixed(1)} >= 6.0`;
 
   if (direction === 'bullish'
-      && ctx.displacementVelocity !== undefined && ctx.displacementVelocity < -0.02) return `bullish dvel ${ctx.displacementVelocity.toFixed(4)} < -0.02`;
+      && ctx.displacementVelocity !== undefined && ctx.displacementVelocity < -0.04) return `bullish dvel ${ctx.displacementVelocity.toFixed(4)} < -0.04`;
 
   if (signalMode === 'breakout'
       && ctx.rangeExhaustion !== undefined && ctx.rangeExhaustion < 1.0) return `breakout rangeExhaustion ${ctx.rangeExhaustion.toFixed(1)} < 1.0 (early morning)`;
