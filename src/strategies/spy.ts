@@ -137,6 +137,8 @@ function spyDetectMode(
 // ── SPY Confidence Adjustment ────────────────────────────────────────────────
 
 function spyAdjustConfidence(breakdown: ConfidenceBreakdown, ctx: EntryContext): ConfidenceBreakdown {
+  let bd = breakdown;
+
   // Suppress positive PA bonus for bullish trend entries at high regime.
   // At high regime (>= 75), consecutive confirming bars on the bullish side
   // are the final push into a day-high stall, not fresh momentum.
@@ -150,14 +152,49 @@ function spyAdjustConfidence(breakdown: ConfidenceBreakdown, ctx: EntryContext):
   // Removing PA at regime >= 75 drops Jan 26 from 82% → 73% (below 75%
   // strong-signal bypass), preventing the fast-track entry.
   if (ctx.signalMode === 'trend' && ctx.direction === 'bullish'
-      && _lastRegimeScore >= 75 && breakdown.recentPriceActionBonus > 0) {
-    const adjusted = { ...breakdown };
-    adjusted.total -= adjusted.recentPriceActionBonus;
-    adjusted.recentPriceActionBonus = 0;
-    adjusted.total = Math.max(0, Math.min(1, adjusted.total));
-    return adjusted;
+      && _lastRegimeScore >= 75 && bd.recentPriceActionBonus > 0) {
+    bd = { ...bd };
+    bd.total -= bd.recentPriceActionBonus;
+    bd.recentPriceActionBonus = 0;
+    bd.total = Math.max(0, Math.min(1, bd.total));
   }
-  return breakdown;
+
+  // Strong trend continuation relief: when all timeframes align + ADX strong & rising,
+  // the adxMaturity and moveExhaustion penalties over-penalize genuine continuation.
+  //
+  // Apr 2: all_aligned bullish from 09:45, conf stuck at 34% (adxMat=-0.12, moveExh=-0.15)
+  // while 1.83% MFE move ran clean (R=∞). The penalties doubled at 09:52 when
+  // momentumAccelBonus/diSpreadSlope temporarily dipped negative (losing halving benefit),
+  // even though ADX was 40+ and still rising.
+  //
+  // Relief: halve the severe portions of both penalties when continuation is confirmed.
+  // Also set structureBonus > 0 to unlock trendPersistenceBonus (blocked by struct<=0
+  // on gap-up days where price moves away from prior-day levels).
+  if (ctx.signalMode === 'trend'
+      && ctx.alignment === 'all_aligned'
+      && bd.trendPhaseBonus > 0          // ADX still rising
+      && bd.adxBonus >= 0.05             // ADX > 25 (confirmed trend)
+      && bd.moveExhaustionPenalty <= -0.10) {
+    bd = bd === breakdown ? { ...bd } : bd;
+    // Halve move exhaustion penalty
+    const exhRelief = -bd.moveExhaustionPenalty * 0.5;
+    bd.moveExhaustionPenalty *= 0.5;
+    bd.total += exhRelief;
+    // Halve ADX maturity penalty if severe
+    if (bd.adxMaturityPenalty <= -0.08) {
+      const matRelief = -bd.adxMaturityPenalty * 0.5;
+      bd.adxMaturityPenalty *= 0.5;
+      bd.total += matRelief;
+    }
+    // Unlock trendPersistenceBonus — on gap days, structureBonus is 0 because
+    // price moved away from prior-day levels, but the trend is still valid.
+    if (bd.structureBonus <= 0) {
+      bd.structureBonus = 0.01;
+    }
+    bd.total = Math.max(0, Math.min(1, bd.total));
+  }
+
+  return bd;
 }
 
 // ── SPY Entry Filter ────────────────────────────────────────────────────────
@@ -173,11 +210,13 @@ function spyShouldAllowEntry(ctx: EntryContext): true | string {
 
   if (signalMode === 'trend' && atr < 0.65) return `trend atr ${atr.toFixed(3)} < 0.65`;
 
-  // Block trend entries chasing accelerating displacement — all A-grade entries had dvel <= 0.024,
-  // all F-grade entries had dvel >= 0.023. High dvel = price already moved far = chasing.
+  // Block trend entries chasing accelerating displacement.
+  // Mar data: A-grade dvel <= 0.024, F-grade dvel >= 0.023. Threshold 0.05.
+  // Apr 2: grade-A entries had dvel 0.078-0.175 during strong morning rally.
+  // Raised 0.05 → 0.10 to allow genuine momentum while still blocking extreme chase.
   // Mar 24: 3F blocked. Mar 26: 2F blocked, 4A kept. Mar 31: 1F blocked. Apr 1: 2F blocked.
   if (signalMode === 'trend' && ctx.displacementVelocity !== undefined
-      && ctx.displacementVelocity > 0.05) return `trend high dvel ${ctx.displacementVelocity.toFixed(4)} > 0.05 (chasing)`;
+      && ctx.displacementVelocity > 0.10) return `trend high dvel ${ctx.displacementVelocity.toFixed(4)} > 0.10 (chasing)`;
 
   if (signalMode === 'trend'
       && ctx.rangeExhaustion !== undefined && ctx.rangeExhaustion > 6.0
