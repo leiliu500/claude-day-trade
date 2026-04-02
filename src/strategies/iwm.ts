@@ -5,9 +5,10 @@
  *   Baseline: 5A/1B/6C/10F → tuned to 4A/1B/4C/0F (0% bad)
  *
  * IWM-specific filters:
- *   - Block negative displacement velocity (< -0.003)
- *   - Block trend entries with high exhaustion + low dvel
- *   - Block breakout entries at high regime (>= 75)
+ *   - Block trend entries chasing accelerating displacement (dvel > 0.05)
+ *   - Block trend exhausted+choppy (rExh > 7 + chop >= 2.0)
+ *   - Block bullish entries with strong reversion (dvel < -0.04)
+ *   - Block breakout entries at high regime (>= 80)
  */
 
 import type { PartialTickerStrategy, EntryContext } from './strategy.js';
@@ -131,15 +132,20 @@ function iwmShouldAllowEntry(ctx: EntryContext): true | string {
   // Mar 24 A: 0.34%, B: 0.33%. Mar 27 B: 0.23%. Apr 1 F: 0.18%, F: 0.21%.
   if (signalMode === 'trend' && atrPct < 0.22) return `trend atrPct ${atrPct.toFixed(3)}% < 0.22% (low volatility)`;
 
+  // Block trend entries chasing accelerating displacement — mirrors SPY's proven filter.
+  // High dvel = price already moved far from open = chasing the trend.
+  if (signalMode === 'trend' && ctx.displacementVelocity !== undefined
+      && ctx.displacementVelocity > 0.05) return `trend high dvel ${ctx.displacementVelocity.toFixed(4)} > 0.05 (chasing)`;
+
   if (signalMode === 'trend'
       && ctx.rangeExhaustion !== undefined && ctx.rangeExhaustion > 7.0
-      && ctx.choppiness !== undefined && ctx.choppiness >= 0.55) return `trend exhausted+choppy rExh=${ctx.rangeExhaustion.toFixed(1)} chop=${ctx.choppiness.toFixed(2)}`;
+      && ctx.choppiness !== undefined && ctx.choppiness >= 2.0) return `trend exhausted+choppy rExh=${ctx.rangeExhaustion.toFixed(1)} chop=${ctx.choppiness.toFixed(2)}`;
+
+  // bullish rangeExhaustion >= 6.0 removed: Mar 31 blocked Grade A 2.10% move.
+  // SPY already removed this — exhausted+choppy (chop >= 2.0) handles the high-risk cases.
 
   if (direction === 'bullish'
-      && ctx.rangeExhaustion !== undefined && ctx.rangeExhaustion >= 6.0) return `bullish rangeExhaustion ${ctx.rangeExhaustion.toFixed(1)} >= 6.0`;
-
-  if (direction === 'bullish'
-      && ctx.displacementVelocity !== undefined && ctx.displacementVelocity < 0.08) return `bullish dvel ${ctx.displacementVelocity.toFixed(4)} < 0.08`;
+      && ctx.displacementVelocity !== undefined && ctx.displacementVelocity < -0.04) return `bullish dvel ${ctx.displacementVelocity.toFixed(4)} < -0.04`;
 
   if (signalMode === 'breakout'
       && ctx.rangeExhaustion !== undefined && ctx.rangeExhaustion < 1.0) return `breakout rangeExhaustion ${ctx.rangeExhaustion.toFixed(1)} < 1.0 (early morning)`;

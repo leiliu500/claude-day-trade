@@ -8,9 +8,9 @@
  *   - breakout atrPct < 0.08%
  *   - breakout negative dvel < -0.05
  *   - trend atrPct < 0.125%
- *   - trend exhausted+choppy (rExh > 7.0 + chop >= 0.55)
- *   - bullish rangeExhaustion >= 6.0
- *   - bullish dvel < 0.08 (requires strong positive displacement)
+ *   - trend high dvel > 0.05 (chasing)
+ *   - trend exhausted+choppy (rExh > 7.0 + chop >= 2.0)
+ *   - bullish dvel < -0.04 (strong reversion against entry)
  *   - breakout early morning (rExh < 1.0)
  *   - breakout chop+lowDvel, conf < 74%, highExh+highChop, extremeChop, extremeExhaustion
  *   - breakout regime >= 80
@@ -32,11 +32,13 @@ function iwmShouldAllowEntry(ctx: EntryContext): true | string {
   if (signalMode === 'breakout' && atrPct < 0.08) return `breakout atrPct ${atrPct.toFixed(3)}% < 0.08%`;
   if (signalMode === 'breakout' && displacementVelocity < -0.05) return `breakout dvel ${displacementVelocity.toFixed(4)} < -0.05`;
   if (signalMode === 'trend' && atrPct < 0.125) return `trend atrPct ${atrPct.toFixed(3)}% < 0.125%`;
+  // Block trend entries chasing accelerating displacement — mirrors SPY's proven filter.
+  if (signalMode === 'trend' && displacementVelocity > 0.05) return `trend high dvel ${displacementVelocity.toFixed(4)} > 0.05 (chasing)`;
   if (signalMode === 'trend'
       && ctx.rangeExhaustion > 7.0
-      && ctx.choppiness >= 0.55) return `trend exhausted+choppy rExh=${ctx.rangeExhaustion.toFixed(1)} chop=${ctx.choppiness.toFixed(2)}`;
-  if (direction === 'bullish' && ctx.rangeExhaustion >= 6.0) return `bullish rangeExhaustion ${ctx.rangeExhaustion.toFixed(1)} >= 6.0`;
-  if (direction === 'bullish' && displacementVelocity < 0.08) return `bullish dvel ${displacementVelocity.toFixed(4)} < 0.08`;
+      && ctx.choppiness >= 2.0) return `trend exhausted+choppy rExh=${ctx.rangeExhaustion.toFixed(1)} chop=${ctx.choppiness.toFixed(2)}`;
+  // bullish rangeExhaustion >= 6.0 removed: blocked Grade A moves on trending days.
+  if (direction === 'bullish' && displacementVelocity < -0.04) return `bullish dvel ${displacementVelocity.toFixed(4)} < -0.04`;
   if (signalMode === 'breakout' && ctx.rangeExhaustion < 1.0) return `breakout rangeExhaustion ${ctx.rangeExhaustion.toFixed(1)} < 1.0 (early morning)`;
   if (signalMode === 'breakout'
       && ctx.choppiness >= 0.90 && displacementVelocity < 0.10) return `breakout chop+lowDvel chop=${ctx.choppiness.toFixed(2)} dvel=${displacementVelocity.toFixed(4)}`;
