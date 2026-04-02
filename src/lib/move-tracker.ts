@@ -202,63 +202,75 @@ export function detectLiveMoves(ticker: string): MoveWithSignal[] {
   const scanStart = Math.min(15, Math.floor(todayBars.length * 0.1));
   const moves: DetectedMove[] = [];
 
-  for (let i = scanStart; i < todayBars.length; i++) {
+  // Detect moves from swing points (local extrema) so startTime matches
+  // the visible inflection point on the chart, not an arbitrary measurement bar.
+  const SWING_WINDOW = 5; // bars before and after to confirm swing
+
+  for (let i = scanStart; i < todayBars.length - SWING_WINDOW; i++) {
     const bar = todayBars[i]!;
-    const entryPrice = bar.close;
-    const entryTs = new Date(bar.timestamp).getTime();
+    const wStart = Math.max(scanStart, i - SWING_WINDOW);
+    const wEnd = Math.min(todayBars.length - 1, i + SWING_WINDOW);
 
-    let bullMfe = 0, bullMae = 0, bullPeakPrice = entryPrice, bullPeakTs = bar.timestamp;
-    let bearMfe = 0, bearMae = 0, bearPeakPrice = entryPrice, bearPeakTs = bar.timestamp;
-
-    for (let j = i + 1; j < todayBars.length; j++) {
-      const fb = todayBars[j]!;
-      const bullFav = fb.high - entryPrice;
-      const bullAdv = entryPrice - fb.low;
-      if (bullFav > bullMfe) { bullMfe = bullFav; bullPeakPrice = fb.high; bullPeakTs = fb.timestamp; }
-      if (bullAdv > bullMae) bullMae = bullAdv;
-
-      const bearFav = entryPrice - fb.low;
-      const bearAdv = fb.high - entryPrice;
-      if (bearFav > bearMfe) { bearMfe = bearFav; bearPeakPrice = fb.low; bearPeakTs = fb.timestamp; }
-      if (bearAdv > bearMae) bearMae = bearAdv;
+    let isSwingLow = true, isSwingHigh = true;
+    for (let w = wStart; w <= wEnd; w++) {
+      if (w === i) continue;
+      if (todayBars[w]!.low < bar.low) isSwingLow = false;
+      if (todayBars[w]!.high > bar.high) isSwingHigh = false;
+      if (!isSwingLow && !isSwingHigh) break;
     }
 
-    const bullMfePct = (bullMfe / entryPrice) * 100;
-    const bearMfePct = (bearMfe / entryPrice) * 100;
-    const bullMaePct = (bullMae / entryPrice) * 100;
-    const bearMaePct = (bearMae / entryPrice) * 100;
+    // From swing lows, measure bullish moves; from swing highs, bearish moves
+    const directions: Array<{ dir: 'bullish' | 'bearish'; entryPrice: number }> = [];
+    if (isSwingLow) directions.push({ dir: 'bullish', entryPrice: bar.low });
+    if (isSwingHigh) directions.push({ dir: 'bearish', entryPrice: bar.high });
 
-    const bestDir = bullMfePct >= bearMfePct ? 'bullish' as const : 'bearish' as const;
-    const mfePct = bestDir === 'bullish' ? bullMfePct : bearMfePct;
-    const maePct = bestDir === 'bullish' ? bullMaePct : bearMaePct;
-    const peakPrice = bestDir === 'bullish' ? bullPeakPrice : bearPeakPrice;
-    const peakTs = bestDir === 'bullish' ? bullPeakTs : bearPeakTs;
+    for (const { dir, entryPrice } of directions) {
+      let mfe = 0, mae = 0, peakPrice = entryPrice, peakTs = bar.timestamp;
 
-    if (mfePct >= MIN_MFE_PCT && (maePct < 0.01 || mfePct / maePct > 1.2)) {
-      const durationMin = Math.round((Date.now() - entryTs) / 60_000);
-      // Check if move is still active (price hasn't reverted past MAE * 2)
-      const lastBar = todayBars[todayBars.length - 1]!;
-      const lastPrice = lastBar.close;
-      const reversion = bestDir === 'bullish'
-        ? (entryPrice - lastPrice) / entryPrice * 100
-        : (lastPrice - entryPrice) / entryPrice * 100;
-      const active = reversion < mfePct * 0.5; // still active if hasn't given back >50%
+      for (let j = i + 1; j < todayBars.length; j++) {
+        const fb = todayBars[j]!;
+        if (dir === 'bullish') {
+          const fav = fb.high - entryPrice;
+          const adv = entryPrice - fb.low;
+          if (fav > mfe) { mfe = fav; peakPrice = fb.high; peakTs = fb.timestamp; }
+          if (adv > mae) mae = adv;
+        } else {
+          const fav = entryPrice - fb.low;
+          const adv = fb.high - entryPrice;
+          if (fav > mfe) { mfe = fav; peakPrice = fb.low; peakTs = fb.timestamp; }
+          if (adv > mae) mae = adv;
+        }
+      }
 
-      moves.push({
-        ticker,
-        startIdx: i,
-        startTime: bar.timestamp,
-        startTimeET: utcToET(bar.timestamp),
-        startPrice: entryPrice,
-        direction: bestDir,
-        currentMfePct: mfePct,
-        currentMaePct: maePct,
-        peakPrice,
-        peakTime: peakTs,
-        peakTimeET: utcToET(peakTs),
-        durationMinutes: durationMin,
-        active,
-      });
+      const mfePct = (mfe / entryPrice) * 100;
+      const maePct = (mae / entryPrice) * 100;
+
+      if (mfePct >= MIN_MFE_PCT && (maePct < 0.01 || mfePct / maePct > 1.2)) {
+        const entryTs = new Date(bar.timestamp).getTime();
+        const durationMin = Math.round((Date.now() - entryTs) / 60_000);
+        const lastBar = todayBars[todayBars.length - 1]!;
+        const lastPrice = lastBar.close;
+        const reversion = dir === 'bullish'
+          ? (entryPrice - lastPrice) / entryPrice * 100
+          : (lastPrice - entryPrice) / entryPrice * 100;
+        const active = reversion < mfePct * 0.5;
+
+        moves.push({
+          ticker,
+          startIdx: i,
+          startTime: bar.timestamp,
+          startTimeET: utcToET(bar.timestamp),
+          startPrice: entryPrice,
+          direction: dir,
+          currentMfePct: mfePct,
+          currentMaePct: maePct,
+          peakPrice,
+          peakTime: peakTs,
+          peakTimeET: utcToET(peakTs),
+          durationMinutes: durationMin,
+          active,
+        });
+      }
     }
   }
 
