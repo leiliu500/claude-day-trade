@@ -27,8 +27,14 @@ export interface DirectionResult {
 }
 
 export interface PersistenceState {
+  /** Leading override momentum persistence */
   dir: 'bullish' | 'bearish' | null;
   ts: number;
+  /** Direction hysteresis — prevents rapid flip-flop on gradual moves.
+   *  After a reversal override, non-override flips are blocked for a cooldown period. */
+  confirmedDir?: SignalDirection;
+  /** Timestamp when the last reversal override fired — starts the cooldown */
+  reversalTs?: number;
 }
 
 const PERSIST_MAX_MS = 15 * 60_000;
@@ -126,7 +132,6 @@ export function detectDirection(
     : null;
   const velDir: 'bullish' | 'bearish' | 'neutral' = velFromVelocity ?? velFromRoc ?? 'neutral';
 
-
   if (velDir !== 'neutral' && !reversalOverride) {
     const ltfAgrees = ltfDmi?.trend === velDir;
     const velocityOpposesDir = velDir !== direction;
@@ -197,6 +202,40 @@ export function detectDirection(
     } else {
       persistence.dir = null;
     }
+  }
+
+  // ── Direction hysteresis (reversal cooldown) ─────────────────────────────
+  // During gradual reversals, LTF DMI oscillates on micro-bounces causing
+  // direction to flip-flop every 1-2 bars. This prevents confidence from
+  // building in the new direction.
+  //
+  // Fix: after a reversal override fires (strong evidence: LTF + HTF fading +
+  // range extreme), block non-override direction flips for 10 minutes.
+  // Only another override or a 2-of-3 DMI flip to the SAME direction as the
+  // reversal can end the cooldown early.
+  const REVERSAL_COOLDOWN_MS = 10 * 60_000;
+
+  if (reversalOverride) {
+    // Reversal override fired — lock in this direction
+    persistence.confirmedDir = direction;
+    persistence.reversalTs = now;
+  } else if (persistence.reversalTs && now - persistence.reversalTs < REVERSAL_COOLDOWN_MS) {
+    // Inside reversal cooldown — block flips back to old direction
+    if (direction !== persistence.confirmedDir) {
+      // DMI wants to flip back — hold the reversal direction unless a fresh
+      // leading override fires (velocity/ROC confirmed the new direction)
+      const freshLeading = leadingSignalOverride && persistence.ts === now;
+      if (!freshLeading) {
+        direction = persistence.confirmedDir!;
+        // Protect from mode evaluator overriding direction back to old
+        leadingSignalOverride = true;
+      } else {
+        persistence.confirmedDir = direction;
+      }
+    }
+  } else {
+    // No active cooldown — accept direction as-is
+    persistence.confirmedDir = direction;
   }
 
   return { direction, dmiOnly, reversalOverride, leadingSignalOverride };
