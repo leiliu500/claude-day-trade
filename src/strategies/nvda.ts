@@ -1,12 +1,14 @@
 /**
  * NVDA-specific trading strategy.
  *
- * Initial configuration — no backtest tuning yet.
- * NVDA characteristics:
- *   - High intraday volatility (~1.5-2.5% daily range)
- *   - Clean directional moves on AI/chip news days
- *   - Very liquid weekly options (no 0DTE)
- *   - Low correlation with SPY on stock-specific catalyst days
+ * Tuned from Q4 2025 + Q1 2026 backtest — synced with backtest config.
+ *
+ * NVDA-specific filters:
+ *   - trend choppiness >= 0.70 (raised from 0.55 — NVDA is inherently choppier)
+ *   - trend regime >= 90 + negative momentum (overextended)
+ *   - trend early exhaustion (rExh >= 10 in first 90 min)
+ *   - breakout structureBonus <= 0, choppiness >= 2.50
+ *   - Removed: trendPhase < 0, breakout regime < 60 (blocked A-grade entries)
  */
 
 import type { PartialTickerStrategy, EntryContext } from './strategy.js';
@@ -115,14 +117,24 @@ function nvdaShouldAllowEntry(ctx: EntryContext): true | string {
   if (utcMins >= 810 && utcMins < 840) return `first 30min after open (${utcMins} UTC mins)`;
 
   if (signalMode === 'trend') {
-    if (cb.trendPhaseBonus < 0) return `trend trendPhase ${cb.trendPhaseBonus.toFixed(3)} < 0`;
-    if ((ctx.choppiness ?? 0) >= 0.55) return `trend choppiness ${(ctx.choppiness ?? 0).toFixed(2)} >= 0.55`;
+    // trendPhase < 0 removed: Mar 26 both blocked were A-grade (MFE 0.83-1.12%)
+    // choppiness raised 0.55 → 0.70: Mar 26 chop 0.56-0.68 were all A-grade,
+    // chop 0.71+ was 3F/1C. NVDA is inherently choppier than SPY/QQQ.
+    if ((ctx.choppiness ?? 0) >= 0.70) return `trend choppiness ${(ctx.choppiness ?? 0).toFixed(2)} >= 0.70`;
+    // Regime >= 90 + negative momentum = overextended trend losing steam.
+    if (_lastRegimeScore >= 90 && cb.momentumAccelBonus < 0) return `trend regime ${_lastRegimeScore} >= 90 + negative momentum ${cb.momentumAccelBonus.toFixed(3)}`;
+    // Early-day high exhaustion: rExh >= 10 in first 90 min = gap-and-fade risk.
+    const minutesSinceOpen = ctx.rangeExhaustion !== undefined
+      ? (Date.now() - new Date().setUTCHours(13, 30, 0, 0)) / 60_000 : 999;
+    if (minutesSinceOpen <= 90 && ctx.rangeExhaustion !== undefined && ctx.rangeExhaustion >= 10) return `trend early exhaustion: ${minutesSinceOpen.toFixed(0)}m + rExh=${ctx.rangeExhaustion.toFixed(1)}`;
   }
 
   if (signalMode === 'breakout') {
     if (cb.structureBonus <= 0) return `breakout structureBonus ${cb.structureBonus.toFixed(3)} <= 0`;
-    if (_lastRegimeScore < 60) return `breakout regime ${_lastRegimeScore} < 60`;
-    if ((ctx.choppiness ?? 0) >= 0.95) return `breakout choppiness ${(ctx.choppiness ?? 0).toFixed(2)} >= 0.95`;
+    // breakout regime < 60 removed: Mar 26 all 4 blocked were A-grade (regime 27-58, early-day)
+    // breakout choppiness raised 0.95 → 2.50: NVDA breakouts on big gap days naturally
+    // have high chop before trend establishes. Mar 26 chop 1.53-2.14 were all A-grade.
+    if ((ctx.choppiness ?? 0) >= 2.50) return `breakout choppiness ${(ctx.choppiness ?? 0).toFixed(2)} >= 2.50`;
     if (ctx.rangeExhaustion !== undefined && ctx.rangeExhaustion < 1.0) return `breakout rangeExhaustion ${ctx.rangeExhaustion.toFixed(1)} < 1.0 (early morning)`;
   }
 
