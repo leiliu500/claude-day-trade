@@ -12,6 +12,7 @@
  */
 
 import type { PartialTickerStrategy, EntryContext } from './strategy.js';
+import type { ConfidenceBreakdown } from '../types/analysis.js';
 import type { TimeframeIndicators } from '../types/indicators.js';
 import type { SignalDirection } from '../types/signal.js';
 
@@ -108,6 +109,39 @@ function iwmDetectMode(
   return defaultStrategy.detectMode(tfIndicators, direction, currentPrice);
 }
 
+// ── IWM Confidence Adjustment ───────────────────────────────────────────────
+
+function iwmAdjustConfidence(cb: ConfidenceBreakdown, ctx: EntryContext): ConfidenceBreakdown {
+  // Strong trend continuation relief — mirrors SPY/QQQ logic.
+  // When all timeframes align + ADX strong & rising, adxMaturity and moveExhaustion
+  // penalties over-penalize genuine continuation (especially on gap days where
+  // prior-day warmup bars inflate maturity counts).
+  if (ctx.signalMode === 'trend'
+      && ctx.alignment === 'all_aligned'
+      && cb.trendPhaseBonus > 0          // ADX still rising
+      && cb.adxBonus >= 0.05             // ADX > 25
+      && cb.moveExhaustionPenalty <= -0.10) {
+    const adjusted = { ...cb };
+    // Halve move exhaustion penalty
+    const exhRelief = -adjusted.moveExhaustionPenalty * 0.5;
+    adjusted.moveExhaustionPenalty *= 0.5;
+    adjusted.total += exhRelief;
+    // Halve ADX maturity penalty if severe
+    if (adjusted.adxMaturityPenalty <= -0.08) {
+      const matRelief = -adjusted.adxMaturityPenalty * 0.5;
+      adjusted.adxMaturityPenalty *= 0.5;
+      adjusted.total += matRelief;
+    }
+    // Unlock trendPersistenceBonus on gap days
+    if (adjusted.structureBonus <= 0) {
+      adjusted.structureBonus = 0.01;
+    }
+    adjusted.total = Math.max(0, Math.min(1, adjusted.total));
+    return adjusted;
+  }
+  return cb;
+}
+
 // ── IWM Entry Filter (mirrors SPY) ─────────────────────────────────────────
 
 function iwmShouldAllowEntry(ctx: EntryContext): true | string {
@@ -133,9 +167,9 @@ function iwmShouldAllowEntry(ctx: EntryContext): true | string {
   if (signalMode === 'trend' && atrPct < 0.22) return `trend atrPct ${atrPct.toFixed(3)}% < 0.22% (low volatility)`;
 
   // Block trend entries chasing accelerating displacement — mirrors SPY's proven filter.
-  // High dvel = price already moved far from open = chasing the trend.
+  // Raised 0.05 → 0.10: Apr 2 grade-A entries had dvel 0.07-0.17 during morning rally.
   if (signalMode === 'trend' && ctx.displacementVelocity !== undefined
-      && ctx.displacementVelocity > 0.05) return `trend high dvel ${ctx.displacementVelocity.toFixed(4)} > 0.05 (chasing)`;
+      && ctx.displacementVelocity > 0.10) return `trend high dvel ${ctx.displacementVelocity.toFixed(4)} > 0.10 (chasing)`;
 
   if (signalMode === 'trend'
       && ctx.rangeExhaustion !== undefined && ctx.rangeExhaustion > 7.0
@@ -179,5 +213,6 @@ function iwmShouldAllowEntry(ctx: EntryContext): true | string {
 
 export const iwmStrategy: PartialTickerStrategy = {
   detectMode: iwmDetectMode,
+  adjustConfidence: iwmAdjustConfidence,
   shouldAllowEntry: iwmShouldAllowEntry,
 };
