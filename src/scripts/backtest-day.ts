@@ -602,6 +602,16 @@ async function main() {
       computeTimeframeIndicators(mtfBars, '3m', direction, false),
       computeTimeframeIndicators(htfBars, '5m', direction, false),
     ];
+
+    // Per-ticker direction override (same hook as signal-agent.ts)
+    if (LIVE_TICKER_CFG.strategy.overrideDirection) {
+      const currentPrice0 = ltfBars[ltfBars.length - 1]!.close;
+      const overridden = LIVE_TICKER_CFG.strategy.overrideDirection(tfIndicators, direction, currentPrice0);
+      if (overridden && overridden !== direction) {
+        direction = overridden;
+      }
+    }
+
     const alignment = classifyAlignment(tfIndicators, direction);
     const currentPrice = ltfBars[ltfBars.length - 1]!.close;
     const atr = tfIndicators[2]?.atr.atr ?? tfIndicators[0]?.atr.atr ?? 0;
@@ -732,14 +742,16 @@ async function main() {
     }
 
     const optionEval = mockOptionEval(signal);
-    // Live functions compute theta=0 with null winnerCandidate; apply backtest theta as post-processing
+    // Use per-ticker strategy confidence if available (e.g. SPY dynamic model),
+    // otherwise fall back to analysis-agent's internal functions.
+    const strat = LIVE_TICKER_CFG.strategy;
     const cbFromLive = signalMode === 'vwap_reversion'
-      ? computeRangeConfidenceFn(signal)
+      ? strat.computeRangeConfidence(signal)
       : signalMode === 'range'
-        ? computeRangeConfidenceFn(signal)
+        ? strat.computeRangeConfidence(signal)
         : signalMode === 'breakout'
-          ? computeBreakoutConfidenceFn(signal)
-        : computeTrendConfidenceFn(signal, optionEval);
+          ? strat.computeBreakoutConfidence(signal)
+        : strat.computeTrendConfidence(signal, optionEval);
     // Apply simulated theta decay for trend mode (range/breakout/vwap don't use theta in live)
     const thetaPenalty = (signalMode === 'trend') ? simulateThetaDecay(signal.createdAt, TARGET_DATE) : 0;
     const cbRaw: typeof cbFromLive = thetaPenalty !== 0
@@ -880,7 +892,7 @@ async function main() {
       // so the sequence is unambiguous (unlike high/low within a bar).
       // Grade is based on how much favorable move is reached BEFORE the
       // adverse move hits the stop threshold (ATR-based).
-      const stopThresholdPct = (atr / currentPrice) * 100 * 0.40; // 40% of ATR as stop
+      const stopThresholdPct = (atr / currentPrice) * 100 * 0.70; // 70% of ATR as stop
       let seqMfePct = 0;   // running max favorable excursion (%)
       let seqMaePct = 0;   // running max adverse excursion (%)
       let stoppedOut = false;

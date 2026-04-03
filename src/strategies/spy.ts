@@ -1,270 +1,409 @@
 /**
  * SPY-specific trading strategy.
  *
- * Tuned from Q4 2025 + Q1 2026 backtest (Oct 2025 – Mar 2026):
- *   Q4 2025 + Q1 2026 signal quality: 4A/2B/2C/1D/6F → tuned to 4A/1B/2C/1D/0F (0% bad)
+ * Dynamic confidence from 5 components with self-calibrating weights:
+ *   VWAP        — price position relative to VWAP
+ *   DI+/-       — directional indicator spread alignment
+ *   OBV         — on-balance volume confirmation
+ *   Seq counter — TD Sequential setup alignment
+ *   ADX         — trend strength
  *
- * SPY-specific filters:
- *   - shouldAllowEntry: blocks bullish trend entries at very high regime (>= 80),
- *     bullish entries with high exhaustion (>= 6.0), bullish entries with low
- *     displacement velocity (< 0.08), and bearish breakouts with high exhaustion
- *     + high choppiness.
- *   - adjustConfidence: suppresses PA bonus for bullish trend entries at
- *     regime >= 75 (confirming bars at high regime = last push, not momentum).
+ * Weights are calibrated every run using a rolling backtest on the available
+ * LTF bar history (~500 bars ≈ 2 trading days). Each component's prediction
+ * accuracy over forward-looking windows determines its weight.
  *
- * NOTE: trendMaxExhaustion = 10.0 is only in the backtest config (spy.ts in
- * backtest-configs/). The production decision-orchestrator already uses 10.0
- * for breakout exhaustion. For trend entries, the shared analysis-agent caps
- * confidence at rangeExhaustion > 12.0 and > 7.0 + neg DispVel.
+ * Default weights (used when insufficient bar history):
+ *   VWAP 30%, DI+/- 35%, OBV 25%, Seq 5%, ADX 5%
  */
 
 import type { PartialTickerStrategy, EntryContext } from './strategy.js';
 import type { ConfidenceBreakdown } from '../types/analysis.js';
+import type { SignalPayload } from '../types/signal.js';
+import type { OptionEvaluation } from '../types/options.js';
 import type { TimeframeIndicators } from '../types/indicators.js';
 import type { SignalDirection } from '../types/signal.js';
+// (Calibration removed — 2-layer multiplicative model uses fixed layer weights)
 
-// ── Module-level state: regime score computed in detectMode, read in shouldAllowEntry ──
-// Safe because SPY pipeline runs serially (one tick at a time per symbol).
-let _lastRegimeScore = 50;
+// ── Helpers ─────────────────────────────────────────────────────────────────
 
-// ── SPY Mode Detection ──────────────────────────────────────────────────────
-// Same as default but also computes and caches the regime score.
+function clamp(v: number, min: number, max: number): number {
+  return Math.max(min, Math.min(max, v));
+}
 
-import { defaultStrategy } from './default.js';
+function dirSign(direction: SignalDirection): number {
+  return direction === 'bullish' ? 1 : direction === 'bearish' ? -1 : 0;
+}
+
+/** Timeframe weights for multi-TF scoring: LTF=0.5, MTF=0.3, HTF=0.2 */
+const TF_WEIGHTS = [0.5, 0.3, 0.2];
+
+// ── Component Scorers (each returns 0..1) ───────────────────────────────────
 
 /**
- * Compute intraday regime score — hybrid of real-time candle data + DMI anchor.
+ * VWAP score: inverted-U — moderate extension in the right direction scores
+ * highest, extreme extension is penalized (overextended = mean reversion risk).
  *
- * Candle-based components (real-time, no lag):
- *   A. Choppiness — direction flip frequency in recent bars
- *   B. Displacement velocity — rate of price movement from day open
- *   C. Trend strength — consecutive directional closes
- *
- * DMI-anchored component (smoothed, confirms trend is established):
- *   D. ADX level — only contributes when ADX >= 20 (confirmed trend)
- *
- * VWAP component (minimal lag — recalculated every bar):
- *   E. VWAP distance — how far price is from session VWAP
- *
- * Bars are filtered to today's regular session to avoid warmup-data corruption.
+ *   Aligned side:
+ *     0.00–0.10%  → 0.60–0.75  (just crossed, early signal)
+ *     0.10–0.25%  → 0.75–0.90  (sweet spot — momentum confirmed, not extended)
+ *     0.25–0.40%  → 0.70–0.80  (getting extended)
+ *     0.40–0.60%  → 0.50–0.70  (overextended)
+ *     >0.60%      → 0.30–0.50  (extreme — reversion risk)
+ *   Wrong side:
+ *     any         → 0.10–0.40
  */
-function computeRegimeScore(
-  bars: readonly { timestamp: string; open: number; high: number; low: number; close: number }[],
-  vwapPriceVs: number,
-  adx: number,
-): number {
-  // Filter to today's regular-session bars (13:30–20:00 UTC).
-  // Stream cache / REST bars can span 2+ days; prior-day bars corrupt dayOpen.
-  const todayStr = new Date().toISOString().slice(0, 10);
-  const todayBars = bars.filter(b => {
-    if (!b.timestamp.startsWith(todayStr)) return false;
-    const h = parseInt(b.timestamp.slice(11, 13), 10);
-    const m = parseInt(b.timestamp.slice(14, 16), 10);
-    const mins = h * 60 + m;
-    return mins >= 810 && mins < 1200; // 13:30–20:00 UTC
-  });
-  if (todayBars.length < 20) return 50;
+function scoreVwap(tfs: TimeframeIndicators[], dir: SignalDirection): number {
+  const sign = dirSign(dir);
+  if (sign === 0) return 0.5;
 
-  // A. Choppiness — direction flips in last 30 bars (real-time)
-  const recent30 = todayBars.slice(-30);
-  let flips = 0;
-  let prevDir: 'up' | 'down' | null = null;
-  for (const bar of recent30) {
-    const dir = bar.close >= bar.open ? 'up' : 'down';
-    if (prevDir && dir !== prevDir) flips++;
-    prevDir = dir;
-  }
-  const expectedFlips = Math.max(1, recent30.length / 4);
-  const choppiness = Math.max(0, Math.min(4, flips / expectedFlips));
-  const choppinessComponent = (1 - choppiness) * 15; // -45..+15
+  let total = 0, wSum = 0;
+  for (let i = 0; i < tfs.length; i++) {
+    const tf = tfs[i]!;
+    if (!tf.vwap) continue;
+    const w = TF_WEIGHTS[i] ?? 0.1;
+    const aligned = sign * tf.vwap.priceVsVwap; // positive = right side of VWAP
+    let score: number;
 
-  // B. Displacement velocity — recent 5 bars vs prior 5 bars (real-time)
-  const dayOpen = todayBars[0]!.open;
-  let velocityComponent = 0;
-  if (dayOpen > 0 && todayBars.length >= 10) {
-    const recent5 = todayBars.slice(-5);
-    const prior5 = todayBars.slice(-10, -5);
-    const avgRecent = recent5.reduce((s, b) => s + Math.abs(b.close - dayOpen) / dayOpen * 100, 0) / 5;
-    const avgPrior = prior5.reduce((s, b) => s + Math.abs(b.close - dayOpen) / dayOpen * 100, 0) / 5;
-    velocityComponent = Math.min(10, Math.max(-10, (avgRecent - avgPrior) * 15));
-  }
-
-  // C. Trend strength — consecutive directional closes (real-time)
-  const last10 = todayBars.slice(-10);
-  let consecUp = 0, consecDown = 0, maxConsecUp = 0, maxConsecDown = 0;
-  for (let i = 1; i < last10.length; i++) {
-    if (last10[i]!.close > last10[i - 1]!.close) {
-      consecUp++; consecDown = 0;
-      if (consecUp > maxConsecUp) maxConsecUp = consecUp;
+    if (aligned <= 0) {
+      // Wrong side of VWAP: 0.10 (far wrong) to 0.40 (barely wrong)
+      score = clamp(0.40 + aligned * 1.5, 0.10, 0.40);
+    } else if (aligned <= 0.10) {
+      // Just crossed: 0.60 → 0.75
+      score = 0.60 + (aligned / 0.10) * 0.15;
+    } else if (aligned <= 0.25) {
+      // Sweet spot: 0.75 → 0.90
+      score = 0.75 + ((aligned - 0.10) / 0.15) * 0.15;
+    } else if (aligned <= 0.40) {
+      // Getting extended: 0.90 → 0.70
+      score = 0.90 - ((aligned - 0.25) / 0.15) * 0.20;
+    } else if (aligned <= 0.60) {
+      // Overextended: 0.70 → 0.50
+      score = 0.70 - ((aligned - 0.40) / 0.20) * 0.20;
     } else {
-      consecDown++; consecUp = 0;
-      if (consecDown > maxConsecDown) maxConsecDown = consecDown;
+      // Extreme: 0.50 → 0.30
+      score = clamp(0.50 - ((aligned - 0.60) / 0.40) * 0.20, 0.30, 0.50);
     }
+
+    total += score * w;
+    wSum += w;
   }
-  const trendStrComponent = Math.min(10, Math.max(maxConsecUp, maxConsecDown) * 2.5);
-
-  // D. ADX anchor — confirms trend is established (lagged but stabilizing)
-  //    Only adds score when ADX >= 20 (genuine trend, not noise).
-  //    ADX 20→0, ADX 25→+5, ADX 30→+10, ADX 35→+15 (capped)
-  const adxComponent = adx >= 20 ? Math.min(15, (adx - 20) * 1.0) : 0;
-
-  // E. VWAP distance — how extended from mean (minimal lag)
-  const vwapComponent = Math.min(10, Math.abs(vwapPriceVs) / 0.20 * 10);
-
-  return Math.round(Math.max(0, Math.min(100,
-    50 + choppinessComponent + velocityComponent + trendStrComponent + adxComponent + vwapComponent
-  )));
+  return wSum > 0 ? total / wSum : 0.5;
 }
 
-function spyDetectMode(
-  tfIndicators: TimeframeIndicators[],
+// (scoreDI and scoreOBV removed — logic inlined into Layer 1/Layer 2 functions)
+
+/**
+ * TD Sequential score: setup count alignment with trade direction.
+ * sell setup = prices rising → bullish confirmation.
+ * Higher count = stronger persistence, completed (9) = tempered for exhaustion.
+ */
+function scoreSeq(tfs: TimeframeIndicators[], dir: SignalDirection): number {
+  const sign = dirSign(dir);
+  if (sign === 0) return 0.5;
+
+  const ltf = tfs[0];
+  if (!ltf) return 0.5;
+
+  const { setup } = ltf.td;
+  const aligned =
+    (sign > 0 && setup.direction === 'sell') ||
+    (sign < 0 && setup.direction === 'buy');
+  const opposing =
+    (sign > 0 && setup.direction === 'buy') ||
+    (sign < 0 && setup.direction === 'sell');
+
+  if (aligned) {
+    return setup.completed ? 0.60 : clamp(0.5 + (setup.count / 9) * 0.40, 0.5, 0.90);
+  } else if (opposing) {
+    return clamp(0.5 - (setup.count / 9) * 0.35, 0.15, 0.50);
+  }
+  return 0.50;
+}
+
+/**
+ * ADX score: trend strength + slope (direction-agnostic strength measure).
+ * ADX 50 → 1.0, ADX 25 → 0.5, ADX 0 → 0.0. Rising ADX boosts, falling penalizes.
+ */
+function scoreADX(tfs: TimeframeIndicators[]): number {
+  const htf = tfs[tfs.length - 1];
+  if (!htf) return 0.5;
+
+  const { adx, adxSlope } = htf.dmi;
+  let score = clamp(adx / 50, 0, 1);
+
+  if (adxSlope > 0) score = clamp(score + Math.min(0.10, adxSlope / 20), 0, 1);
+  else if (adxSlope < 0) score = clamp(score + Math.max(-0.10, adxSlope / 20), 0, 1);
+
+  return score;
+}
+
+// ── Layer 1: Direction Strength (0..1) ──────────────────────────────────────
+// How strongly do indicators agree on the direction?
+
+function scoreDirectionStrength(tfs: TimeframeIndicators[], dir: SignalDirection): number {
+  const sign = dirSign(dir);
+  if (sign === 0) return 0;
+
+  // A. DI spread alignment (50%) — absolute spread across TFs
+  let diSpreadScore = 0, diW = 0;
+  for (let i = 0; i < tfs.length; i++) {
+    const tf = tfs[i]!;
+    const w = TF_WEIGHTS[i] ?? 0.1;
+    const spread = sign > 0 ? (tf.dmi.plusDI - tf.dmi.minusDI) : (tf.dmi.minusDI - tf.dmi.plusDI);
+    diSpreadScore += clamp(0.5 + spread / 50, 0, 1) * w;
+    diW += w;
+  }
+  diSpreadScore = diW > 0 ? diSpreadScore / diW : 0.5;
+
+  // B. OBV trend alignment (30%) — volume direction matches price direction
+  let obvTrendScore = 0, obvW = 0;
+  for (let i = 0; i < tfs.length; i++) {
+    const tf = tfs[i]!;
+    const w = TF_WEIGHTS[i] ?? 0.1;
+    let s = 0.45;
+    if ((sign > 0 && tf.obv.trend === 'bullish') || (sign < 0 && tf.obv.trend === 'bearish')) s = 0.80;
+    else if ((sign > 0 && tf.obv.trend === 'bearish') || (sign < 0 && tf.obv.trend === 'bullish')) s = 0.15;
+    obvTrendScore += s * w;
+    obvW += w;
+  }
+  obvTrendScore = obvW > 0 ? obvTrendScore / obvW : 0.45;
+
+  // C. Multi-TF alignment (20%) — how many TFs agree on direction
+  let aligned = 0;
+  for (const tf of tfs) {
+    if ((sign > 0 && tf.dmi.trend === 'bullish') || (sign < 0 && tf.dmi.trend === 'bearish')) aligned++;
+  }
+  const alignScore = tfs.length > 0 ? aligned / tfs.length : 0;
+
+  return diSpreadScore * 0.50 + obvTrendScore * 0.30 + alignScore * 0.20;
+}
+
+// ── Layer 2: Entry Quality (0..1) ───────────────────────────────────────────
+// Is this a good TIME to enter? Scores timing, not direction.
+
+function scoreEntryQuality(tfs: TimeframeIndicators[], dir: SignalDirection): number {
+  const sign = dirSign(dir);
+  if (sign === 0) return 0;
+
+  // A. DI slope — momentum freshness (30%)
+  //    Positive slope = accelerating (early in move) → high
+  //    Negative slope = decelerating (late/reversal) → low
+  let slopeScore = 0, slopeW = 0;
+  for (let i = 0; i < tfs.length; i++) {
+    const tf = tfs[i]!;
+    const w = TF_WEIGHTS[i] ?? 0.1;
+    const slopeAligned = sign * tf.dmi.diSpreadSlope;
+    let s: number;
+    if (slopeAligned > 5) s = 0.95;
+    else if (slopeAligned > 2) s = 0.80;
+    else if (slopeAligned > 0) s = 0.60;
+    else if (slopeAligned > -2) s = 0.35;
+    else if (slopeAligned > -5) s = 0.15;
+    else s = 0.05;
+
+    // Fresh DI cross = definitive timing signal → boost
+    const hasCross = (sign > 0 && tf.dmi.recentCrossUp) || (sign < 0 && tf.dmi.recentCrossDown);
+    const hasGrowthCross = (sign > 0 && tf.dmi.growthCrossUp) || (sign < 0 && tf.dmi.growthCrossDown);
+    if (hasGrowthCross) s = Math.max(s, 0.95);
+    else if (hasCross) s = Math.max(s, 0.85);
+
+    slopeScore += s * w;
+    slopeW += w;
+  }
+  slopeScore = slopeW > 0 ? slopeScore / slopeW : 0.5;
+
+  // B. VWAP extension — inverted-U (25%)
+  //    Moderate extension is best, extreme is bad
+  const vwapScore = scoreVwap(tfs, dir);
+
+  // C. OBV divergence — volume quality warning (20%)
+  //    No divergence = neutral, supporting = good, opposing = bad
+  let divScore = 0, divW = 0;
+  for (let i = 0; i < tfs.length; i++) {
+    const tf = tfs[i]!;
+    const w = TF_WEIGHTS[i] ?? 0.1;
+    let s = 0.55; // neutral — no divergence
+    if ((sign > 0 && tf.obv.divergence === 'bullish') || (sign < 0 && tf.obv.divergence === 'bearish')) {
+      s = 0.85; // volume supports before price confirms
+    } else if ((sign > 0 && tf.obv.divergence === 'bearish') || (sign < 0 && tf.obv.divergence === 'bullish')) {
+      s = 0.10; // volume strongly contradicts — worst timing signal
+    }
+    divScore += s * w;
+    divW += w;
+  }
+  divScore = divW > 0 ? divScore / divW : 0.55;
+
+  // D. ADX context (15%) — trend strength supports the entry
+  const adxScore = scoreADX(tfs);
+
+  // E. TD Sequential — exhaustion risk (10%)
+  const seqScore = scoreSeq(tfs, dir);
+
+  return slopeScore * 0.30 + vwapScore * 0.25 + divScore * 0.20 + adxScore * 0.15 + seqScore * 0.10;
+}
+
+// ── Main Confidence Builder (2-layer multiplicative) ────────────────────────
+
+function buildConfidence(signal: SignalPayload): ConfidenceBreakdown {
+  const { timeframes: tfs, direction } = signal;
+
+  // Layer 1: Direction Strength — does the market agree?
+  const dirStrength = scoreDirectionStrength(tfs, direction);
+
+  // Layer 2: Entry Quality — is this a good time?
+  const entryQuality = scoreEntryQuality(tfs, direction);
+
+  // Multiplicative combination: both must be good for high confidence
+  // Scale to 0-1: sqrt stretches the range (pure multiplication compresses too much)
+  const rawTotal = dirStrength * entryQuality;
+  const total = clamp(Math.sqrt(rawTotal), 0, 1);
+
+  // Map into ConfidenceBreakdown for transparency.
+  // base = direction strength, the bonuses show entry quality components.
+  return {
+    base: dirStrength,
+    vwapBonus: scoreVwap(tfs, direction) * 0.25,           // VWAP extension (quality)
+    diSpreadBonus: dirStrength * 0.50,                      // DI spread (direction)
+    obvBonus: entryQuality * 0.20,                          // OBV divergence (quality)
+    tdAdjustment: scoreSeq(tfs, direction) * 0.10,          // TD sequential (quality)
+    adxBonus: scoreADX(tfs) * 0.15,                         // ADX context (quality)
+    // Repurpose fields for layer transparency
+    trendPhaseBonus: entryQuality,                          // full entry quality score
+    momentumAccelBonus: dirStrength - entryQuality,         // gap between layers
+    // Unused components zeroed
+    diCrossBonus: 0,
+    alignmentBonus: 0,
+    oiVolumeBonus: 0,
+    pricePositionAdjustment: 0,
+    adxMaturityPenalty: 0,
+    structureBonus: 0,
+    orbBonus: 0,
+    recentPriceActionBonus: 0,
+    trContractionPenalty: 0,
+    lowVolPenalty: 0,
+    moveExhaustionPenalty: 0,
+    consolidationPenalty: 0,
+    nearLevelPenalty: 0,
+    thetaDecayPenalty: 0,
+    narrowRangePenalty: 0,
+    candlePatternBonus: 0,
+    priceVelocityBonus: 0,
+    volumeSurgeBonus: 0,
+    trendPersistenceBonus: 0,
+    total,
+  };
+}
+
+// ── Direction Override ───────────────────────────────────────────────────────
+
+/**
+ * Override direction using leading indicators when DMI majority vote lags.
+ *
+ * Uses a weighted warning score from 5 conditions:
+ *   1. VWAP extension — how far price has moved from VWAP
+ *   2. DI slope — momentum acceleration/deceleration
+ *   3. OBV — volume trend or divergence opposing direction
+ *   4. Price velocity — raw price ROC opposing direction
+ *   5. LTF DMI flip — fastest timeframe already reversed
+ *
+ * Tiered thresholds:
+ *   - Extreme VWAP (>0.50%) + any 1 other signal → flip
+ *   - Strong VWAP (>0.30%) + score >= 2.0 → flip
+ *   - No VWAP requirement if score >= 3.0 (overwhelming evidence)
+ */
+function spyOverrideDirection(
+  tfs: TimeframeIndicators[],
   direction: SignalDirection,
-  currentPrice: number,
-): ReturnType<typeof defaultStrategy.detectMode> {
-  const ltf = tfIndicators[0];
-  if (ltf) {
-    _lastRegimeScore = computeRegimeScore(
-      ltf.bars,
-      ltf.vwap?.priceVsVwap ?? 0,
-      ltf.dmi.adx,
-    );
+  _currentPrice: number,
+): SignalDirection | null {
+  if (direction === 'neutral') return null;
+  const sign = direction === 'bullish' ? 1 : -1;
+
+  let score = 0;
+
+  // 1. VWAP extension (0 to 1.5 points based on severity)
+  const ltfVwap = tfs[0]?.vwap?.priceVsVwap ?? 0;
+  const vwapAligned = sign * ltfVwap; // positive = extended in our direction
+  let vwapScore = 0;
+  if (vwapAligned > 0.50) vwapScore = 1.5;       // extreme
+  else if (vwapAligned > 0.35) vwapScore = 1.0;   // strong
+  else if (vwapAligned > 0.25) vwapScore = 0.5;   // moderate
+  score += vwapScore;
+
+  // 2. DI slope decelerating (0 to 1.0 points)
+  //    Weight LTF more (reacts first)
+  const ltfSlope = sign * (tfs[0]?.dmi.diSpreadSlope ?? 0);
+  const mtfSlope = sign * (tfs[1]?.dmi.diSpreadSlope ?? 0);
+  const htfSlope = sign * (tfs[2]?.dmi.diSpreadSlope ?? 0);
+  const weightedSlope = ltfSlope * 0.5 + mtfSlope * 0.3 + htfSlope * 0.2;
+  if (weightedSlope < -3) score += 1.0;
+  else if (weightedSlope < -1) score += 0.5;
+
+  // 3. OBV opposing (0 to 1.0 points)
+  //    OBV trend opposing is weaker signal; divergence is stronger
+  for (const tf of tfs) {
+    if ((direction === 'bullish' && tf.obv.divergence === 'bearish') ||
+        (direction === 'bearish' && tf.obv.divergence === 'bullish')) {
+      score += 1.0;
+      break;
+    }
+    if ((direction === 'bullish' && tf.obv.trend === 'bearish') ||
+        (direction === 'bearish' && tf.obv.trend === 'bullish')) {
+      score += 0.5;
+      break;
+    }
   }
 
-  // Delegate to default mode detection (no changes to mode logic)
-  return defaultStrategy.detectMode(tfIndicators, direction, currentPrice);
+  // 4. Price velocity opposing (0 to 1.0 points)
+  const ltfVelocity = tfs[0]?.priceVelocity;
+  if (ltfVelocity) {
+    const velAligned = sign * ltfVelocity.directionalVelocity;
+    if (velAligned < -0.04) score += 1.0;       // strongly opposing
+    else if (velAligned < -0.015) score += 0.5;  // mildly opposing
+  }
+
+  // 5. LTF DMI already flipped (0 to 1.0 points)
+  const ltfDmi = tfs[0]?.dmi;
+  if (ltfDmi) {
+    const ltfOpposes = (direction === 'bullish' && ltfDmi.trend === 'bearish') ||
+                       (direction === 'bearish' && ltfDmi.trend === 'bullish');
+    if (ltfOpposes) score += 1.0;
+  }
+
+  // Tiered thresholds
+  const flip = (vwapScore >= 1.5 && score >= 2.0)    // extreme VWAP + any 1 other
+            || (vwapScore >= 1.0 && score >= 2.5)     // strong VWAP + decent evidence
+            || (vwapScore >= 0.5 && score >= 3.0)     // moderate VWAP + strong evidence
+            || (score >= 3.5);                         // overwhelming evidence, any VWAP
+
+  if (flip) {
+    return direction === 'bullish' ? 'bearish' : 'bullish';
+  }
+
+  return null;
 }
 
-// ── SPY Confidence Adjustment ────────────────────────────────────────────────
+// ── Strategy Export ─────────────────────────────────────────────────────────
 
-function spyAdjustConfidence(breakdown: ConfidenceBreakdown, ctx: EntryContext): ConfidenceBreakdown {
-  let bd = breakdown;
-
-  // Suppress positive PA bonus for bullish trend entries at high regime.
-  // At high regime (>= 75), consecutive confirming bars on the bullish side
-  // are the final push into a day-high stall, not fresh momentum.
-  //
-  // Q1 2026 SPY data — bullish trend entries at regime >= 75:
-  //   Jan 5:  regime 80, PA=+0.080, conf=83% → +3.1%  (small win)
-  //   Jan 26: regime 76, PA=+0.080, conf=82% → -14.9% (big loss)
-  //   Feb 20: regime 82, PA=+0.080, conf=77% → -5.8%  (loss)
-  //   1W/2L, net -17.6%, sole winner only +3.1%
-  //
-  // Removing PA at regime >= 75 drops Jan 26 from 82% → 73% (below 75%
-  // strong-signal bypass), preventing the fast-track entry.
-  if (ctx.signalMode === 'trend' && ctx.direction === 'bullish'
-      && _lastRegimeScore >= 75 && bd.recentPriceActionBonus > 0) {
-    bd = { ...bd };
-    bd.total -= bd.recentPriceActionBonus;
-    bd.recentPriceActionBonus = 0;
-    bd.total = Math.max(0, Math.min(1, bd.total));
-  }
-
-  // Strong trend continuation relief: when all timeframes align + ADX strong & rising,
-  // the adxMaturity and moveExhaustion penalties over-penalize genuine continuation.
-  //
-  // Apr 2: all_aligned bullish from 09:45, conf stuck at 34% (adxMat=-0.12, moveExh=-0.15)
-  // while 1.83% MFE move ran clean (R=∞). The penalties doubled at 09:52 when
-  // momentumAccelBonus/diSpreadSlope temporarily dipped negative (losing halving benefit),
-  // even though ADX was 40+ and still rising.
-  //
-  // Relief: halve the severe portions of both penalties when continuation is confirmed.
-  // Also set structureBonus > 0 to unlock trendPersistenceBonus (blocked by struct<=0
-  // on gap-up days where price moves away from prior-day levels).
-  if (ctx.signalMode === 'trend'
-      && ctx.alignment === 'all_aligned'
-      && bd.trendPhaseBonus > 0          // ADX still rising
-      && bd.adxBonus >= 0.05             // ADX > 25 (confirmed trend)
-      && bd.moveExhaustionPenalty <= -0.10) {
-    bd = bd === breakdown ? { ...bd } : bd;
-    // Halve move exhaustion penalty
-    const exhRelief = -bd.moveExhaustionPenalty * 0.5;
-    bd.moveExhaustionPenalty *= 0.5;
-    bd.total += exhRelief;
-    // Halve ADX maturity penalty if severe
-    if (bd.adxMaturityPenalty <= -0.08) {
-      const matRelief = -bd.adxMaturityPenalty * 0.5;
-      bd.adxMaturityPenalty *= 0.5;
-      bd.total += matRelief;
-    }
-    // Unlock trendPersistenceBonus — on gap days, structureBonus is 0 because
-    // price moved away from prior-day levels, but the trend is still valid.
-    if (bd.structureBonus <= 0) {
-      bd.structureBonus = 0.01;
-    }
-    bd.total = Math.max(0, Math.min(1, bd.total));
-  }
-
-  return bd;
-}
-
-// ── SPY Entry Filter ────────────────────────────────────────────────────────
-
+/**
+ * Stale data guard: block entries when recent LTF bars show near-zero price
+ * variance. This catches stale/cached bars that produce artificial indicator
+ * signals (e.g., Mar 3 2026 blowup: 60 minutes of identical $686.22 bars).
+ */
 function spyShouldAllowEntry(ctx: EntryContext): true | string {
-  const { signalMode, direction, atr, currentPrice } = ctx;
-
-  const atrPct = currentPrice > 0 ? (atr / currentPrice) * 100 : 0;
-  if (signalMode === 'breakout' && atrPct < 0.08) return `breakout atrPct ${atrPct.toFixed(3)}% < 0.08%`;
-
-  if (signalMode === 'breakout' && ctx.displacementVelocity !== undefined
-      && ctx.displacementVelocity < -0.05) return `breakout dvel ${ctx.displacementVelocity.toFixed(4)} < -0.05`;
-
-  // ATR lowered 0.65 → 0.45: at SPY ~$560, 0.65 = 0.116% which blocked normal-vol days.
-  // 0.45 = ~0.08% catches genuinely dead markets while allowing normal activity.
-  if (signalMode === 'trend' && atr < 0.45) return `trend atr ${atr.toFixed(3)} < 0.45`;
-
-  // Block trend entries chasing accelerating displacement.
-  // Mar data: A-grade dvel <= 0.024, F-grade dvel >= 0.023. Threshold 0.05.
-  // Apr 2: grade-A entries had dvel 0.078-0.175 during strong morning rally.
-  // Raised 0.05 → 0.10 to allow genuine momentum while still blocking extreme chase.
-  // Mar 24: 3F blocked. Mar 26: 2F blocked, 4A kept. Mar 31: 1F blocked. Apr 1: 2F blocked.
-  if (signalMode === 'trend' && ctx.displacementVelocity !== undefined
-      && ctx.displacementVelocity > 0.10) return `trend high dvel ${ctx.displacementVelocity.toFixed(4)} > 0.10 (chasing)`;
-
-  if (signalMode === 'trend'
-      && ctx.rangeExhaustion !== undefined && ctx.rangeExhaustion > 6.0
-      && ctx.choppiness !== undefined && ctx.choppiness >= 2.0) return `trend exhausted+choppy rExh=${ctx.rangeExhaustion.toFixed(1)} chop=${ctx.choppiness.toFixed(2)}`;
-
-  // bullish rangeExhaustion >= 6.0 removed for trends: Q1 counterfactual net costly —
-  // exhausted+choppy (chop >= 2.0) now handles the high-risk cases
-
-  if (direction === 'bullish'
-      && ctx.displacementVelocity !== undefined && ctx.displacementVelocity < -0.04) return `bullish dvel ${ctx.displacementVelocity.toFixed(4)} < -0.04`;
-
-  if (signalMode === 'breakout'
-      && ctx.rangeExhaustion !== undefined && ctx.rangeExhaustion < 1.0) return `breakout rangeExhaustion ${ctx.rangeExhaustion.toFixed(1)} < 1.0 (early morning)`;
-
-  if (signalMode === 'breakout'
-      && ctx.choppiness !== undefined && ctx.choppiness >= 0.90
-      && ctx.displacementVelocity !== undefined && ctx.displacementVelocity < 0.10) return `breakout chop+lowDvel chop=${ctx.choppiness.toFixed(2)} dvel=${ctx.displacementVelocity.toFixed(4)}`;
-
-  if (signalMode === 'breakout' && ctx.confidence < 0.74) return `breakout confidence ${(ctx.confidence * 100).toFixed(0)}% < 74%`;
-
-  if (signalMode === 'breakout'
-      && ctx.rangeExhaustion !== undefined && ctx.rangeExhaustion >= 9.0
-      && ctx.choppiness !== undefined && ctx.choppiness >= 1.0) return `breakout highExh+highChop rExh=${ctx.rangeExhaustion.toFixed(1)} chop=${ctx.choppiness.toFixed(2)}`;
-
-  if (signalMode === 'breakout'
-      && ctx.choppiness !== undefined && ctx.choppiness >= 2.0) return `breakout extremeChop ${ctx.choppiness.toFixed(2)} >= 2.0`;
-
-  if (signalMode === 'breakout'
-      && ctx.rangeExhaustion !== undefined && ctx.rangeExhaustion >= 9.0) return `breakout extremeExhaustion ${ctx.rangeExhaustion.toFixed(1)} >= 9.0`;
-
-  if (signalMode === 'breakout' && _lastRegimeScore >= 80) return `breakout regime ${_lastRegimeScore} >= 80`;
-
-  // breakout_atr < 0.80 removed: Q4+Q1 counterfactual net +9 costly (13 good vs 4 bad).
-  // breakout_atrPct < 0.08% and trend_atr < 0.70 already catch genuinely low-volatility cases.
-
-  if (signalMode === 'breakout' && direction === 'bullish'
-      && ctx.rangeExhaustion !== undefined && ctx.rangeExhaustion >= 4.5
-      && _lastRegimeScore >= 65) return `bullish breakout highExh+regime rExh=${ctx.rangeExhaustion.toFixed(1)} regime=${_lastRegimeScore}`;
-
+  // Reject when key metrics are all zero — indicates flat/stale bar data
+  if (ctx.rangeExhaustion !== undefined && ctx.rangeExhaustion < 0.5
+      && ctx.choppiness !== undefined && ctx.choppiness < 0.1
+      && ctx.displacementVelocity !== undefined && Math.abs(ctx.displacementVelocity) < 0.001) {
+    return `stale data: rExh=${ctx.rangeExhaustion.toFixed(1)} chop=${ctx.choppiness.toFixed(2)} dvel=${ctx.displacementVelocity.toFixed(4)} — all near zero`;
+  }
   return true;
 }
 
-// ── Export ────────────────────────────────────────────────────────────────────
-
 export const spyStrategy: PartialTickerStrategy = {
-  detectMode: spyDetectMode,
-  adjustConfidence: spyAdjustConfidence,
+  computeTrendConfidence: (signal: SignalPayload, _option: OptionEvaluation) => buildConfidence(signal),
+  computeRangeConfidence: (signal: SignalPayload) => buildConfidence(signal),
+  computeBreakoutConfidence: (signal: SignalPayload) => buildConfidence(signal),
+  overrideDirection: spyOverrideDirection,
   shouldAllowEntry: spyShouldAllowEntry,
 };

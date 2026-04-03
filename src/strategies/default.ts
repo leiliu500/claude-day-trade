@@ -277,6 +277,7 @@ export const defaultStrategy: TickerStrategy = {
   computeTrendConfidence: computeTrendConfidenceFn,
   computeRangeConfidence: computeRangeConfidenceFn,
   computeBreakoutConfidence: computeBreakoutConfidenceFn,
+  overrideDirection: () => null, // default: accept DMI direction
   detectMode: defaultDetectMode,
   computeStrength: defaultComputeStrength,
   adjustConfidence: (cb) => cb,

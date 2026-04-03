@@ -54,6 +54,12 @@ export interface TickerConfig {
   /** Latest entry in minutes since market open (default 390 = 4:00 PM ET) */
   entryWindowEndMin: number;
 
+  // ── Direct Entry Mode ─────────────────────────────────────────────────────
+  /** When true, skip all confirmation gates, bypass logic, cooldowns, daily caps,
+   *  persistence bonus, and leading signal threshold adjustments in the pipeline.
+   *  Confidence is the sole entry criterion — if it meets minConfidence, enter. */
+  directEntry: boolean;
+
   // ── Per-symbol strategy (code-level overrides) ─────────────────────────────
   /** Resolved strategy — merged with defaults at startup. Do not set directly. */
   strategy: TickerStrategy;
@@ -75,6 +81,7 @@ export const DEFAULT_TICKER_CONFIG: Omit<TickerConfig, 'ticker'> = {
   maxLtfAtrPct: 0.25,
   entryWindowStartMin: 0,
   entryWindowEndMin: 390,
+  directEntry: false,
   strategy: defaultStrategy,
 };
 
@@ -84,12 +91,11 @@ export const DEFAULT_TICKER_CONFIG: Omit<TickerConfig, 'ticker'> = {
 /** Per-ticker overrides. `strategy` accepts a partial — unspecified hooks use defaults. */
 const TICKER_OVERRIDES: Record<string, Partial<Omit<TickerConfig, 'ticker' | 'strategy'>> & { strategy?: PartialTickerStrategy }> = {
   SPY: {
-    // Tuned Q4 2025 + Q1 2026: blocks breakout entries in mature trending regimes
     strategy: spyStrategy,
-    maxDailyEntries: 6,
-    // Entry window: block first 30 min after open + last 30 min before close
-    entryWindowStartMin: 30,
-    entryWindowEndMin: 360,
+    directEntry: true,
+    minConfidence: 0.65,
+    entryWindowStartMin: 30,   // block first 30 min after open
+    entryWindowEndMin: 360,    // block last 30 min before close
   },
   QQQ: {
     // Tuned from Q1 2026 backtest: 6W/3L (67%), +63.5% P&L

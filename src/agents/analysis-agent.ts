@@ -1878,8 +1878,9 @@ export class AnalysisAgent {
     // Only for trend/breakout modes — range/vwap_reversion are mean-reversion, not trend continuation.
     // Require structure support (structureBonus > 0) — persistence can overcome additive penalties
     // (pos, mex) but shouldn't override hard structural gates (no prior-day level backing).
+    // Skipped when directEntry — confidence is the sole signal, no post-hoc adjustments.
     const persistenceMode = signal.signalMode ?? 'none';
-    if (signal.direction !== 'neutral' && (persistenceMode === 'trend' || persistenceMode === 'breakout') && cb.structureBonus > 0) {
+    if (!tickerCfg?.directEntry && signal.direction !== 'neutral' && (persistenceMode === 'trend' || persistenceMode === 'breakout') && cb.structureBonus > 0) {
       try {
         const recentSignals = await getRecentSignals(signal.ticker, 10);
         let consecutiveCount = 0;
@@ -1922,19 +1923,18 @@ export class AnalysisAgent {
       }
     }
 
-    // Dynamic entry threshold: when leading indicators (price velocity, volume-confirmed
-    // candle patterns) have already confirmed or overridden direction, lower the threshold
-    // from 0.65 to 0.60. This lets entries happen 5-15 bars earlier — before lagged
-    // indicators (DMI/ADX) fully confirm — because the leading signals provide the
-    // conviction that lagged indicators would eventually add.
-    // Require at least one leading indicator bonus > 0 to confirm the override is active
-    // (not just a stale flag from a prior cycle).
+    // Dynamic entry threshold: when directEntry, use plain minConfidence with no overrides.
+    // Otherwise, when leading indicators have already confirmed direction, lower threshold
+    // from 0.65 to 0.60 for 5-15 bar earlier entry.
     const baseMinConf = tickerCfg?.minConfidence ?? config.MIN_CONFIDENCE;
-    const hasActiveLeadingSignals = (cb.candlePatternBonus > 0 || cb.priceVelocityBonus > 0 || cb.volumeSurgeBonus > 0);
-    const leadingOverrideActive = signal.leadingSignalOverride && hasActiveLeadingSignals;
-    const minConf = leadingOverrideActive ? Math.max(baseMinConf - 0.05, 0.55) : baseMinConf;
-    if (leadingOverrideActive) {
-      console.log(`[AnalysisAgent] ${signal.ticker} leading signal override: threshold ${(baseMinConf * 100).toFixed(0)}% → ${(minConf * 100).toFixed(0)}% (candle=${cb.candlePatternBonus.toFixed(3)} vel=${cb.priceVelocityBonus.toFixed(3)} vol=${cb.volumeSurgeBonus.toFixed(3)})`);
+    let minConf = baseMinConf;
+    if (!tickerCfg?.directEntry) {
+      const hasActiveLeadingSignals = (cb.candlePatternBonus > 0 || cb.priceVelocityBonus > 0 || cb.volumeSurgeBonus > 0);
+      const leadingOverrideActive = signal.leadingSignalOverride && hasActiveLeadingSignals;
+      if (leadingOverrideActive) {
+        minConf = Math.max(baseMinConf - 0.05, 0.55);
+        console.log(`[AnalysisAgent] ${signal.ticker} leading signal override: threshold ${(baseMinConf * 100).toFixed(0)}% → ${(minConf * 100).toFixed(0)}% (candle=${cb.candlePatternBonus.toFixed(3)} vel=${cb.priceVelocityBonus.toFixed(3)} vol=${cb.volumeSurgeBonus.toFixed(3)})`);
+      }
     }
     let meetsEntryThreshold = cb.total >= minConf;
     let entryBlockReason: string | undefined;

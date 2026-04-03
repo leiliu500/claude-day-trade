@@ -378,7 +378,19 @@ export class DecisionOrchestrator {
     // blocked because WAIT decisions never advance the count.
     let isStage1ObserveWait = false;
     let isPhaseChangeOverride = false;
-    if (rawOutput.decision_type === 'NEW_ENTRY' && rawOutput.should_execute) {
+    if (rawOutput.decision_type === 'NEW_ENTRY' && rawOutput.should_execute && tickerCfg?.directEntry) {
+      // Direct entry mode: keep 2-stage confirmation gate but skip all bypass/override/
+      // cooldown/cap logic. If priorCount >= 1 → enter. Otherwise Stage-1 OBSERVE.
+      if (priorCount < 1) {
+        rawOutput.decision_type = 'WAIT';
+        rawOutput.should_execute = false;
+        rawOutput.reasoning = `[STAGE-1 OBSERVE] Building conviction (priorCount=${priorCount}, will advance to 1). ${rawOutput.reasoning}`;
+        isStage1ObserveWait = true;
+        console.log(`[DecisionOrchestrator] ${signal.ticker} direct entry Stage-1 OBSERVE (priorCount=${priorCount}, confidence=${(analysis.confidence * 100).toFixed(1)}%)`);
+      } else {
+        console.log(`[DecisionOrchestrator] ${signal.ticker} direct entry Stage-2 — confidence ${(analysis.confidence * 100).toFixed(1)}%, priorCount=${priorCount}, entering`);
+      }
+    } else if (rawOutput.decision_type === 'NEW_ENTRY' && rawOutput.should_execute) {
       const overrideOk = analysis.confidence >= 0.92 && signal.alignment === 'all_aligned';
 
       // (C) Phase-change override: HTF DI crossed in signal direction within last 2 bars

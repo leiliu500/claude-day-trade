@@ -166,6 +166,19 @@ export class SignalAgent {
       computeTimeframeIndicators(mtfBars, mtf, direction, false),
       computeTimeframeIndicators(htfBars, htf, direction, false),
     ];
+
+    // ── Per-ticker direction override ─────────────────────────────────────────
+    // Strategy can flip direction using leading indicators (VWAP, OBV, DI slope)
+    // before the lagging DMI majority vote catches up.
+    if (tickerCfg?.strategy?.overrideDirection) {
+      const currentPrice0 = tfIndicators[0]?.currentPrice ?? 0;
+      const overridden = tickerCfg.strategy.overrideDirection(tfIndicators, direction, currentPrice0);
+      if (overridden && overridden !== direction) {
+        console.log(`[SignalAgent] ${ticker} direction override: ${direction} → ${overridden}`);
+        direction = overridden;
+      }
+    }
+
     const alignment = classifyAlignment(tfIndicators, direction);
     const currentPrice = tfIndicators[0]?.currentPrice ?? 0;
     const atr = tfIndicators[2]?.atr.atr ?? tfIndicators[0]?.atr.atr ?? 0; // use HTF ATR

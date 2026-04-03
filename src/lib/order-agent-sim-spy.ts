@@ -100,9 +100,11 @@ export function simulateOrderAgentSpy(
     // Model: exit at 35% of bar 0 close loss. With 12 polls per minute,
     // the average detection point is ~2.5 ticks into the decline (first few
     // polls near entry, then decline accelerates). 35% models this curve.
-    // Threshold raised to -1.5%: the live system holds through small adverse
-    // moves (< 1.5%) on the monitor cycle, only exits on clear reversals.
-    if (i === 0 && currentPnl < -1.5) {
+    // Threshold raised to -3.0%: SPY 0DTE options at $3 premium need room
+    // for 1-bar noise. -1.5% = $0.045 = $0.09 underlying = 0.014% of SPY,
+    // which is inside normal bid-ask + 1-min noise. -3.0% gives ~$0.18
+    // underlying room (~0.03% of SPY), still catches clear reversals.
+    if (i === 0 && currentPnl < -3.0) {
       // Exit at 35% of bar 0 close loss (not 50% midpoint)
       const earlyExitPremium = entryPremium + (currentPremium - entryPremium) * 0.35;
       return mkResult(0, 'EARLY_EXIT', earlyExitPremium);

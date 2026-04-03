@@ -79,6 +79,20 @@ export interface TickerStrategy {
   computeBreakoutConfidence: (signal: SignalPayload) => ConfidenceBreakdown;
 
   /**
+   * Override direction from the DMI-based direction detector.
+   * Called after detectDirection() runs but before mode detection and confidence scoring.
+   * Return null to accept the DMI direction, or a SignalDirection to override it.
+   *
+   * Use this to flip direction faster using leading indicators (VWAP, OBV divergence,
+   * DI slope) when the lagging DMI majority vote hasn't caught up yet.
+   */
+  overrideDirection: (
+    tfIndicators: TimeframeIndicators[],
+    direction: SignalDirection,
+    currentPrice: number,
+  ) => SignalDirection | null;
+
+  /**
    * Detect whether the current market state is trend, range, or breakout.
    * Called after indicators are computed, before confidence scoring.
    *

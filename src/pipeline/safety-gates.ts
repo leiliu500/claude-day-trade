@@ -88,7 +88,8 @@ export function checkSafetyGates(params: {
   }
 
   // 10. Open-volatility gate — no new entries in first 30 min of session (9:30–10:00 AM ET)
-  {
+  // Skipped when directEntry — no time-based restrictions.
+  if (!tickerCfg?.directEntry) {
     const now = new Date();
     // DST detection: 2nd Sunday March → 1st Sunday November (US Eastern)
     const year = now.getUTCFullYear();
