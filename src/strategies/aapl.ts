@@ -112,9 +112,13 @@ function aaplShouldAllowEntry(ctx: EntryContext): true | string {
   if (atrPct < 0.06) return `atrPct ${atrPct.toFixed(3)}% < 0.06%`;
 
   if (signalMode === 'trend') {
-    // AAPL trend entries with weak DI spread are overwhelmingly F-grade (7/8 F had diSpread <= 0.065).
-    // A-grade entry had 0.131. Block low-spread trend entries where DMI isn't showing strong divergence.
-    if (cb.diSpreadBonus <= 0.070) return `trend diSpreadBonus ${cb.diSpreadBonus.toFixed(3)} <= 0.070`;
+    // AAPL trends cleaner than NVDA — high choppiness means no real trend to ride.
+    // Apr 2 F: chop=2.67, trendStr=0, stopped out. AAPL shouldn't trade trends on choppy days.
+    if ((ctx.choppiness ?? 0) >= 2.0) return `trend choppiness ${(ctx.choppiness ?? 0).toFixed(2)} >= 2.0`;
+
+    // AAPL trend entries with very weak DI spread — lowered 0.070 → 0.040 to avoid blocking all entries.
+    // diSpreadBonus range is roughly -0.15 to +0.15; 0.070 is quite restrictive.
+    if (cb.diSpreadBonus <= 0.040) return `trend diSpreadBonus ${cb.diSpreadBonus.toFixed(3)} <= 0.040`;
   }
 
   if (signalMode === 'breakout') {

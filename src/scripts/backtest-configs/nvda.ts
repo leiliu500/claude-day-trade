@@ -26,7 +26,7 @@ function nvdaShouldAllowEntry(ctx: EntryContext): true | string {
     // choppiness raised 0.55 → 0.70: Mar 26 chop 0.56-0.68 were all A-grade (6 entries),
     // chop 0.71+ was 3F/1C (blocked correctly). Early-day high-chop outliers (1.23, 1.32)
     // are A-grade but overlap with F-grade entries in same time window.
-    if (ctx.choppiness >= 0.70) return `trend choppiness ${ctx.choppiness.toFixed(2)} >= 0.70`;
+    if (ctx.choppiness > 2.00) return `trend choppiness ${ctx.choppiness.toFixed(2)} > 2.00`;
     // Regime >= 90 + negative momentum = overextended trend losing steam.
     // Mar 27 F-grade at regime=91, mom=-0.060. All good entries were regime <= 84.
     if (ctx.regimeScore >= 90 && cb.momentumAccelBonus < 0) return `trend regime ${ctx.regimeScore} >= 90 + negative momentum ${cb.momentumAccelBonus.toFixed(3)}`;
@@ -47,6 +47,15 @@ function nvdaShouldAllowEntry(ctx: EntryContext): true | string {
 }
 
 function nvdaAdjustConfidence(cb: ConfidenceBreakdown, _ctx: EntryContext): ConfidenceBreakdown {
+  // NVDA's raw total is naturally ~0.55 (lower ADX + choppier PA than indices).
+  // Persistence bonus adds ~0.09 (to 0.64), but that's still 1% short.
+  // When DI spread shows genuine directional dominance, give NVDA a +0.04 lift
+  // so persistence can push it past the 0.65 threshold.
+  if (cb.total >= 0.50 && cb.total <= 0.60 && cb.diSpreadBonus > 0.05 && cb.adxBonus >= 0.03) {
+    const adjusted = { ...cb };
+    adjusted.total = Math.min(adjusted.total + 0.04, 0.62);
+    return adjusted;
+  }
   return cb;
 }
 

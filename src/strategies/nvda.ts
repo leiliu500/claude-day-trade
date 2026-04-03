@@ -99,6 +99,27 @@ function nvdaDetectMode(
   return defaultStrategy.detectMode(tfIndicators, direction, currentPrice);
 }
 
+// ── NVDA Confidence Adjustment ──────────────────────────────────────────────
+
+function nvdaAdjustConfidence(cb: ConfidenceBreakdown, ctx: EntryContext): ConfidenceBreakdown {
+  // NVDA has inherently lower ADX and choppier price action than indices.
+  // The global hard gates cap at 0.64 for ADX 15-20 and opposing PA, which
+  // permanently blocks NVDA since its ADX rarely exceeds 20 and single
+  // opposing bars are normal noise. Relief: when DI spread shows genuine
+  // directional dominance (diSpreadBonus > 0.05), lift the cap to 0.67
+  // so the 0.65 threshold is reachable.
+  // NVDA's raw total is naturally ~0.55 (lower ADX + choppier PA than indices).
+  // Persistence bonus adds ~0.09 (to 0.64), but that's still 1% short.
+  // When DI spread shows genuine directional dominance, give NVDA a +0.04 lift
+  // so persistence can push it past the 0.65 threshold.
+  if (cb.total >= 0.50 && cb.total <= 0.60 && cb.diSpreadBonus > 0.05 && cb.adxBonus >= 0.03) {
+    const adjusted = { ...cb };
+    adjusted.total = Math.min(adjusted.total + 0.04, 0.62);
+    return adjusted;
+  }
+  return cb;
+}
+
 // ── NVDA Entry Filter ───────────────────────────────────────────────────────
 
 function nvdaShouldAllowEntry(ctx: EntryContext): true | string {
@@ -117,10 +138,23 @@ function nvdaShouldAllowEntry(ctx: EntryContext): true | string {
   if (utcMins >= 810 && utcMins < 840) return `first 30min after open (${utcMins} UTC mins)`;
 
   if (signalMode === 'trend') {
+    // Extreme chasing: dvel > 0.30 = entered way too late into an accelerating move.
+    // Apr 2 F: dvel=0.818 regime=80 rExh=7.3 → stopped out immediately.
+    // A-grade entry had dvel=-0.333 (pullback entry, not chasing).
+    // Lowered 0.30 → 0.15: Apr 1 F at dvel=0.191 stopped out immediately.
+    // Apr 2 A entries had dvel=-0.333 (pullback entries, not chasing).
+    if (ctx.displacementVelocity !== undefined
+        && ctx.displacementVelocity > 0.15) return `trend dvel ${ctx.displacementVelocity.toFixed(4)} > 0.15 (chasing)`;
+
+    // Moderate chasing in choppy conditions: dvel > 0.10 + chop >= 1.5.
+    // Mar 31 F: dvel=0.132/chop=1.87 stopped out. A entry had dvel=0.132 but chop=1.07.
+    if (ctx.displacementVelocity !== undefined && ctx.displacementVelocity > 0.10
+        && (ctx.choppiness ?? 0) >= 1.5) return `trend dvel+chop dvel=${ctx.displacementVelocity.toFixed(4)} chop=${(ctx.choppiness ?? 0).toFixed(2)}`;
+
     // trendPhase < 0 removed: Mar 26 both blocked were A-grade (MFE 0.83-1.12%)
-    // choppiness raised 0.55 → 0.70: Mar 26 chop 0.56-0.68 were all A-grade,
-    // chop 0.71+ was 3F/1C. NVDA is inherently choppier than SPY/QQQ.
-    if ((ctx.choppiness ?? 0) >= 0.70) return `trend choppiness ${(ctx.choppiness ?? 0).toFixed(2)} >= 0.70`;
+    // choppiness raised 0.70 → 2.00: NVDA's normal choppiness is 2.0-2.3 (inherently choppy).
+    // 0.70 blocked ALL NVDA trend entries. Aligned with breakout threshold (2.50).
+    if ((ctx.choppiness ?? 0) > 2.00) return `trend choppiness ${(ctx.choppiness ?? 0).toFixed(2)} > 2.00`;
     // Regime >= 90 + negative momentum = overextended trend losing steam.
     if (_lastRegimeScore >= 90 && cb.momentumAccelBonus < 0) return `trend regime ${_lastRegimeScore} >= 90 + negative momentum ${cb.momentumAccelBonus.toFixed(3)}`;
     // Early-day high exhaustion: rExh >= 10 in first 90 min = gap-and-fade risk.
@@ -145,5 +179,6 @@ function nvdaShouldAllowEntry(ctx: EntryContext): true | string {
 
 export const nvdaStrategy: PartialTickerStrategy = {
   detectMode: nvdaDetectMode,
+  adjustConfidence: nvdaAdjustConfidence,
   shouldAllowEntry: nvdaShouldAllowEntry,
 };

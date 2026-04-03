@@ -208,7 +208,14 @@ function spyShouldAllowEntry(ctx: EntryContext): true | string {
   if (signalMode === 'breakout' && ctx.displacementVelocity !== undefined
       && ctx.displacementVelocity < -0.05) return `breakout dvel ${ctx.displacementVelocity.toFixed(4)} < -0.05`;
 
-  if (signalMode === 'trend' && atr < 0.65) return `trend atr ${atr.toFixed(3)} < 0.65`;
+  // ATR lowered 0.65 → 0.45: at SPY ~$560, 0.65 = 0.116% which blocked normal-vol days.
+  // 0.45 = ~0.08% catches genuinely dead markets while allowing normal activity.
+  if (signalMode === 'trend' && atr < 0.45) return `trend atr ${atr.toFixed(3)} < 0.45`;
+
+  // Trend choppiness: chop >= 2.0 = no clean trend to ride.
+  // Mar 31 + Apr 1: all SPY F-grade entries had chop 2.13-2.53. A/B entries had chop < 2.0.
+  if (signalMode === 'trend' && ctx.choppiness !== undefined
+      && ctx.choppiness >= 2.0) return `trend choppiness ${ctx.choppiness.toFixed(2)} >= 2.0`;
 
   // Block trend entries chasing accelerating displacement.
   // Mar data: A-grade dvel <= 0.024, F-grade dvel >= 0.023. Threshold 0.05.
@@ -221,6 +228,11 @@ function spyShouldAllowEntry(ctx: EntryContext): true | string {
   if (signalMode === 'trend'
       && ctx.rangeExhaustion !== undefined && ctx.rangeExhaustion > 6.0
       && ctx.choppiness !== undefined && ctx.choppiness >= 2.0) return `trend exhausted+choppy rExh=${ctx.rangeExhaustion.toFixed(1)} chop=${ctx.choppiness.toFixed(2)}`;
+
+  // High exhaustion standalone: rExh >= 8.0 = day's range consumed.
+  // Apr 1 F: rExh=8.0 bearish stopped out immediately.
+  if (signalMode === 'trend' && ctx.rangeExhaustion !== undefined
+      && ctx.rangeExhaustion >= 8.0) return `trend rangeExhaustion ${ctx.rangeExhaustion.toFixed(1)} >= 8.0`;
 
   // bullish rangeExhaustion >= 6.0 removed for trends: Q1 counterfactual net costly —
   // exhausted+choppy (chop >= 2.0) now handles the high-risk cases

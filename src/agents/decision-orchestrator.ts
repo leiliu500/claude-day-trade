@@ -654,17 +654,19 @@ export class DecisionOrchestrator {
     // Phase-change OVERRIDE (section C) is retained — it only fires when the AI already
     // recommends NEW_ENTRY, so the AI's conviction is confirmed by the structural signal.
 
-    // Direct AI WAITs: WAIT decisions from the AI never advance the confirmation count.
-    // Only gate-blocked NEW_ENTRY decisions (isStage1ObserveWait) advance the count.
-    // The AI must output NEW_ENTRY to signal conviction — WAIT means "not ready".
+    // Direct AI WAITs at Stage-1: advance the count so Stage-2 can happen next cycle.
+    // Previously these did NOT advance, creating a permanent deadlock where the AI
+    // kept choosing WAIT and the count stayed at 0 forever — resulting in zero entries.
+    // The AI's caution is still respected (no immediate entry), but the count advances
+    // so the system can attempt entry at Stage-2 on the next confirming signal.
     if (!isStage1ObserveWait && !isHardTimeGateBlock && rawOutput.decision_type === 'WAIT' &&
         analysis.meetsEntryThreshold && !rawOutput.reasoning.includes('[GATE OVERRIDE]')) {
       if (priorCount === 0) {
-        rawOutput.reasoning = `[STAGE-1 OBSERVE] [TRIGGER: AI returned WAIT despite confidence ${analysis.confidence.toFixed(2)} above threshold — AI chose caution, count stays at 0 (requires NEW_ENTRY to advance)] ${rawOutput.reasoning}`;
-        console.log(`[DecisionOrchestrator] Direct AI WAIT at Stage-1 (priorCount=0, confidence=${analysis.confidence.toFixed(2)}, alignment=${signal.alignment}) — NOT advancing count (requires NEW_ENTRY)`);
+        rawOutput.reasoning = `[STAGE-1 OBSERVE] [TRIGGER: AI returned WAIT despite confidence ${analysis.confidence.toFixed(2)} above threshold — advancing count to 1 for Stage-2 opportunity] ${rawOutput.reasoning}`;
+        isStage1ObserveWait = true; // advance count so Stage-2 can fire next cycle
+        console.log(`[DecisionOrchestrator] Direct AI WAIT at Stage-1 (priorCount=0, confidence=${analysis.confidence.toFixed(2)}, alignment=${signal.alignment}) — advancing count to 1 (deadlock prevention)`);
       } else {
-        // At priorCount>=1, AI still chose WAIT — count does NOT advance.
-        // AI must output NEW_ENTRY to advance the count; WAIT always means "not ready".
+        // At priorCount>=1, AI still chose WAIT — count does NOT advance further.
         rawOutput.reasoning = `[STAGE-${priorCount} WAIT] [AI chose WAIT — count stays at ${priorCount} (requires NEW_ENTRY to advance)] ${rawOutput.reasoning}`;
         console.log(`[DecisionOrchestrator] Direct AI WAIT at Stage-${priorCount} (priorCount=${priorCount}, confidence=${analysis.confidence.toFixed(2)}, alignment=${signal.alignment}) — NOT advancing count (requires NEW_ENTRY)`);
       }

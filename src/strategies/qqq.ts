@@ -182,8 +182,19 @@ function qqqShouldAllowEntry(ctx: EntryContext): true | string {
   if (signalMode === 'breakout' && ctx.displacementVelocity !== undefined
       && ctx.displacementVelocity < -0.05) return `breakout dvel ${ctx.displacementVelocity.toFixed(4)} < -0.05`;
 
-  // SPY uses absolute atr < 0.70 (~0.125% of $560); equivalent atrPct for QQQ
-  if (signalMode === 'trend' && atrPct < 0.125) return `trend atrPct ${atrPct.toFixed(3)}% < 0.125%`;
+  // ATR% lowered 0.125% → 0.08%: QQQ's normal ATR is 0.10-0.11% at current prices.
+  // 0.125% blocked ALL QQQ trend entries on normal-vol days.
+  if (signalMode === 'trend' && atrPct < 0.08) return `trend atrPct ${atrPct.toFixed(3)}% < 0.08%`;
+
+  // Trend choppiness: chop >= 2.0 = no clean trend to ride.
+  // Mar 31 + Apr 1: QQQ F-grade entries at chop 2.13 all stopped out. A entries had chop < 2.0.
+  if (signalMode === 'trend' && ctx.choppiness !== undefined
+      && ctx.choppiness >= 2.0) return `trend choppiness ${ctx.choppiness.toFixed(2)} >= 2.0`;
+
+  // High exhaustion standalone: rExh >= 8.0 = day's range nearly consumed, little follow-through.
+  // Apr 1 F entries at rExh 8.2 and 10.2 immediately stopped out.
+  if (signalMode === 'trend' && ctx.rangeExhaustion !== undefined
+      && ctx.rangeExhaustion >= 8.0) return `trend rangeExhaustion ${ctx.rangeExhaustion.toFixed(1)} >= 8.0`;
 
   // Block trend entries chasing accelerating displacement — mirrors SPY's proven filter.
   // High dvel = price already moved far from open = chasing the trend.
