@@ -124,11 +124,11 @@ export function detectDirection(
   // per-bar velocity never reaches the ±0.05% threshold.
   const ltfVelocity = computePriceVelocity(ltfBars);
   const velFromVelocity =
-    ltfVelocity.directionalVelocity > 0.05 ? 'bullish' as const :
-    ltfVelocity.directionalVelocity < -0.05 ? 'bearish' as const : null;
+    ltfVelocity.directionalVelocity > 0.035 ? 'bullish' as const :
+    ltfVelocity.directionalVelocity < -0.035 ? 'bearish' as const : null;
   const velFromRoc = !velFromVelocity
-    ? (extRoc > 0.10 ? 'bullish' as const :
-       extRoc < -0.10 ? 'bearish' as const : null)
+    ? (extRoc > 0.07 ? 'bullish' as const :
+       extRoc < -0.07 ? 'bearish' as const : null)
     : null;
   const velDir: 'bullish' | 'bearish' | 'neutral' = velFromVelocity ?? velFromRoc ?? 'neutral';
 
@@ -146,7 +146,7 @@ export function detectDirection(
     // is strengthening. When HTF DI spread is fading (diSpreadSlope < -1), the old
     // direction is weakening → LTF is probably leading a reversal, not lagging.
     const htfMtfAgreeOnDir = mtfDmi?.trend === direction && htfDmi?.trend === direction;
-    const htfDirectionFading = htfDmi != null && htfDmi.diSpreadSlope < -1;
+    const htfDirectionFading = htfDmi != null && htfDmi.diSpreadSlope < 0;
     const guardBlocks = htfMtfAgreeOnDir && !htfDirectionFading;
 
     // Standard path: velocity + LTF DMI agree + accelerating
