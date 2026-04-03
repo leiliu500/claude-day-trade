@@ -186,16 +186,6 @@ function qqqShouldAllowEntry(ctx: EntryContext): true | string {
   // 0.125% blocked ALL QQQ trend entries on normal-vol days.
   if (signalMode === 'trend' && atrPct < 0.08) return `trend atrPct ${atrPct.toFixed(3)}% < 0.08%`;
 
-  // Trend choppiness: chop >= 2.0 = no clean trend to ride.
-  // Mar 31 + Apr 1: QQQ F-grade entries at chop 2.13 all stopped out. A entries had chop < 2.0.
-  if (signalMode === 'trend' && ctx.choppiness !== undefined
-      && ctx.choppiness >= 2.0) return `trend choppiness ${ctx.choppiness.toFixed(2)} >= 2.0`;
-
-  // High exhaustion standalone: rExh >= 8.0 = day's range nearly consumed, little follow-through.
-  // Apr 1 F entries at rExh 8.2 and 10.2 immediately stopped out.
-  if (signalMode === 'trend' && ctx.rangeExhaustion !== undefined
-      && ctx.rangeExhaustion >= 8.0) return `trend rangeExhaustion ${ctx.rangeExhaustion.toFixed(1)} >= 8.0`;
-
   // Block trend entries chasing accelerating displacement — mirrors SPY's proven filter.
   // High dvel = price already moved far from open = chasing the trend.
   // Raised 0.05 → 0.10: Apr 2 grade-A entries had dvel 0.07-0.17 during morning rally.

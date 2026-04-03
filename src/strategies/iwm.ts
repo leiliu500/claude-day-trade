@@ -171,18 +171,9 @@ function iwmShouldAllowEntry(ctx: EntryContext): true | string {
   if (signalMode === 'trend' && ctx.displacementVelocity !== undefined
       && ctx.displacementVelocity > 0.20) return `trend high dvel ${ctx.displacementVelocity.toFixed(4)} > 0.20 (chasing)`;
 
-  // Moderate chasing in extended or choppy conditions.
-  // Apr 2 F: dvel=0.149 rExh=4.3. Apr 1 F: dvel=0.134 chop=1.87.
-  // A entries had dvel < 0.12 or both low rExh + low chop.
-  if (signalMode === 'trend' && ctx.displacementVelocity !== undefined
-      && ctx.displacementVelocity > 0.12
-      && ((ctx.rangeExhaustion !== undefined && ctx.rangeExhaustion >= 4.0)
-          || (ctx.choppiness !== undefined && ctx.choppiness >= 1.5))) return `trend dvel+context dvel=${ctx.displacementVelocity.toFixed(4)} rExh=${ctx.rangeExhaustion?.toFixed(1)} chop=${ctx.choppiness?.toFixed(2)}`;
-
-  // Standalone range exhaustion: rExh >= 7.0 = day's range consumed, no room left.
-  // Mar 31: 4 F-grade entries at rExh 7.4-9.7 all stopped out. Apr 2 A entries had rExh 3.7-5.2.
   if (signalMode === 'trend'
-      && ctx.rangeExhaustion !== undefined && ctx.rangeExhaustion >= 7.0) return `trend rangeExhaustion ${ctx.rangeExhaustion.toFixed(1)} >= 7.0`;
+      && ctx.rangeExhaustion !== undefined && ctx.rangeExhaustion > 7.0
+      && ctx.choppiness !== undefined && ctx.choppiness >= 2.0) return `trend exhausted+choppy rExh=${ctx.rangeExhaustion.toFixed(1)} chop=${ctx.choppiness.toFixed(2)}`;
 
   // bullish rangeExhaustion >= 6.0 removed: Mar 31 blocked Grade A 2.10% move.
   // SPY already removed this — exhausted+choppy (chop >= 2.0) handles the high-risk cases.

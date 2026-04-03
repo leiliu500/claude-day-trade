@@ -141,15 +141,10 @@ function nvdaShouldAllowEntry(ctx: EntryContext): true | string {
     // Extreme chasing: dvel > 0.30 = entered way too late into an accelerating move.
     // Apr 2 F: dvel=0.818 regime=80 rExh=7.3 → stopped out immediately.
     // A-grade entry had dvel=-0.333 (pullback entry, not chasing).
-    // Lowered 0.30 → 0.15: Apr 1 F at dvel=0.191 stopped out immediately.
-    // Apr 2 A entries had dvel=-0.333 (pullback entries, not chasing).
+    // Block extreme chasing: dvel > 0.30 = entered way too late.
+    // Apr 2 F: dvel=0.818 stopped out. A entries had dvel=-0.333 (pullback).
     if (ctx.displacementVelocity !== undefined
-        && ctx.displacementVelocity > 0.15) return `trend dvel ${ctx.displacementVelocity.toFixed(4)} > 0.15 (chasing)`;
-
-    // Moderate chasing in choppy conditions: dvel > 0.10 + chop >= 1.5.
-    // Mar 31 F: dvel=0.132/chop=1.87 stopped out. A entry had dvel=0.132 but chop=1.07.
-    if (ctx.displacementVelocity !== undefined && ctx.displacementVelocity > 0.10
-        && (ctx.choppiness ?? 0) >= 1.5) return `trend dvel+chop dvel=${ctx.displacementVelocity.toFixed(4)} chop=${(ctx.choppiness ?? 0).toFixed(2)}`;
+        && ctx.displacementVelocity > 0.30) return `trend extreme dvel ${ctx.displacementVelocity.toFixed(4)} > 0.30 (chasing)`;
 
     // trendPhase < 0 removed: Mar 26 both blocked were A-grade (MFE 0.83-1.12%)
     // choppiness raised 0.70 → 2.00: NVDA's normal choppiness is 2.0-2.3 (inherently choppy).
