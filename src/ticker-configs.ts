@@ -98,36 +98,33 @@ const TICKER_OVERRIDES: Record<string, Partial<Omit<TickerConfig, 'ticker' | 'st
     entryWindowEndMin: 360,    // block last 30 min before close
   },
   QQQ: {
-    // Tuned from Q1 2026 backtest: 6W/3L (67%), +63.5% P&L
-    // (baseline was 8W/11L 42%, -63.8%)
-    minConfidence: 0.65,
-    maxDailyEntries: 6,
-    maxContracts: 5,       // smaller size — newer symbol, less data
-    enabled: true,
     strategy: qqqStrategy,
+    directEntry: true,
+    maxContracts: 5,
+    enabled: true,
+    entryWindowStartMin: 30,
+    entryWindowEndMin: 360,
   },
   IWM: {
-    // Initial config — no backtest tuning yet
-    minConfidence: 0.65,
-    maxDailyEntries: 6,
+    strategy: iwmStrategy,
+    directEntry: true,
     maxContracts: 5,
     enabled: true,
-    strategy: iwmStrategy,
+    entryWindowStartMin: 30,
+    entryWindowEndMin: 360,
   },
   NVDA: {
-    // Tuned Q4 2025 + Q1 2026: 6B/1C/2F (67% good)
     minConfidence: 0.65,
-    maxDailyEntries: 1,    // NVDA: 2nd entries were 0W/3L
+    maxDailyEntries: 1,
     maxContracts: 5,
-    enabled: true,
+    enabled: false,
     strategy: nvdaStrategy,
   },
   AAPL: {
-    // Initial config — no backtest tuning yet
     minConfidence: 0.65,
     maxDailyEntries: 4,
     maxContracts: 5,
-    enabled: true,
+    enabled: false,
     strategy: aaplStrategy,
   },
 };

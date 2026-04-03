@@ -31,10 +31,11 @@ import {
   toPremium, pnlPct, trailFactor, profitFloor, estimateEntryPremium,
 } from './order-agent-sim.js';
 
-// QQQ premium floor multiplier: 2x optionAtr.
-// QQQ ATM options cost ~1.2x optionAtr (vs SPY's 5x). Using 2x as a floor
-// to avoid edge cases while keeping % swings realistic for QQQ's higher beta.
-const QQQ_PREMIUM_FLOOR_MULT = 2;
+// QQQ premium floor multiplier: 6x optionAtr.
+// QQQ ATM 1DTE options cost $4-6 (calls ~$4.07, puts ~$5.71 on 2026-03-24).
+// With optionAtr ~$0.75, 6x gives ~$4.50, matching real market premiums.
+// Old 2x produced ~$1.50 premiums → unrealistic 50% losses on normal noise.
+const QQQ_PREMIUM_FLOOR_MULT = 6;
 
 export function simulateOrderAgentQqq(
   entryPrice: number,
@@ -88,6 +89,14 @@ export function simulateOrderAgentQqq(
     const worstUnderlying = direction === 'bullish' ? bar.low - entryPrice : entryPrice - bar.high;
     const bestPremium = entryPremium + bestUnderlying * delta;
     const worstPremium = entryPremium + worstUnderlying * delta;
+
+    // ── Bar-0 early exit on adverse close (matches SPY sim) ──
+    // Live order-agent polls every 5s. If bar 0 closes adverse beyond -3%,
+    // exit at 35% of the close loss (models mid-bar detection).
+    if (i === 0 && currentPnl < -3.0) {
+      const earlyExitPremium = entryPremium + (currentPremium - entryPremium) * 0.35;
+      return mkResult(0, 'EARLY_EXIT', earlyExitPremium);
+    }
 
     // ── Rule 1: Initial hard stop (first 3 bars) ──
     if (i < 3 && peakPnlPct_ < 3) {

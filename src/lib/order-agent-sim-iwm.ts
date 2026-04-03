@@ -73,6 +73,12 @@ export function simulateOrderAgentIwm(
       return mkResult(0, 'EARLY_EXIT', earlyExitPremium);
     }
 
+    // Bar-0 early exit on adverse close (matches SPY/QQQ sim)
+    if (i === 0 && currentPnl < -3.0) {
+      const earlyExitPremium = entryPremium + (currentPremium - entryPremium) * 0.35;
+      return mkResult(0, 'EARLY_EXIT', earlyExitPremium);
+    }
+
     // Rule 1: Initial hard stop (first 3 bars)
     if (i < 3 && peakPnlPct_ < 3) {
       const checkPrice = i === 0 ? currentPremium : worstPremium;
