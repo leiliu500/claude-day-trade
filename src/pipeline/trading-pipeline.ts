@@ -70,11 +70,12 @@ function deterministicWait(
 /** True when AI orchestration is required */
 function needsAIOrchestration(analysis: AnalysisResult, context: PositionContext, timeGateOk: boolean, hasActiveAgents: boolean): boolean {
   const hasOpenPositions = context.openPositions.length > 0;
-  const hasActiveStreak  = context.confirmationStreaks.length > 0;
   // When market is closed, only run AI if there are positions to manage — not for potential new entries.
   // hasActiveAgents guards against DB lag: if the in-memory registry already has a MONITORING/AWAITING_FILL
   // agent, we must always run AI so every new signal reaches that agent regardless of confidence level.
-  return (analysis.meetsEntryThreshold && timeGateOk) || hasOpenPositions || hasActiveStreak || hasActiveAgents;
+  // Confidence must exceed threshold (meetsEntryThreshold) to reach AI for new entries —
+  // confirmation streaks alone are not enough to bypass the confidence gate.
+  return (analysis.meetsEntryThreshold && timeGateOk) || hasOpenPositions || hasActiveAgents;
 }
 
 export interface PipelineResult {
