@@ -163,6 +163,7 @@ export class DecisionOrchestrator {
           : 'Upper half: calls preferred, puts are higher risk',
       },
       meets_entry_threshold: analysis.meetsEntryThreshold,
+      min_confidence: minConfidence,
       desired_right: analysis.desiredRight,
       key_factors: analysis.keyFactors,
       risks: analysis.risks,

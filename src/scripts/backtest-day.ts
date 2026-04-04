@@ -969,11 +969,16 @@ async function main() {
       });
     };
 
-    if (USE_AI && orchestrator) {
-      // ── AI Orchestrator path ──────────────────────────────────────────────
-      // Call the real DecisionOrchestrator for every tick that meets threshold
-      // (same condition as live: meetsEntryThreshold && timeGateOk)
-      if (meetsThreshold && direction !== 'neutral') {
+    {
+      // ── Deterministic filters + optional AI final decision ─────────────────
+      // All entries go through the same deterministic filters (entry window,
+      // daily cap, cooldown, ticker hooks, confirmation gate). When --ai is
+      // enabled, confirmed entries are sent to the AI orchestrator for a final
+      // go/no-go decision instead of being auto-confirmed.
+
+      /** Call AI orchestrator and return decision (only when --ai flag) */
+      const callAI = async (): Promise<DecisionResult | null> => {
+        if (!USE_AI || !orchestrator) return null;
         const analysis: AnalysisResult = {
           signalId: signal.id,
           confidence: cb.total,
@@ -985,7 +990,6 @@ async function main() {
           desiredRight: direction === 'bearish' ? 'put' : 'call',
           createdAt: timeStr,
         };
-
         const context: PositionContext = {
           openPositions: [],
           brokerPositions: [],
@@ -997,12 +1001,10 @@ async function main() {
           accountBuyingPower: 100_000,
           dailyRealizedPnl: 0,
         };
-
-        const decision: DecisionResult = await orchestrator.run({
-          signal, option: optionEval, analysis, context, timeGateOk: true,
-        });
-
-        // Track decision for future context
+        const decision = await orchestrator.run(
+          { signal, option: optionEval, analysis, context, timeGateOk: true },
+          LIVE_TICKER_CFG,
+        );
         backtestRecentDecisions.unshift({
           decisionType: decision.decisionType,
           ticker: decision.ticker,
@@ -1012,44 +1014,10 @@ async function main() {
           createdAt: decision.createdAt,
           reasoning: decision.reasoning,
         });
-        // Keep only last 20 decisions
         if (backtestRecentDecisions.length > 20) backtestRecentDecisions.length = 20;
+        return decision;
+      };
 
-        // Map AI decision to gate result for compatibility with existing reporting
-        let gateResult: EntryRecord['gateResult'];
-        if (decision.decisionType === 'NEW_ENTRY' && decision.shouldExecute) {
-          if (decision.reasoning.includes('[PHASE-CHANGE OVERRIDE]')) {
-            gateResult = 'PHASE_CHANGE_OVERRIDE';
-          } else if (cb.total >= 0.92 && alignment === 'all_aligned') {
-            gateResult = 'HIGH_CONV_OVERRIDE';
-          } else {
-            gateResult = 'PASSED';
-          }
-          lastEntryTs = currentTs;
-          dailyEntryCount++;
-        } else if (decision.reasoning.includes('[STAGE-1 OBSERVE]')) {
-          gateResult = 'STAGE1_OBSERVE';
-        } else if (decision.reasoning.includes('[WEAKENING-SIGNAL BLOCK]')) {
-          gateResult = 'WEAKENING_BLOCK';
-        } else if (decision.reasoning.includes('[STALE-SIGNAL BLOCK]')) {
-          gateResult = 'STALE_BLOCK';
-        } else {
-          gateResult = 'STAGE1_OBSERVE'; // AI chose WAIT or other non-entry
-        }
-
-        const fwd = computeForwardMoves();
-
-        entries.push({
-          time: timeStr, timeET, direction, alignment, confidence: cb.total,
-          price: currentPrice, strengthScore, signalMode, atr, ...fwd, breakdown: cb, ...regimeCtx,
-          gateResult,
-          aiDecision: decision.decisionType,
-          aiShouldExecute: decision.shouldExecute,
-          aiReasoning: decision.reasoning,
-          aiConfirmationCount: decision.confirmationCount,
-        });
-      }
-    } else {
       // ── Deterministic confirmation gate simulation ─────────────────────────
       // Reset confirmation state when direction changes or signal drops well below threshold.
       // Allow stage-1 to survive brief dips (up to 3 ticks) if direction holds — on trending
@@ -1102,16 +1070,21 @@ async function main() {
           // Feb+Mar data: 0/12 range winners had chop >= 1.3, but 6/27 range losers did.
           const notTooChoppy = choppiness < 1.3;
           if (cb.total >= RANGE_MIN_CONF && cooldownOk && underLimit && pastWaitPeriod && rangeRegimeOk && vwapConfirms && notTooChoppy) {
+            const aiDec = await callAI();
+            const aiBlocked = aiDec && !(aiDec.decisionType === 'NEW_ENTRY' && aiDec.shouldExecute);
             const fwd = computeForwardMoves();
             entries.push({
               time: timeStr, timeET, direction, alignment, confidence: cb.total,
               price: currentPrice, strengthScore, signalMode, atr, ...fwd, breakdown: cb, ...regimeCtx,
-              gateResult: 'PASSED',
+              gateResult: aiBlocked ? 'STAGE1_OBSERVE' : 'PASSED',
+              ...(aiDec ? { aiDecision: aiDec.decisionType, aiShouldExecute: aiDec.shouldExecute, aiReasoning: aiDec.reasoning, aiConfirmationCount: aiDec.confirmationCount } : {}),
             });
-            lastRangeEntryTs = currentTs;
-            rangeEntryCount++;
-            dailyEntryCount++;
-            if (fwd.entryGrade === 'F' || fwd.entryGrade === 'D') intradayLosses++;
+            if (!aiBlocked) {
+              lastRangeEntryTs = currentTs;
+              rangeEntryCount++;
+              dailyEntryCount++;
+              if (fwd.entryGrade === 'F' || fwd.entryGrade === 'D') intradayLosses++;
+            }
           }
         } else if (signalMode === 'breakout') {
           // Breakout entries bypass the trend confirmation gate — quality is in the breakout confidence model
@@ -1141,16 +1114,21 @@ async function main() {
           // Per-ticker: minimum confidence for breakout entries
           const breakoutConfOk = TCFG.breakoutMinConfidence <= 0 || cb.total >= TCFG.breakoutMinConfidence;
           if (cooldownOk && underLimit && pastWaitPeriod && notTooLate && alignmentOk && (trendPhaseOk || strongSignalBypass) && adxOk && strengthOk && notExhausted && notTooChoppy && breakoutConfOk) {
+            const aiDec = await callAI();
+            const aiBlocked = aiDec && !(aiDec.decisionType === 'NEW_ENTRY' && aiDec.shouldExecute);
             const fwd = computeForwardMoves();
             entries.push({
               time: timeStr, timeET, direction, alignment, confidence: cb.total,
               price: currentPrice, strengthScore, signalMode, atr, ...fwd, breakdown: cb, ...regimeCtx,
-              gateResult: 'PASSED',
+              gateResult: aiBlocked ? 'STAGE1_OBSERVE' : 'PASSED',
+              ...(aiDec ? { aiDecision: aiDec.decisionType, aiShouldExecute: aiDec.shouldExecute, aiReasoning: aiDec.reasoning, aiConfirmationCount: aiDec.confirmationCount } : {}),
             });
-            lastBreakoutEntryTs = currentTs;
-            breakoutEntryCount++;
-            dailyEntryCount++;
-            if (fwd.entryGrade === 'F' || fwd.entryGrade === 'D') intradayLosses++;
+            if (!aiBlocked) {
+              lastBreakoutEntryTs = currentTs;
+              breakoutEntryCount++;
+              dailyEntryCount++;
+              if (fwd.entryGrade === 'F' || fwd.entryGrade === 'D') intradayLosses++;
+            }
           }
         } else if (signalMode === 'vwap_reversion') {
           // VWAP reversion entries bypass the trend confirmation gate
@@ -1172,16 +1150,21 @@ async function main() {
           // Extreme chop (>= 2.0) always blocked regardless of regime.
           const vwapRevChopOk = choppiness < 2.0 && !(choppiness > 0.99 && regimeScore >= 50);
           if (cb.total >= VWAP_REV_MIN_CONF && cooldownOk && underLimit && pastWaitPeriod && noStrongTrend && vwapConfirms && vwapRevAtrOk && vwapRevChopOk) {
+            const aiDec = await callAI();
+            const aiBlocked = aiDec && !(aiDec.decisionType === 'NEW_ENTRY' && aiDec.shouldExecute);
             const fwd = computeForwardMoves();
             entries.push({
               time: timeStr, timeET, direction, alignment, confidence: cb.total,
               price: currentPrice, strengthScore, signalMode, atr, ...fwd, breakdown: cb, ...regimeCtx,
-              gateResult: 'PASSED',
+              gateResult: aiBlocked ? 'STAGE1_OBSERVE' : 'PASSED',
+              ...(aiDec ? { aiDecision: aiDec.decisionType, aiShouldExecute: aiDec.shouldExecute, aiReasoning: aiDec.reasoning, aiConfirmationCount: aiDec.confirmationCount } : {}),
             });
-            lastVwapRevEntryTs = currentTs;
-            vwapRevEntryCount++;
-            dailyEntryCount++;
-            if (fwd.entryGrade === 'F' || fwd.entryGrade === 'D') intradayLosses++;
+            if (!aiBlocked) {
+              lastVwapRevEntryTs = currentTs;
+              vwapRevEntryCount++;
+              dailyEntryCount++;
+              if (fwd.entryGrade === 'F' || fwd.entryGrade === 'D') intradayLosses++;
+            }
           }
         } else {
         // Trend mode: apply daily limit and cooldown
@@ -1267,11 +1250,23 @@ async function main() {
           lastEntryTs = currentTs;
         }
 
+        // AI final decision on confirmed trend entries
+        let aiDec: DecisionResult | null = null;
+        const isConfirmedTrend = gateResult === 'PASSED' || gateResult === 'HIGH_CONV_OVERRIDE' || gateResult === 'PHASE_CHANGE_OVERRIDE';
+        if (isConfirmedTrend) {
+          aiDec = await callAI();
+          const aiBlocked = aiDec && !(aiDec.decisionType === 'NEW_ENTRY' && aiDec.shouldExecute);
+          if (aiBlocked) {
+            gateResult = 'STAGE1_OBSERVE'; // AI overrode to WAIT
+          }
+        }
+        const aiBlocked = aiDec && !(aiDec.decisionType === 'NEW_ENTRY' && aiDec.shouldExecute);
+
         const fwd = computeForwardMoves();
 
         // Track trend entries for daily limit/cooldown
-        const isConfirmedTrend = gateResult === 'PASSED' || gateResult === 'HIGH_CONV_OVERRIDE' || gateResult === 'PHASE_CHANGE_OVERRIDE';
-        if (isConfirmedTrend) {
+        const isConfirmedFinal = (gateResult === 'PASSED' || gateResult === 'HIGH_CONV_OVERRIDE' || gateResult === 'PHASE_CHANGE_OVERRIDE');
+        if (isConfirmedFinal) {
           lastTrendEntryTs = currentTs;
           trendEntryCount++;
           dailyEntryCount++;
@@ -1282,6 +1277,7 @@ async function main() {
           time: timeStr, timeET, direction, alignment, confidence: cb.total,
           price: currentPrice, strengthScore, signalMode, atr, ...fwd, breakdown: cb, ...regimeCtx,
           gateResult, stage1Conf: stage1ConfValue,
+          ...(aiDec ? { aiDecision: aiDec.decisionType, aiShouldExecute: aiDec.shouldExecute, aiReasoning: aiDec.reasoning, aiConfirmationCount: aiDec.confirmationCount } : {}),
         });
       }
       } // end trend limit/cooldown check
