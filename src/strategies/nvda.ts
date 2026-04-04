@@ -9,6 +9,8 @@
  *   - trend early exhaustion (rExh >= 10 in first 90 min)
  *   - breakout structureBonus <= 0, choppiness >= 2.50
  *   - Removed: trendPhase < 0, breakout regime < 60 (blocked A-grade entries)
+ *   - Removed: rangeExhaustion < 1.0 (Apr 2 blocked A-grade MFE=2.55%)
+ *   - Reduced: first-30min gate → first-15min (NVDA trends hard from open)
  */
 
 import type { PartialTickerStrategy, EntryContext } from './strategy.js';
@@ -131,11 +133,12 @@ function nvdaShouldAllowEntry(ctx: EntryContext): true | string {
   // dvel < -0.003 removed: Q4+Q1 counterfactual net +48 costly (261 good vs 213 bad).
   // All dvel brackets below -0.003 were net costly for NVDA.
 
-  if (ctx.rangeExhaustion !== undefined && ctx.rangeExhaustion < 1.0) return `rangeExhaustion ${ctx.rangeExhaustion.toFixed(1)} < 1.0 (early morning)`;
+  // rangeExhaustion < 1.0 removed: Apr 2 blocked A-grade MFE=2.55% at 09:48 ET.
+  // NVDA trends hard from open — directional indicators (DI spread, alignment) are sufficient.
 
   const now = new Date();
   const utcMins = now.getUTCHours() * 60 + now.getUTCMinutes();
-  if (utcMins >= 810 && utcMins < 840) return `first 30min after open (${utcMins} UTC mins)`;
+  if (utcMins >= 810 && utcMins < 825) return `first 15min after open (${utcMins} UTC mins)`;
 
   if (signalMode === 'trend') {
     // Extreme chasing: dvel > 0.30 = entered way too late into an accelerating move.
@@ -164,7 +167,7 @@ function nvdaShouldAllowEntry(ctx: EntryContext): true | string {
     // breakout choppiness raised 0.95 → 2.50: NVDA breakouts on big gap days naturally
     // have high chop before trend establishes. Mar 26 chop 1.53-2.14 were all A-grade.
     if ((ctx.choppiness ?? 0) >= 2.50) return `breakout choppiness ${(ctx.choppiness ?? 0).toFixed(2)} >= 2.50`;
-    if (ctx.rangeExhaustion !== undefined && ctx.rangeExhaustion < 1.0) return `breakout rangeExhaustion ${ctx.rangeExhaustion.toFixed(1)} < 1.0 (early morning)`;
+    // breakout rangeExhaustion < 1.0 removed: same as trend — directional indicators suffice for NVDA.
   }
 
   return true;

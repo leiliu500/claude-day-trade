@@ -18,7 +18,8 @@ function nvdaShouldAllowEntry(ctx: EntryContext): true | string {
   const atrPct = ctx.currentPrice > 0 ? (ctx.atr / ctx.currentPrice) * 100 : 0;
   if (atrPct < 0.08) return `atrPct ${atrPct.toFixed(3)}% < 0.08%`;
   // dvel < -0.003 removed: Q4+Q1 net +48 costly
-  if (ctx.rangeExhaustion < 1.0) return `rangeExhaustion ${ctx.rangeExhaustion.toFixed(1)} < 1.0 (early morning)`;
+  // rangeExhaustion < 1.0 removed: Apr 2 blocked A-grade MFE=2.55% at 09:48 ET.
+  // NVDA trends hard from open — directional indicators suffice.
   // confidence < 80% removed: Q4+Q1 net +148 costly (498 good vs 350 bad)
 
   if (signalMode === 'trend') {
