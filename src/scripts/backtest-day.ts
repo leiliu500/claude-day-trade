@@ -912,19 +912,16 @@ async function main() {
       }
 
       // Direction correct: based on sequence-aware MFE (reached before stop)
-      const directionCorrect = seqMfePct > 0.10;
+      const directionCorrect = seqMfePct > TCFG.dirCorrectThreshold;
 
       // Entry grade: sequence-aware (MFE-before-MAE)
       //   Measures favorable move reached BEFORE adverse hits stop threshold.
-      //   A: reached +0.4% before stop — strong capturable move
-      //   B: reached +0.25% before stop — good capturable move
-      //   C: reached +0.15% before stop — modest move, direction correct
-      //   D: direction correct but weak (< 0.15% before stop)
-      //   F: stopped out before any meaningful favorable move, or wrong direction
+      //   Thresholds are per-ticker (via TCFG) to account for volatility differences.
+      //   Default: A>0.40%, B>0.25%, C>0.15%. SPY uses lower thresholds.
       let entryGrade: 'A' | 'B' | 'C' | 'D' | 'F';
-      if (seqMfePct > 0.40) entryGrade = 'A';
-      else if (seqMfePct > 0.25) entryGrade = 'B';
-      else if (seqMfePct > 0.15 && directionCorrect) entryGrade = 'C';
+      if (seqMfePct > TCFG.gradeA) entryGrade = 'A';
+      else if (seqMfePct > TCFG.gradeB) entryGrade = 'B';
+      else if (seqMfePct > TCFG.gradeC && directionCorrect) entryGrade = 'C';
       else if (directionCorrect) entryGrade = 'D';
       else entryGrade = 'F';
 

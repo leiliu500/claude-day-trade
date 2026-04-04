@@ -24,6 +24,13 @@ export const SPY_CONFIG: Partial<TickerBacktestConfig> = {
   entryWindowStartMin: 30,
   entryWindowEndMin: 360,
 
+  // SPY-specific grade thresholds — lower than default to account for SPY's
+  // lower intraday volatility (avg MFE ~0.19% vs IWM 0.33%, NVDA 0.53%)
+  gradeA: 0.25,
+  gradeB: 0.15,
+  gradeC: 0.10,
+  dirCorrectThreshold: 0.05,
+
   // No confidence adjustment — dynamic model handles everything
   adjustConfidence: (cb) => cb,
 

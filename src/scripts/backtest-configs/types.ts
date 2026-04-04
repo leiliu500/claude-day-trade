@@ -73,6 +73,16 @@ export interface TickerBacktestConfig {
   /** Trend: minimum minutes between trend entries (default 15). Set 0 to disable (matches live). */
   trendCooldownMin: number;
 
+  // ── Grade thresholds (MFE % before stop) ──────────────────────────────────
+  /** MFE% above which entry is graded A (default 0.40) */
+  gradeA: number;
+  /** MFE% above which entry is graded B (default 0.25) */
+  gradeB: number;
+  /** MFE% above which entry is graded C when direction correct (default 0.15) */
+  gradeC: number;
+  /** MFE% above which direction is considered correct (default 0.10) */
+  dirCorrectThreshold: number;
+
   // ── Code hooks — override with custom per-ticker logic ─────────────────────
 
   /**
@@ -125,6 +135,10 @@ export const DEFAULT_BT_CONFIG: TickerBacktestConfig = {
   entryWindowStartMin: 0,
   entryWindowEndMin: 390,
   trendCooldownMin: 15,
+  gradeA: 0.40,
+  gradeB: 0.25,
+  gradeC: 0.15,
+  dirCorrectThreshold: 0.10,
   shouldAllowEntry: () => true,
   adjustConfidence: (cb) => cb,
   simulate: simulateOrderAgent,

@@ -117,14 +117,14 @@ const TICKER_OVERRIDES: Record<string, Partial<Omit<TickerConfig, 'ticker' | 'st
     minConfidence: 0.65,
     maxDailyEntries: 1,
     maxContracts: 5,
-    enabled: false,
+    enabled: true,
     strategy: nvdaStrategy,
   },
   AAPL: {
     minConfidence: 0.65,
     maxDailyEntries: 4,
     maxContracts: 5,
-    enabled: false,
+    enabled: true,
     strategy: aaplStrategy,
   },
 };
