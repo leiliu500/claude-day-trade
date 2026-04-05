@@ -22,6 +22,8 @@ import type { SignalPayload } from '../types/signal.js';
 import type { OptionEvaluation } from '../types/options.js';
 import type { TimeframeIndicators } from '../types/indicators.js';
 import type { SignalDirection } from '../types/signal.js';
+import { computeConvergence, convergenceAdjustment } from '../lib/signal-convergence.js';
+import { getCrossTickerBus } from '../lib/cross-ticker.js';
 // (Calibration removed — 2-layer multiplicative model uses fixed layer weights)
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
@@ -335,6 +337,23 @@ function buildConfidence(signal: SignalPayload): ConfidenceBreakdown {
     const strongTrend = htf.dmi.adx > 30 && htf.dmi.adxSlope > 0;
     if (atExtreme && !strongTrend) {
       total = Math.max(0, total - 0.03);
+    }
+  }
+
+  // 6. Signal convergence: reward fresh multi-family convergence
+  {
+    const conv = computeConvergence(tfs, direction);
+    const convAdj = convergenceAdjustment(conv);
+    if (convAdj !== 0) {
+      total = Math.max(0, Math.min(1, total + convAdj));
+    }
+  }
+
+  // 7. Cross-ticker consensus: divergence detection only
+  {
+    const consensus = getCrossTickerBus().computeConsensus(signal.ticker, direction);
+    if (consensus.adjustment < 0 && consensus.total > 0) {
+      total = Math.max(0, total + consensus.adjustment);
     }
   }
 

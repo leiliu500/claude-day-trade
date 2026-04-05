@@ -15,6 +15,7 @@ import { config } from '../config.js';
 import { getTickerConfig, type TickerConfig } from '../ticker-configs.js';
 import { fetchOptionMid } from '../lib/alpaca-api.js';
 import { getMarketQualityTracker } from '../lib/market-quality.js';
+import { getCrossTickerBus } from '../lib/cross-ticker.js';
 import type { TradingProfile } from '../types/market.js';
 import type { DecisionType, DecisionResult, PositionContext } from '../types/decision.js';
 import type { SignalPayload } from '../types/signal.js';
@@ -199,6 +200,16 @@ export async function runPipeline(
       console.log(`[Pipeline] No regime detected for ${ticker} — fallback to trend (regimeClarity=${regimeClarity.toFixed(2)})`);
     }
 
+    // ── Publish to cross-ticker bus (before analysis, so other tickers can read it) ──
+    getCrossTickerBus().publish({
+      ticker,
+      direction: signal.direction,
+      confidence: 0, // pre-analysis; updated after confidence is computed
+      alignment: signal.alignment,
+      signalMode: signal.signalMode ?? 'none',
+      timestamp: Date.now(),
+    });
+
     // ── Phase 4: Option Selection (contracts already prefetched if stream was warm) ──
     const prefetched = contractsPrefetch ? await contractsPrefetch : undefined;
     const optionEval = await optionAgent.run(signal, prefetched);
@@ -239,6 +250,16 @@ export async function runPipeline(
       const cb = analysis.confidenceBreakdown;
       console.log(`[Pipeline] ConfBreakdown[${ticker}]: base=${cb.base.toFixed(2)} di=${cb.diSpreadBonus.toFixed(3)} adx=${cb.adxBonus.toFixed(2)} cross=${cb.diCrossBonus.toFixed(3)} align=${cb.alignmentBonus.toFixed(2)} td=${cb.tdAdjustment.toFixed(3)} obv=${cb.obvBonus.toFixed(3)} vwap=${cb.vwapBonus.toFixed(3)} oiVol=${cb.oiVolumeBonus.toFixed(3)} pos=${cb.pricePositionAdjustment.toFixed(3)} maturity=${cb.adxMaturityPenalty.toFixed(3)} phase=${cb.trendPhaseBonus.toFixed(3)} accel=${cb.momentumAccelBonus.toFixed(3)} struct=${cb.structureBonus.toFixed(3)} orb=${cb.orbBonus.toFixed(3)} rpa=${cb.recentPriceActionBonus.toFixed(3)} trc=${cb.trContractionPenalty.toFixed(3)} lvp=${cb.lowVolPenalty.toFixed(3)} mex=${cb.moveExhaustionPenalty.toFixed(3)} con=${cb.consolidationPenalty.toFixed(3)} nlv=${cb.nearLevelPenalty.toFixed(3)} thd=${cb.thetaDecayPenalty.toFixed(3)} per=${cb.trendPersistenceBonus.toFixed(3)}`);
     }
+
+    // ── Update cross-ticker bus with computed confidence ──
+    getCrossTickerBus().publish({
+      ticker,
+      direction: signal.direction,
+      confidence: analysis.confidence,
+      alignment: signal.alignment,
+      signalMode: signal.signalMode ?? 'none',
+      timestamp: Date.now(),
+    });
 
     // ── Phase 6: Persist Signal Snapshot + Build Context (parallel) ───────
     const [snapshotId, context] = await Promise.all([

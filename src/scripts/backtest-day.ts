@@ -36,6 +36,8 @@ import type { SimResult } from '../lib/order-agent-sim.js';
 import { evaluateTrend, evaluateRange, evaluateBreakout, evaluateVwapReversion, resolveMode } from '../strategies/default.js';
 import { computeTrendConfidenceFn, computeRangeConfidenceFn, computeBreakoutConfidenceFn } from '../agents/analysis-agent.js';
 import { computeEntryMetrics } from '../lib/entry-context.js';
+import { computeConvergence, convergenceAdjustment } from '../lib/signal-convergence.js';
+import { createBacktestBus } from '../lib/cross-ticker.js';
 import { getTickerConfig } from '../ticker-configs.js';
 import { detectDirection } from '../lib/direction-detector.js';
 
@@ -43,6 +45,7 @@ import { detectDirection } from '../lib/direction-detector.js';
 
 const USE_AI = process.argv.includes('--ai');
 const JSON_OUTPUT = process.argv.includes('--json');
+const USE_CROSS_TICKER = process.argv.includes('--cross-ticker');
 const TARGET_DATE = process.argv.filter(a => !a.startsWith('--'))[2] || '2026-03-18';
 const TICKER = process.argv.filter(a => !a.startsWith('--'))[3] || 'SPY';
 const PROFILE = 'S' as const; // Scalp: 1m, 3m, 5m
@@ -398,6 +401,75 @@ async function main() {
     : 0;
   console.log(`  Recent daily volatility: ${avgDailyRangePct.toFixed(2)}% avg range (${recentDailyBars.length} days)\n`);
 
+  // ── Cross-ticker data (optional, --cross-ticker flag) ──────────────────────
+  const INDEX_TICKERS = ['SPY', 'QQQ', 'IWM'];
+  const crossTickerBars = new Map<string, OHLCVBar[]>();
+  const crossTickerBus = createBacktestBus();
+  const crossTickerCaches = new Map<string, OHLCVBar[]>();
+  const crossTickerPersistence = new Map<string, { dir: 'bullish' | 'bearish' | null; ts: number }>();
+
+  if (USE_CROSS_TICKER) {
+    const otherTickers = INDEX_TICKERS.filter(t => t !== TICKER);
+    console.log(`  Fetching cross-ticker data for: ${otherTickers.join(', ')}...`);
+    for (const xt of otherTickers) {
+      const xtBars = await fetchBarsRange(xt, '1m', startStr, endStr);
+      const xtRegular = xtBars.filter(b => {
+        const parts = new Intl.DateTimeFormat('en-US', { timeZone: 'America/New_York', hour: '2-digit', minute: '2-digit', hour12: false }).formatToParts(new Date(b.timestamp));
+        const hour = parseInt(parts.find(p => p.type === 'hour')!.value, 10);
+        const minute = parseInt(parts.find(p => p.type === 'minute')!.value, 10);
+        return hour * 60 + minute >= 570 && hour * 60 + minute < 960;
+      });
+      crossTickerBars.set(xt, xtRegular);
+      const xtOpenTs = new Date(`${TARGET_DATE}T${MARKET_OPEN_UTC}:00Z`).getTime();
+      const xtPriorBars = xtRegular.filter(b => new Date(b.timestamp).getTime() < xtOpenTs);
+      crossTickerCaches.set(xt, xtPriorBars.slice(-800));
+      crossTickerPersistence.set(xt, { dir: null, ts: 0 });
+      console.log(`    ${xt}: ${xtRegular.length} regular-session bars (${xtPriorBars.length} pre-open cache)`);
+    }
+  }
+
+  /** Compute cross-ticker signals at a given timestamp and publish to bus */
+  function updateCrossTickerBus(currentTs: number): void {
+    if (!USE_CROSS_TICKER) return;
+    for (const [xt] of crossTickerBars) {
+      const cache = crossTickerCaches.get(xt)!;
+      const allXtBars = crossTickerBars.get(xt)!;
+      // Add completed bars to cache
+      for (const bar of allXtBars) {
+        const barTs = new Date(bar.timestamp).getTime();
+        if (barTs < currentTs && (cache.length === 0 || barTs > new Date(cache[cache.length - 1]!.timestamp).getTime())) {
+          cache.push(bar);
+          if (cache.length > 800) cache.splice(0, cache.length - 800);
+        }
+      }
+      if (cache.length < 30) continue;
+
+      const xtLtf = cache.slice(-500);
+      const xtMtf = aggregate1mBars(cache, '3m', currentTs).slice(-500);
+      const xtHtf = aggregate1mBars(cache, '5m', currentTs).slice(-500);
+      if (xtLtf.length < 14 || xtMtf.length < 14 || xtHtf.length < 14) continue;
+
+      const xtPersist = crossTickerPersistence.get(xt)!;
+      const { direction: xtDir } = detectDirection(xtLtf, xtMtf, xtHtf, true, xtPersist, currentTs);
+
+      // Lightweight confidence from HTF ADX + DI spread
+      const xtHtfInd = computeTimeframeIndicators(xtHtf, '5m', xtDir, false);
+      const diSpread = xtDir === 'bullish'
+        ? xtHtfInd.dmi.plusDI - xtHtfInd.dmi.minusDI
+        : xtHtfInd.dmi.minusDI - xtHtfInd.dmi.plusDI;
+      const xtConf = 0.40 + 0.30 * Math.min(1, xtHtfInd.dmi.adx / 50) + 0.30 * Math.min(1, Math.max(0, diSpread / 30));
+
+      crossTickerBus.publish({
+        ticker: xt,
+        direction: xtDir,
+        confidence: xtConf,
+        alignment: 'mixed',
+        signalMode: 'trend',
+        timestamp: currentTs,
+      });
+    }
+  }
+
   // ── Step 2: Walk through market hours in 1-min intervals ──────────────────
   const entries: EntryRecord[] = [];
   const filterBlockedEntries: FilterBlockedEntry[] = [];
@@ -585,6 +657,9 @@ async function main() {
     }
 
     if (streamCache.length < 20) continue; // need minimum bars for indicators
+
+    // Update cross-ticker bus with other index signals at this timestamp
+    updateCrossTickerBus(currentTs);
 
     // Derive timeframe bars from the stream cache (matching live behavior)
     const ltfBars = streamCache.slice(-500); // 1m bars, last 500 (matches BARS_LIMIT in signal-agent)
@@ -783,6 +858,23 @@ async function main() {
     if (regimeClarity < 0.6) {
       const regimePenalty = (0.6 - regimeClarity) * 0.13;
       cb = { ...cb, total: Math.max(0, cb.total - regimePenalty) };
+    }
+
+    // ── Signal convergence (mirrors live AnalysisAgent logic) ──────────────────
+    {
+      const conv = computeConvergence(tfIndicators, direction);
+      const convAdj = convergenceAdjustment(conv);
+      if (convAdj !== 0) {
+        cb = { ...cb, total: Math.max(0, Math.min(1, cb.total + convAdj)) };
+      }
+    }
+
+    // ── Cross-ticker consensus: divergence detection only ─────────────────────
+    if (USE_CROSS_TICKER) {
+      const consensus = crossTickerBus.computeConsensus(TICKER, direction, currentTs);
+      if (consensus.adjustment < 0 && consensus.total > 0) {
+        cb = { ...cb, total: Math.max(0, cb.total + consensus.adjustment) };
+      }
     }
 
     // ── Trend persistence bonus (mirrors live AnalysisAgent logic) ─────────────

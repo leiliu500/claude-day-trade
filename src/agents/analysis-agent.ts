@@ -7,6 +7,8 @@ import type { AnalysisResult, ConfidenceBreakdown } from '../types/analysis.js';
 import { getRecentSignals } from '../db/repositories/signals.js';
 import { computeEntryMetrics } from '../lib/entry-context.js';
 import { applySoftGates } from '../lib/soft-gates.js';
+import { computeConvergence, convergenceAdjustment } from '../lib/signal-convergence.js';
+import { getCrossTickerBus } from '../lib/cross-ticker.js';
 
 const openai = new OpenAI({ apiKey: config.OPENAI_API_KEY });
 
@@ -1764,6 +1766,30 @@ export class AnalysisAgent {
       const regimePenalty = (0.6 - regimeClarity) * 0.13; // max ~0.08 at clarity=0
       cb = { ...cb, total: Math.max(0, cb.total - regimePenalty) };
       console.log(`[AnalysisAgent] ${signal.ticker} regime clarity penalty: clarity=${regimeClarity.toFixed(2)} → -${(regimePenalty * 100).toFixed(1)}% (total=${(cb.total * 100).toFixed(0)}%)`);
+    }
+
+    // ── Signal convergence: reward fresh multi-family convergence ──
+    {
+      const conv = computeConvergence(signal.timeframes, signal.direction);
+      const convAdj = convergenceAdjustment(conv);
+      if (convAdj !== 0) {
+        cb = { ...cb, total: Math.max(0, Math.min(1, cb.total + convAdj)) };
+        if (Math.abs(convAdj) >= 0.02) {
+          console.log(`[AnalysisAgent] ${signal.ticker} convergence: ${conv.freshCount} fresh / ${conv.totalConfirming} confirming → ${convAdj >= 0 ? '+' : ''}${(convAdj * 100).toFixed(1)}% (total=${(cb.total * 100).toFixed(0)}%)`);
+        }
+      }
+    }
+
+    // ── Cross-ticker consensus: divergence detection only ──
+    // Positive boost removed (inflated stale entries, dropped direction 72%→68%).
+    // Value is in detecting when other indices DISAGREE — genuine warning signal.
+    {
+      const consensus = getCrossTickerBus().computeConsensus(signal.ticker, signal.direction);
+      if (consensus.adjustment < 0 && consensus.total > 0) {
+        cb = { ...cb, total: Math.max(0, cb.total + consensus.adjustment) };
+        const tickers = consensus.details.map(d => `${d.ticker}:${d.agrees ? '✓' : '✗'}`).join(' ');
+        console.log(`[AnalysisAgent] ${signal.ticker} cross-ticker divergence: ${consensus.disagreeing}/${consensus.total} disagree → ${(consensus.adjustment * 100).toFixed(1)}% [${tickers}] (total=${(cb.total * 100).toFixed(0)}%)`);
+      }
     }
 
     // ── Build per-symbol entry context (shared by adjustConfidence + shouldAllowEntry) ──

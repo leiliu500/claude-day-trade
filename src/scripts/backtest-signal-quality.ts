@@ -275,9 +275,11 @@ for (const ticker of TICKERS) {
     process.stdout.write(`  [${pct}%] ${date} ...`);
 
     try {
+      // Forward extra flags (e.g. --cross-ticker) from argv to backtest-day
+      const extraFlags = process.argv.filter(a => a.startsWith('--')).join(' ');
       const output = execSync(
-        `npx tsx src/scripts/backtest-day.ts ${date} ${ticker} 2>&1`,
-        { timeout: 120_000, encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'] },
+        `npx tsx src/scripts/backtest-day.ts ${date} ${ticker} ${extraFlags} 2>&1`,
+        { timeout: 180_000, encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'] },
       );
 
       const hasResults = output.includes('ticks processed');
