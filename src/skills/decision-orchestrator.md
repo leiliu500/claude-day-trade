@@ -80,81 +80,32 @@ The signal_mode field indicates market regime. Confidence already uses the corre
 - **breakout**: squeeze breakout from consolidation (rising ADX slope is the signal)
 - **vwap_reversion**: mean-reversion toward VWAP (time-sensitive)
 
-## SESSION META-SIGNALS
+## SESSION META-SIGNALS (universal, stable across regimes)
 
-The `session_meta` field contains session-level context. Check `session_meta.ticker_tuned`:
+The `session_meta` field contains session-state patterns validated across ALL 5 tickers (SPY, QQQ, IWM, NVDA, AAPL) in Q1 2026. These patterns are regime-stable — they reflect trading session dynamics, not time-of-day or market-specific conditions.
 
-### When `ticker_tuned: true` — per-ticker guidance
+### Consecutive losses (`consec_f_streak`) — strongest signal
+- **3+ F-grades**: session is dead — override to WAIT unconditionally. State: "Session dead: N consecutive losses"
+- **2 F-grades**: quality degrading — raise your bar, require stronger conviction
 
-**SPY** (Q1 2026, 340 entries, 41% baseline):
+### Prior entry outcome (`prior_entry_grade`)
+- **After A-grade**: next entry is strong across all tickers (56-81%) — favor continuation
+- **After B-grade**: move is often done (8-27%) — be selective, B frequently marks the peak
+- **After C/D-grade**: marginal — be selective
 
-Time of day:
-- **early_momentum** (10:00-10:30): 65% — best window, favor entries
-- **mid_morning** (10:30-11:00): 45% — normal
-- **lunch_chop** (11:30-12:30): 30-35% — raise bar
-- **afternoon_dead** (1:00-2:30 PM): 24% — WAIT unless conf >= 0.78 AND all_aligned
-- **late_session** (2:30-4:00): 40% — acceptable
+### Day character (`first_entry_grade`)
+- **Day started with A-grade**: trending day — favor continuation entries
 
-Prior entry: After A = 59% good, After B = 23%, After C/D = 19-27%, After F = 38%
-Consecutive losses: 2 F's = 31%, 3+ F's = 0% — WAIT unconditionally
-Entry sequence: #1-2 = 46-48%, #4-6 = 31-36%
+### Direction flip (`direction_flipped`)
+- **true**: reversals underperform same-direction across all tickers — be selective
 
-**QQQ** (Q1 2026, 331 entries, 33% baseline):
-
-Time of day:
-- **early_open** (10:00-10:30): 30% — QQQ opens are NOT prime (opposite of SPY)
-- **best_window** (10:30-11:30): 40-42% — QQQ sweet spot
-- **lunch_fade/chop** (11:30-12:30): 28-33% — fading
-- **dead_zone** (12:30-1:00 PM): 0% — zero good entries, override to WAIT
-- **afternoon_dead** (1:00-2:30 PM): 20% — avoid
-
-Prior entry: After A = 56% good, After B = 22%, After C/D = 19-22%, After F = 25%
-Consecutive losses: 1 F = 25% (degrades fast), 2 F's = 18%, 3+ F's = 0%
-Entry sequence: #1 = 41%, #5 = 27%, **#6 = 18% good / 73% bad** — hard avoid
-
-**IWM** (Q1 2026, 175 entries, 40% baseline):
-
-Time of day:
-- **main_window** (10:00-11:30): 41-44% — consistent 3-hour window, IWM's only good zone
-- **lunch_fade** (11:30-12:00): 22% — sharp drop
-- **afternoon** (after 12:30): 15-29% — IWM is dead after lunch
-
-Prior entry: **After A = 81% good** (strongest signal of any ticker — strongly favor continuation), After B = **8%** (move is done, strongly consider WAIT), After C/D = 15-33%
-Day character: **1st entry = A → rest of day 73% good** (IWM trends persistently)
-Consecutive losses: 2 F's = 25%, 3+ consider stopping
-Entry sequence: #1 = 32% (lower but still ENTER when conf >= threshold — do NOT skip first entry), #2 = 48% (best), **#5 = 0%** — hard stop at 4 entries
-Direction: same direction = 48% good, **direction flip = 30%** — IWM rewards persistence
-**IMPORTANT**: IWM's lower baseline win rates do NOT mean override to WAIT. The default is still NEW_ENTRY when confidence >= min_confidence. Only override for the 4 contextual reasons + session_meta warnings.
-
-**NVDA** (Q1 2026, 166 entries, 37% baseline):
-
-Prior entry: After A = 64% good (favor continuation), After B = 14%, **After C = 13% good / 88% bad** (worst of any ticker — strongly WAIT)
-Day character: 1st entry = A → rest of day 66% good
-Consecutive losses: 2 F's = 14%/79% bad, 3+ F's = 0%
-Entry sequence: #1 = 30%, **#3 = 49% (best)** — NVDA needs trend to establish before best entries
-Direction: **direction flips = 15% good / 69% bad** — NVDA does NOT reverse, strongly avoid flipping
-**IMPORTANT**: NVDA has natural zero-entry days (6 of 63 days). Do NOT force entries when confidence is below threshold.
-
-**AAPL** (Q1 2026, 177 entries, 42% baseline):
-
-Time of day: **10:00-10:30 = 69% good** (prime), **12:30-1:00 = 70%** (afternoon momentum), 11:00-12:30 = 20-32% (weak mid-morning/lunch)
-Prior entry: After A = 57% (favor), After B = 27%/64% bad (move done)
-Day character: 1st=A → rest 48% good
-Direction: **flips = 20% good / 80% bad** — strongly avoid reversals
-Entry sequence: flat across #1-4 (41-43%) — AAPL doesn't decay with more entries
-Note: AAPL has natural zero-entry days (5 of 63). Do NOT force entries.
-
-### When `ticker_tuned: false` (other tickers — not yet calibrated)
-
-Only basic session data is provided (streak, sequence, prior grade). Use conservatively:
-- `consec_f_streak >= 3`: strongly consider WAIT (universal pattern)
-- Other fields: informational only, do NOT apply SPY-specific win rates to other tickers
-
-### How to use (all tickers)
-- `session_meta.warnings` lists the most important flags — check these first
+### How to use
+- `session_meta.warnings` lists the active flags — check these first
 - These are ADDITIVE to the 4 existing override reasons, not replacements
-- **Do not** override to WAIT solely on time_zone or entry_sequence; combine with other signals
-- **Do** override to WAIT when consec_f_streak >= 3 (unconditional) or when 2+ warnings fire simultaneously
+- **Do not** override to WAIT for a single mild warning alone (e.g., "be selective")
+- **Do** override to WAIT when `consec_f_streak >= 3` (unconditional)
+- **Do** override to WAIT when 2+ warnings fire simultaneously (combined risk)
+- **IMPORTANT**: The default is still NEW_ENTRY when confidence >= min_confidence. Session meta provides context, not gates.
 
 ## REASONING GUIDELINES
 
