@@ -270,6 +270,74 @@ function buildConfidence(signal: SignalPayload): ConfidenceBreakdown {
     total = 0.78 + (total - 0.78) * 0.30;
   }
 
+  // ── Soft penalties for conditions the 2-layer model misses ────────────────
+  // The multiplicative model captures direction strength and entry timing but
+  // lacks awareness of: prior-day structure, price action reversals, move
+  // exhaustion, ADX maturity, and regime clarity. These are the same factors
+  // that caused zero-entry days and overfitting in the 29-component model.
+  // Applied as smooth subtractive penalties (not hard caps).
+
+  const htf = tfs[tfs.length - 1]!;
+  const ltf = tfs[0]!;
+
+  // ── Soft penalties calibrated for SPY's 2-layer model ──
+  // SPY's model produces 0.50-0.78 range. Penalties must be small (0.02-0.05)
+  // to differentiate good from bad setups without killing all entries.
+
+  // 1. Recent price action: last 2 bars opposing → reversal warning
+  if (ltf.bars.length >= 3) {
+    const lastBar = ltf.bars[ltf.bars.length - 1]!;
+    const prevBar = ltf.bars[ltf.bars.length - 2]!;
+    const lastConfirms = direction === 'bullish'
+      ? lastBar.close > lastBar.open
+      : lastBar.close < lastBar.open;
+    const prevConfirms = direction === 'bullish'
+      ? prevBar.close > prevBar.open
+      : prevBar.close < prevBar.open;
+    if (!lastConfirms && !prevConfirms) total = Math.max(0, total - 0.04);
+    else if (!lastConfirms) total = Math.max(0, total - 0.015);
+  }
+
+  // 2. Move exhaustion: >10x ATR consumed → diminishing edge
+  if (ltf.bars.length >= 20 && htf.atr.atr > 0) {
+    let dayHigh = -Infinity, dayLow = Infinity;
+    for (const b of ltf.bars) {
+      if (b.high > dayHigh) dayHigh = b.high;
+      if (b.low < dayLow) dayLow = b.low;
+    }
+    const rangeExhaustion = (dayHigh - dayLow) / htf.atr.atr;
+    if (rangeExhaustion > 10) {
+      total = Math.max(0, total - Math.min(0.05, (rangeExhaustion - 10) * 0.012));
+    }
+  }
+
+  // 3. ADX maturity: 20+ bars above ADX 25 without fresh momentum
+  if (htf.dmi.adxBarsAbove25 >= 20) {
+    const ds = dirSign(direction);
+    const diSpreadWidening = ds * htf.dmi.diSpreadSlope > 1;
+    if (!diSpreadWidening) {
+      total = Math.max(0, total - Math.min(0.04, (htf.dmi.adxBarsAbove25 - 20) * 0.005));
+    }
+  }
+
+  // 4. Regime clarity: mode='none' fallback → ambiguity penalty
+  const regimeClarity = signal.regimeClarity ?? 1.0;
+  if (regimeClarity < 0.6) {
+    total = Math.max(0, total - (0.6 - regimeClarity) * 0.10);
+  }
+
+  // 5. Range position extreme + no strong active trend
+  {
+    const rp = htf.priceStructure.rangePosition;
+    const atExtreme =
+      (direction === 'bullish' && rp >= 0.90) ||
+      (direction === 'bearish' && rp <= 0.10);
+    const strongTrend = htf.dmi.adx > 30 && htf.dmi.adxSlope > 0;
+    if (atExtreme && !strongTrend) {
+      total = Math.max(0, total - 0.03);
+    }
+  }
+
   // Map into ConfidenceBreakdown for transparency.
   // base = direction strength, the bonuses show entry quality components.
   // Note: slopeScore is computed inside scoreEntryQuality; recompute for breakdown.

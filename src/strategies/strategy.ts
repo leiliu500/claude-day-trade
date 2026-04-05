@@ -56,6 +56,13 @@ export interface ModeDetectionResult {
   /** VWAP reversion mode: VWAP target and distance */
   vwapReversionTarget?: number;
   vwapDistance?: number;
+  /**
+   * Regime clarity score (0-1): how clearly the market fits any trading mode.
+   * 0 = no mode qualifies at all; 1 = strong, unambiguous regime.
+   * Used as a soft multiplier on confidence instead of a hard mode='none' gate.
+   * Set by resolveMode(); if absent, defaults to 1.0 for qualifying modes and 0.0 for 'none'.
+   */
+  regimeClarity?: number;
 }
 
 // ── Strategy interface ───────────────────────────────────────────────────────

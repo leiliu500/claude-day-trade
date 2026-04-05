@@ -233,8 +233,11 @@ export function evaluateVwapReversion(
 
 /**
  * Resolve between all mode candidates.
- * Picks the highest-scoring non-null candidate. Returns 'none' when nothing qualifies.
- * Every mode must earn its way in — there is no default/fallback mode.
+ * Picks the highest-scoring non-null candidate.
+ *
+ * When no mode qualifies, instead of hard 'none' → WAIT, computes a regimeClarity
+ * score (0-1) representing how close the market is to qualifying for any mode.
+ * The pipeline uses this to apply a soft penalty instead of short-circuiting.
  */
 export function resolveMode(
   trendCandidate: ModeCandidate | null,
@@ -245,11 +248,17 @@ export function resolveMode(
   const candidates = [trendCandidate, rangeCandidate, breakoutCandidate, vwapRevCandidate].filter(
     (c): c is ModeCandidate => c !== null && c !== undefined,
   );
-  if (candidates.length === 0) return { signalMode: 'none' };
-  if (candidates.length === 1) return candidates[0]!.result;
+  if (candidates.length === 0) {
+    // No mode qualifies — return 'none' with regimeClarity = 0
+    // The pipeline will use this as a soft penalty instead of a hard short-circuit
+    return { signalMode: 'none', regimeClarity: 0 };
+  }
+  if (candidates.length === 1) {
+    return { ...candidates[0]!.result, regimeClarity: candidates[0]!.score };
+  }
   // Multiple qualify — pick highest score
   candidates.sort((a, b) => b.score - a.score);
-  return candidates[0]!.result;
+  return { ...candidates[0]!.result, regimeClarity: candidates[0]!.score };
 }
 
 // ── Default mode detection (parallel) ───────────────────────────────────────

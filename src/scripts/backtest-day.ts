@@ -641,6 +641,7 @@ async function main() {
     let breakoutLevel = 0, breakoutBeyond = 0;
     const htfTfForRange = tfIndicators[2]!;
 
+    let modeRegimeClarity = 0;
     {
       const trendCandidate = evaluateTrend(htfTfForRange);
       const rangeCandidate = evaluateRange(htfTfForRange, currentPrice);
@@ -648,6 +649,7 @@ async function main() {
       const ltfTfForVwap = tfIndicators[0]!;
       const vwapRevCandidate = evaluateVwapReversion(ltfTfForVwap, htfTfForRange, currentPrice);
       const modeResult = resolveMode(trendCandidate, rangeCandidate, breakoutCandidate, vwapRevCandidate);
+      modeRegimeClarity = modeResult.regimeClarity ?? (modeResult.signalMode === 'none' ? 0 : 1.0);
 
       signalMode = modeResult.signalMode;
       // Only apply mode evaluator's direction when leading override hasn't already set a faster direction.
@@ -689,8 +691,12 @@ async function main() {
       signalMode = 'trend';
     }
 
-    // No qualifying regime — skip this bar (no default fallback)
-    if (signalMode === 'none') continue;
+    // Soft regime clarity: instead of hard short-circuit, fall back to trend mode
+    // with a confidence penalty proportional to lack of regime clarity.
+    const regimeClarity = modeRegimeClarity;
+    if (signalMode === 'none') {
+      signalMode = 'trend'; // fallback — confidence penalty applied below
+    }
 
     // ── Entry metrics — uses shared computeEntryMetrics() (same code as live) ──
     // Get today's bars up to the current tick for metrics computation.
@@ -772,6 +778,12 @@ async function main() {
     };
     // Use live strategy's adjustConfidence — same code that runs in production
     let cb = LIVE_TICKER_CFG.strategy.adjustConfidence(cbRaw, entryCtx);
+
+    // ── Regime clarity penalty (mirrors live AnalysisAgent logic) ──────────────
+    if (regimeClarity < 0.6) {
+      const regimePenalty = (0.6 - regimeClarity) * 0.13;
+      cb = { ...cb, total: Math.max(0, cb.total - regimePenalty) };
+    }
 
     // ── Trend persistence bonus (mirrors live AnalysisAgent logic) ─────────────
     // Count consecutive same-direction aligned signals from history, apply +0.03/bar (cap +0.12)

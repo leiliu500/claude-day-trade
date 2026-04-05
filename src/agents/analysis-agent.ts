@@ -6,6 +6,7 @@ import type { OptionEvaluation } from '../types/options.js';
 import type { AnalysisResult, ConfidenceBreakdown } from '../types/analysis.js';
 import { getRecentSignals } from '../db/repositories/signals.js';
 import { computeEntryMetrics } from '../lib/entry-context.js';
+import { applySoftGates } from '../lib/soft-gates.js';
 
 const openai = new OpenAI({ apiKey: config.OPENAI_API_KEY });
 
@@ -1032,128 +1033,58 @@ function computeConfidence(signal: SignalPayload, option: OptionEvaluation): Con
 
   let total = Math.max(0, Math.min(1, base + diSpreadBonus + adxBonus + diCrossBonus + alignmentBonus + tdAdjustment + obvBonus + vwapBonus + oiVolumeBonus + pricePositionAdjustment + adxMaturityPenalty + trendPhaseBonus + momentumAccelBonus + structureBonus + orbBonus + recentPriceActionBonus + trContractionPenalty + lowVolPenalty + moveExhaustionPenalty + consolidationPenalty + nearLevelPenalty + thetaDecayPenalty + narrowRangePenalty + candlePatternBonus + priceVelocityBonus + volumeSurgeBonus));
 
-  // Hard gate: no structure support — every backtest winner had Structure >= +0.06.
-  // Losers often had 0 or negative structure (wrong side of prior-day levels).
-  if (structureBonus <= 0) total = Math.min(total, 0.68);
-  if (structureBonus < 0) total = Math.min(total, 0.62);
+  // ── SOFT GATES: Replace cliff-effect hard caps with smooth sigmoid penalties ──
+  // These 5 gates caused the most zero-entry days due to cliff effects (0.64 miss vs 0.66 entry).
+  // Soft gates produce continuous degradation — no discontinuities, easier to tune universally.
+  {
+    const rp = htf.priceStructure.rangePosition;
+    const softGateResult = applySoftGates({
+      adx: htf.dmi.adx,
+      recentPriceActionBonus,
+      adxMaturityPenalty,
+      structureBonus,
+      rangePosition: rp,
+      direction: signal.direction,
+      alignment: signal.alignment,
+      adxSlope: htf.dmi.adxSlope,
+    });
+    total = Math.max(0, total - softGateResult.totalPenalty);
+  }
 
-  // Hard gate: low ADX strength — weak trend, unreliable signal.
-  // ADX < 15: no established trend to ride. ADX 15-20: marginal, cap below threshold.
-  if (htf.dmi.adx < 15) total = Math.min(total, 0.55);
-  else if (htf.dmi.adx < 20) total = Math.min(total, 0.64);
+  // ── RETAINED SAFETY GATES: Genuine safety boundaries that should remain hard ──
+  // These represent situations where entry is genuinely dangerous, not just marginal.
 
-  // Hard gate: TR contraction (instant momentum fade) without price confirmation
-  // is a dying trend — cap confidence below entry threshold (0.65).
-  // Uses raw TR (instant, no smoothing lag) instead of lagging ADX-based isExhaustingTrend.
-  // Skipped when recent price action confirms direction (recentPriceActionBonus > 0)
-  // AND TR is only moderately contracted — genuine re-acceleration shows expanding bars.
+  // TR contraction + no price confirmation: dying momentum (softened from 0.60 to 0.62)
   if (trContractionPenalty < 0 && recentPriceActionBonus <= 0) {
-    total = Math.min(total, 0.60);
+    total = Math.min(total, 0.62);
   }
 
-  // Hard gate: extremely mature trend (20+ bars above ADX 25) without fresh price
-  // action confirmation.  At this stage, lagging indicators peak while the underlying
-  // trend is most likely to reverse.  Even with all bonuses stacking, entering this
-  // late is a losing proposition — cap below entry threshold.
-  // Relaxed to 0.64 (just below 0.65) when price action actively confirms, since
-  // rare cases of genuine trend continuation do exist but should still require
-  // elevated confidence from other factors to pass.
-  // Exempt all_aligned with ADX >= 20 — genuine trend continuation across all timeframes.
-  // Require ADX >= 20 alongside all_aligned: very low ADX + all_aligned is noise, not trend.
-  if (adxMaturityPenalty <= -0.15 && !((signal.alignment === 'all_aligned' || signal.alignment === 'htf_mtf_aligned') && htf.dmi.adx >= 20)) {
-    if (recentPriceActionBonus > 0) {
-      total = Math.min(total, 0.64);
-    } else {
-      total = Math.min(total, 0.55);
-    }
-  }
-
-  // Hard gate: direction change detected — the most recent bar flipped against the
-  // signal while lagging indicators (DMI/ADX) still show a strong trend.  This is
-  // the exact moment when confidence peaks but price has already reversed.
-  // Cap confidence below entry threshold to prevent entries at reversal points.
+  // Direction change detected (PA <= -0.15): price actively reversing
   if (recentPriceActionBonus <= -0.15) {
     total = Math.min(total, 0.60);
   }
-  // Opposing price action — candles moving against trend direction.
-  // Even mild opposition (PA < 0) means real-time price disagrees with lagging indicators.
-  if (recentPriceActionBonus < 0) {
-    total = Math.min(total, 0.64);
-  }
 
-  // Hard gate: move already exhausted + consolidation.  When a large move has played out
-  // AND price is now chopping sideways, the setup is spent — even strong indicators are
-  // just reflecting the completed move, not predicting continuation.
+  // Exhaustion + consolidation: move spent AND chopping sideways
   if (moveExhaustionPenalty <= -0.06 && consolidationPenalty < 0) {
     total = Math.min(total, 0.58);
   }
 
-  // Hard gate: severe move exhaustion (2.5+ ATR).  At this magnitude, the move is almost
-  // certainly done regardless of what other indicators say.  Cap below entry threshold.
+  // Severe move exhaustion (2.5+ ATR): almost certainly done
   if (moveExhaustionPenalty <= -0.15) {
     total = Math.min(total, 0.60);
   }
 
-  // Hard gate: mature trend + exhaustion.  When ADX has been above 25 for 10+ bars AND
-  // the move is 1.0+ ATR extended, the trend is late-stage and stretched — entering now
-  // is chasing the tail end.  PA still reads "confirming" but the edge is gone.
-  if (adxMaturityPenalty <= -0.08 && moveExhaustionPenalty <= -0.06) {
-    total = Math.min(total, 0.62);
-  }
-
-  // Hard gate: very severe ADX maturity (post-halving still >= 7%).  Trend ran 20+ bars
-  // above ADX 25 — even with the all_aligned halving benefit, this much aging means the
-  // easy money is gone and reversal risk is high.
-  // Exempt all_aligned + ADX >= 20: all timeframes confirming + established trend = genuine
-  // continuation.  Trend persistence bonus (applied later) handles the conviction signal.
-  if (adxMaturityPenalty <= -0.07 && !((signal.alignment === 'all_aligned' || signal.alignment === 'htf_mtf_aligned') && htf.dmi.adx >= 20)) {
-    total = Math.min(total, 0.64);
-  }
-
-  // Hard gate: aged trend stalling without price confirmation.  Maturity 10+ bars above
-  // ADX 25 + consolidation + no recent confirming bars = the trend is running out of
-  // steam with no new directional conviction.
-  if (adxMaturityPenalty <= -0.06 && consolidationPenalty <= -0.04 && recentPriceActionBonus <= 0) {
-    total = Math.min(total, 0.64);
-  }
-
-  // Hard gate: range position extreme — entering at the edge of the HTF range.
-  // Buying calls at >85% range position or puts at <15% is chasing the last move.
-  // Loser #2 (93%), #4 (81% + nearLevel), #6 (9%) all failed from range extremes.
-  // Exempt when strong active trend (ADX > 25 + rising) — genuine breakout/breakdown.
-  {
-    const rp = htf.priceStructure.rangePosition;
-    const strongActiveTrend = htf.dmi.adx > 25 && htf.dmi.adxSlope > 0;
-    const extremeGateApplies = !strongActiveTrend && htf.dmi.adx >= 15;
-    const atExtreme = (signal.direction === 'bullish' && rp >= 0.85) || (signal.direction === 'bearish' && rp <= 0.15);
-    // Also exempt all_aligned — genuine trend across all timeframes pushes price to range edge.
-    if (atExtreme && extremeGateApplies && !(signal.alignment === 'all_aligned' && htf.dmi.adx >= 20)) {
-      total = Math.min(total, 0.62);
-    }
-    // Softer gate: near extreme + DI spread narrowing = fading momentum at boundary
-    const nearExtreme = (signal.direction === 'bullish' && rp >= 0.75) || (signal.direction === 'bearish' && rp <= 0.25);
-    if (nearExtreme && htf.dmi.diSpreadSlope < -3 && htf.dmi.adx >= 15) {
-      total = Math.min(total, 0.64);
-    }
-  }
-
-  // Hard gate: narrow range + approaching range extreme.  On a tight-range day,
-  // being near the ceiling (bullish) or floor (bearish) means price is at the edge
-  // of a tiny box — mean-reversion is almost certain.  Cap below entry threshold.
+  // Narrow range + extreme position: edge of a tiny box
   if (narrowRangePenalty <= -0.08 && pricePositionAdjustment <= -0.04) {
     total = Math.min(total, 0.60);
   }
 
-  // Hard gate: 0DTE with extreme theta (≤ 30 min to close).
-  // Even with strong signals, the theta burn is too aggressive for new entries.
+  // 0DTE extreme theta (≤ 30 min): too aggressive for new entries
   if (thetaDecayPenalty <= -0.10) {
     total = Math.min(total, 0.55);
   }
 
-  // Hard gate: exhausted trend with reverting momentum.
-  // If intraday range consumed > 7x ATR AND recent displacement is decelerating,
-  // the trend move is done and starting to pull back — late entry risk is extreme.
-  // All March trend winners had positive displacement velocity at high exhaustion.
+  // Exhausted trend with reverting momentum (range exhaustion gates)
   if (ltf && htf) {
     const ltfBars = ltf.bars;
     const htfAtr = htf.atr.atr;
@@ -1161,12 +1092,6 @@ function computeConfidence(signal: SignalPayload, option: OptionEvaluation): Con
       let dayHigh = -Infinity, dayLow = Infinity;
       for (const b of ltfBars) { if (b.high > dayHigh) dayHigh = b.high; if (b.low < dayLow) dayLow = b.low; }
       const rangeExhaustion = (dayHigh - dayLow) / htfAtr;
-      // Displacement velocity: compare displacement of recent 5 bars vs prior 5 bars
-      // Extremely extended day: >12x ATR consumed. Move is done regardless of velocity.
-      // Feb+Mar: 0 trend winners at >12x, 2 losers.
-      // Exempt all_aligned with rising ADX: the trend is still strengthening despite the
-      // wide day range. Apr 1 SPY: 12.7x ATR at 14:25 capped conf to 0.55 while ADX was
-      // rising (+2.1) and all timeframes aligned bearish.
       const trendStillStrengthening = (signal.alignment === 'all_aligned' || signal.alignment === 'htf_mtf_aligned')
         && htf.dmi.adx > 25 && htf.dmi.adxSlope > 0;
       if (rangeExhaustion > 12.0 && !trendStillStrengthening) {
@@ -1827,6 +1752,19 @@ export class AnalysisAgent {
       breakout: signal.signalMode === 'breakout' ? cb.total : computeAll.computeBreakoutConfidence(signal).total,
       vwap_reversion: signal.signalMode === 'vwap_reversion' ? cb.total : computeAll.computeRangeConfidence(signal).total,
     };
+
+    // ── Regime clarity penalty: soft multiplier when mode='none' fell through ──
+    // When no mode qualified (regimeClarity near 0), apply a penalty proportional
+    // to the ambiguity. This replaces the hard mode='none' → WAIT short-circuit.
+    // regimeClarity 0.0 → penalty ~0.08 (reduces 0.65 → 0.57, usually blocks entry)
+    // regimeClarity 0.4 → penalty ~0.04 (mild reduction, strong signals still pass)
+    // regimeClarity 0.6+ → penalty ~0.02 (minimal impact)
+    const regimeClarity = signal.regimeClarity ?? 1.0;
+    if (regimeClarity < 0.6) {
+      const regimePenalty = (0.6 - regimeClarity) * 0.13; // max ~0.08 at clarity=0
+      cb = { ...cb, total: Math.max(0, cb.total - regimePenalty) };
+      console.log(`[AnalysisAgent] ${signal.ticker} regime clarity penalty: clarity=${regimeClarity.toFixed(2)} → -${(regimePenalty * 100).toFixed(1)}% (total=${(cb.total * 100).toFixed(0)}%)`);
+    }
 
     // ── Build per-symbol entry context (shared by adjustConfidence + shouldAllowEntry) ──
     // Uses shared computeEntryMetrics() — single source of truth for dvel/rExh/choppiness.

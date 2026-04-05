@@ -192,12 +192,14 @@ export class SignalAgent {
     let breakoutBeyond: number | undefined;
     let vwapReversionTarget: number | undefined;
     let vwapDistance: number | undefined;
+    let regimeClarity: number | undefined;
 
     const strategy = tickerCfg?.strategy;
     if (strategy) {
       // Use per-symbol strategy for mode detection
       const modeResult = strategy.detectMode(tfIndicators, direction, currentPrice);
       signalMode = modeResult.signalMode;
+      regimeClarity = modeResult.regimeClarity;
       // Only apply mode evaluator's direction when leading override hasn't already set a faster direction.
       // Leading indicators (velocity + LTF DMI) detect direction changes 5-15 bars before HTF DI catches up.
       if (modeResult.direction && !leadingSignalOverride) direction = modeResult.direction;
@@ -219,6 +221,7 @@ export class SignalAgent {
         evaluateVwapReversion(ltfTf, htfTf, currentPrice),
       );
       signalMode = modeResult.signalMode;
+      regimeClarity = modeResult.regimeClarity;
       if (modeResult.direction && !leadingSignalOverride) direction = modeResult.direction;
       rangeSupport = modeResult.rangeSupport;
       rangeResistance = modeResult.rangeResistance;
@@ -267,6 +270,7 @@ export class SignalAgent {
       reversalOverride: reversalOverride || undefined,
       leadingSignalOverride: leadingSignalOverride || undefined,
       signalMode,
+      regimeClarity,
       rangeSupport,
       rangeResistance,
       breakoutLevel,

@@ -14,12 +14,16 @@ import { v4 as uuidv4 } from 'uuid';
 import { config } from '../config.js';
 import { getTickerConfig, type TickerConfig } from '../ticker-configs.js';
 import { fetchOptionMid } from '../lib/alpaca-api.js';
+import { getMarketQualityTracker } from '../lib/market-quality.js';
 import type { TradingProfile } from '../types/market.js';
 import type { DecisionType, DecisionResult, PositionContext } from '../types/decision.js';
 import type { SignalPayload } from '../types/signal.js';
 import type { OptionEvaluation } from '../types/options.js';
 import type { AnalysisResult } from '../types/analysis.js';
 import type { SizeResult } from '../types/trade.js';
+
+// ── Minimum activity guarantee state per ticker ──────────────────────────────
+const activityGuaranteeState = new Map<string, { firstTickTs: number; triggered: boolean; todayDate: string }>();
 /**
  * Returns a fully-formed WAIT without calling any AI.
  * Used when there are no open positions to manage and either confidence is below threshold
@@ -182,20 +186,17 @@ export async function runPipeline(
             : ' [NO SETUP]';
     console.log(`[Pipeline] Signal: ${signal.direction} (${signal.alignment})${modeLabel}`);
 
-    // ── Short-circuit: no qualifying mode — skip tick ────────────────────────
+    // ── Soft regime clarity: no qualifying mode → fallback to trend with penalty ──
+    // Instead of hard short-circuit, force trend mode with a confidence penalty
+    // proportional to the lack of regime clarity. This prevents zero-entry days
+    // caused by mode detection returning 'none' on ambiguous markets.
+    const regimeClarity = signal.regimeClarity ?? (signal.signalMode === 'none' ? 0 : 1.0);
     if (signal.signalMode === 'none') {
-      console.log(`[Pipeline] No qualifying regime detected for ${ticker} — skipping tick`);
-      return {
-        ticker,
-        profile,
-        direction: signal.direction,
-        alignment: signal.alignment,
-        confidence: 0,
-        decision: 'WAIT',
-        reasoning: 'No qualifying market regime (trend/range/breakout/vwap_reversion) detected',
-        orderSubmitted: false,
-        signal,
-      };
+      // No mode qualified — fall back to trend mode with regime penalty.
+      // The confidence model will still run and may produce a high score if
+      // indicators are strong despite ambiguous regime.
+      signal.signalMode = 'trend';
+      console.log(`[Pipeline] No regime detected for ${ticker} — fallback to trend (regimeClarity=${regimeClarity.toFixed(2)})`);
     }
 
     // ── Phase 4: Option Selection (contracts already prefetched if stream was warm) ──
@@ -203,9 +204,37 @@ export async function runPipeline(
     const optionEval = await optionAgent.run(signal, prefetched);
     console.log(`[Pipeline] Option: winner=${optionEval.winner ?? 'none'}, liq=${optionEval.liquidityOk}`);
 
+    // ── Phase 4.5: Update market quality tracker for adaptive threshold ──────
+    {
+      const mqTracker = getMarketQualityTracker(ticker);
+      const ltfBars = signal.timeframes[0]?.bars;
+      const htfAtr = signal.timeframes[2]?.atr.atr ?? signal.atr;
+      // Estimate baseline volume from HTF bars
+      const htfBars = signal.timeframes[2]?.bars;
+      const baselineVolume = htfBars && htfBars.length >= 10
+        ? htfBars.slice(-10).reduce((s, b) => s + b.volume, 0) / 10
+        : 0;
+      if (ltfBars && ltfBars.length >= 10) {
+        // Filter to today's bars only
+        const todayStr = new Date().toISOString().slice(0, 10);
+        const todayBars = ltfBars.filter(b => b.timestamp.startsWith(todayStr));
+        const updated = mqTracker.update(todayBars, htfAtr, baselineVolume, tickerCfg.minConfidence, Date.now());
+        if (updated && mqTracker.quality) {
+          const mq = mqTracker.quality;
+          console.log(`[Pipeline] MarketQuality ${ticker}: composite=${mq.composite.toFixed(2)} atrRatio=${mq.atrRatio.toFixed(2)} clarity=${mq.trendClarity.toFixed(2)} stability=${mq.directionStability.toFixed(2)} threshold=${mq.adaptiveThreshold.toFixed(3)}`);
+        }
+      }
+    }
+
     // ── Phase 5: Analysis (deterministic confidence; AI explanation only when market open) ──
-    const analysis = await analysisAgent.run(signal, optionEval, timeGateOk, tickerCfg);
-    console.log(`[Pipeline] Analysis: confidence=${analysis.confidence.toFixed(2)}, threshold=${analysis.meetsEntryThreshold}`);
+    // Pass market quality adaptive threshold to analysis agent
+    const mqTracker = getMarketQualityTracker(ticker);
+    const adaptiveThreshold = mqTracker.getAdaptiveThreshold(tickerCfg.minConfidence);
+    const effectiveTickerCfg = adaptiveThreshold !== tickerCfg.minConfidence
+      ? { ...tickerCfg, minConfidence: adaptiveThreshold }
+      : tickerCfg;
+    const analysis = await analysisAgent.run(signal, optionEval, timeGateOk, effectiveTickerCfg);
+    console.log(`[Pipeline] Analysis: confidence=${analysis.confidence.toFixed(2)}, threshold=${analysis.meetsEntryThreshold}${adaptiveThreshold !== tickerCfg.minConfidence ? ` (adaptive: ${(adaptiveThreshold * 100).toFixed(0)}%)` : ''}`);
     if (analysis.confidenceBreakdown) {
       const cb = analysis.confidenceBreakdown;
       console.log(`[Pipeline] ConfBreakdown[${ticker}]: base=${cb.base.toFixed(2)} di=${cb.diSpreadBonus.toFixed(3)} adx=${cb.adxBonus.toFixed(2)} cross=${cb.diCrossBonus.toFixed(3)} align=${cb.alignmentBonus.toFixed(2)} td=${cb.tdAdjustment.toFixed(3)} obv=${cb.obvBonus.toFixed(3)} vwap=${cb.vwapBonus.toFixed(3)} oiVol=${cb.oiVolumeBonus.toFixed(3)} pos=${cb.pricePositionAdjustment.toFixed(3)} maturity=${cb.adxMaturityPenalty.toFixed(3)} phase=${cb.trendPhaseBonus.toFixed(3)} accel=${cb.momentumAccelBonus.toFixed(3)} struct=${cb.structureBonus.toFixed(3)} orb=${cb.orbBonus.toFixed(3)} rpa=${cb.recentPriceActionBonus.toFixed(3)} trc=${cb.trContractionPenalty.toFixed(3)} lvp=${cb.lowVolPenalty.toFixed(3)} mex=${cb.moveExhaustionPenalty.toFixed(3)} con=${cb.consolidationPenalty.toFixed(3)} nlv=${cb.nearLevelPenalty.toFixed(3)} thd=${cb.thetaDecayPenalty.toFixed(3)} per=${cb.trendPersistenceBonus.toFixed(3)}`);
@@ -217,6 +246,48 @@ export async function runPipeline(
       buildContext(ticker),
     ]);
     signal.id = snapshotId;
+
+    // ── Minimum activity guarantee ──────────────────────────────────────────
+    // If we've been running for 2+ hours with zero entries AND the underlying
+    // has moved > 0.3%, lower threshold by 0.04 to prevent zero-entry days.
+    // This is a one-time adjustment per session that ensures the system
+    // participates when the market is clearly moving.
+    {
+      const todayStr = new Date().toISOString().slice(0, 10);
+      let state = activityGuaranteeState.get(ticker);
+      if (!state || state.todayDate !== todayStr) {
+        state = { firstTickTs: Date.now(), triggered: false, todayDate: todayStr };
+        activityGuaranteeState.set(ticker, state);
+      }
+      const elapsedMs = Date.now() - state.firstTickTs;
+      const TWO_HOURS = 2 * 60 * 60 * 1000;
+      if (!state.triggered && elapsedMs > TWO_HOURS && timeGateOk && !analysis.meetsEntryThreshold) {
+        // Check if underlying has moved significantly
+        const ltfBars = signal.timeframes[0]?.bars;
+        if (ltfBars && ltfBars.length > 20) {
+          const todayBarsOnly = ltfBars.filter(b => b.timestamp.startsWith(todayStr));
+          if (todayBarsOnly.length > 0) {
+            const openPrice = todayBarsOnly[0]!.open;
+            const currentMove = Math.abs(signal.currentPrice - openPrice) / openPrice * 100;
+            if (currentMove > 0.3) {
+              // Market is moving but we haven't entered — lower threshold
+              const boost = 0.04;
+              const boostedConf = analysis.confidence;
+              const boostedThreshold = (effectiveTickerCfg.minConfidence) - boost;
+              if (boostedConf >= boostedThreshold) {
+                console.log(`[Pipeline] Activity guarantee triggered for ${ticker}: ` +
+                  `${(elapsedMs / 60000).toFixed(0)}min with no entries, underlying moved ${currentMove.toFixed(2)}%. ` +
+                  `Threshold ${(effectiveTickerCfg.minConfidence * 100).toFixed(0)}% → ${(boostedThreshold * 100).toFixed(0)}%`);
+                // Mutate analysis to meet threshold (one-time)
+                (analysis as { meetsEntryThreshold: boolean }).meetsEntryThreshold = true;
+                (analysis as { entryBlockReason?: string }).entryBlockReason = undefined;
+                state.triggered = true;
+              }
+            }
+          }
+        }
+      }
+    }
 
     // ── Phase 7: Decision Orchestrator (or deterministic bypass) ──────────
     // Run AI decision + fresh option quote fetch in PARALLEL to minimize price drift.

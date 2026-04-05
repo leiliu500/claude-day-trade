@@ -42,6 +42,11 @@ export interface SignalPayload {
   vwapReversionTarget?: number;  // VWAP price (target for reversion)
   vwapDistance?: number;         // % distance from VWAP at entry
 
+  /** Regime clarity score (0-1): how clearly the market fits any trading mode.
+   *  0 = no mode qualifies; 1 = strong, unambiguous regime.
+   *  Used as a soft multiplier on confidence instead of hard mode='none' gate. */
+  regimeClarity?: number;
+
   triggeredBy: 'AUTO' | 'MANUAL';
   sessionId?: string;
   createdAt: string;
