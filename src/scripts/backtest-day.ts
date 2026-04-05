@@ -461,6 +461,8 @@ async function main() {
   const orchestrator = USE_AI ? new DecisionOrchestrator() : null;
   // Track recent decisions for PositionContext.recentDecisions (newest first)
   const backtestRecentDecisions: PositionContext['recentDecisions'] = [];
+  // Track recent evaluations for PositionContext.recentEvaluations (newest first)
+  const backtestRecentEvaluations: PositionContext['recentEvaluations'] = [];
 
   // Generate 1-min timestamps from market open to close
   const openTime = new Date(`${TARGET_DATE}T${MARKET_OPEN_UTC}:00Z`);
@@ -993,7 +995,7 @@ async function main() {
           brokerOpenOrders: [],
           recentDecisions: backtestRecentDecisions.slice(0, 10),
           confirmationStreaks: [],
-          recentEvaluations: [],
+          recentEvaluations: backtestRecentEvaluations.slice(0, 10),
           accountEquity: 100_000,
           accountBuyingPower: 100_000,
           dailyRealizedPnl: 0,
@@ -1013,6 +1015,25 @@ async function main() {
         });
         if (backtestRecentDecisions.length > 20) backtestRecentDecisions.length = 20;
         return decision;
+      };
+
+      /** Push a simulated evaluation into backtestRecentEvaluations (mirrors production context-builder) */
+      const pushBacktestEvaluation = (fwd: ReturnType<typeof computeForwardMoves>) => {
+        backtestRecentEvaluations.unshift({
+          ticker: TICKER,
+          optionRight: direction === 'bearish' ? 'put' : 'call',
+          grade: fwd.entryGrade,
+          score: fwd.seqMfePct,
+          outcome: fwd.outcome,
+          pnlTotal: null,
+          holdDurationMin: null,
+          signalQuality: null,
+          timingQuality: null,
+          riskManagementQuality: null,
+          lessonsLearned: '',
+          evaluatedAt: timeStr,
+        });
+        if (backtestRecentEvaluations.length > 20) backtestRecentEvaluations.length = 20;
       };
 
       // ── Deterministic confirmation gate simulation ─────────────────────────
@@ -1081,6 +1102,7 @@ async function main() {
               rangeEntryCount++;
               dailyEntryCount++;
               if (fwd.entryGrade === 'F' || fwd.entryGrade === 'D') intradayLosses++;
+              pushBacktestEvaluation(fwd);
             }
           }
         } else if (signalMode === 'breakout') {
@@ -1125,6 +1147,7 @@ async function main() {
               breakoutEntryCount++;
               dailyEntryCount++;
               if (fwd.entryGrade === 'F' || fwd.entryGrade === 'D') intradayLosses++;
+              pushBacktestEvaluation(fwd);
             }
           }
         } else if (signalMode === 'vwap_reversion') {
@@ -1161,6 +1184,7 @@ async function main() {
               vwapRevEntryCount++;
               dailyEntryCount++;
               if (fwd.entryGrade === 'F' || fwd.entryGrade === 'D') intradayLosses++;
+              pushBacktestEvaluation(fwd);
             }
           }
         } else {
@@ -1275,6 +1299,7 @@ async function main() {
           trendEntryCount++;
           dailyEntryCount++;
           if (fwd.entryGrade === 'F' || fwd.entryGrade === 'D') intradayLosses++;
+          pushBacktestEvaluation(fwd);
         }
 
         entries.push({
