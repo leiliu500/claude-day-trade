@@ -1221,7 +1221,14 @@ async function main() {
         // but captures +53.3% and +9.2% entries on trending days.
         const strongSignalBypass = cb.total >= TCFG.trendStrongSignalMinConf && alignment === 'all_aligned';
 
-        if (highConvOverride) {
+        // Direct entry mode: skip confirmation gate entirely (matches live pipeline).
+        const directEntryMode = LIVE_TICKER_CFG.directEntry === true;
+
+        if (directEntryMode) {
+          gateResult = 'PASSED';
+          confirmStage1 = null;
+          lastEntryTs = currentTs;
+        } else if (highConvOverride) {
           gateResult = 'HIGH_CONV_OVERRIDE';
           confirmStage1 = null; // reset after entry
         } else if (!confirmStage1) {

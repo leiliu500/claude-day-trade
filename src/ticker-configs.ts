@@ -124,6 +124,7 @@ const TICKER_OVERRIDES: Record<string, Partial<Omit<TickerConfig, 'ticker' | 'st
     minConfidence: 0.65,
     maxDailyEntries: 4,
     maxContracts: 5,
+    directEntry: true,
     enabled: true,
     strategy: aaplStrategy,
   },

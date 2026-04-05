@@ -112,6 +112,316 @@ function computeServerConfirmationCount(
   return 0;
 }
 
+/**
+ * Session meta-signals — computed per tick, ticker-specific guidance.
+ *
+ * SPY: backtest-validated Q1 2026 (340 entries). Other tickers: basic session
+ * tracking only (streak, sequence) until per-ticker meta-analysis is run.
+ */
+function buildSessionMeta(
+  signal: SignalPayload,
+  context: PositionContext,
+): Record<string, unknown> | null {
+  const minSinceOpen = minutesSinceMarketOpen();
+  const today = new Date().toISOString().slice(0, 10);
+
+  // Analyze today's recent evaluations for entry sequence and prior outcome
+  const todayEvals = context.recentEvaluations.filter(e =>
+    e.evaluatedAt?.slice(0, 10) === today
+  );
+  const todayEntries = context.recentDecisions.filter(d =>
+    d.decisionType === 'NEW_ENTRY' && d.createdAt?.slice(0, 10) === today
+  );
+  const entry_sequence_num = todayEntries.length + 1;
+
+  const lastEval = todayEvals[0];
+  const prior_entry_grade = lastEval?.grade ?? null;
+  const prior_entry_outcome = lastEval?.outcome ?? null;
+
+  let consec_f_streak = 0;
+  for (const e of todayEvals) {
+    if (e.grade === 'F') consec_f_streak++;
+    else break;
+  }
+
+  const firstEval = todayEvals[todayEvals.length - 1];
+  const first_entry_grade = firstEval?.grade ?? null;
+
+  // ── SPY-specific meta-signals (Q1 2026, 340 entries) ────────────────────
+  if (signal.ticker === 'SPY') {
+    let time_zone: string;
+    let time_zone_quality: string;
+    if (minSinceOpen <= 60) {
+      time_zone = 'early_momentum';
+      time_zone_quality = minSinceOpen <= 30 ? 'prime (65% win rate in backtest)' : 'good (45%)';
+    } else if (minSinceOpen <= 120) {
+      time_zone = 'mid_morning';
+      time_zone_quality = 'average (44%)';
+    } else if (minSinceOpen <= 180) {
+      time_zone = 'lunch_chop';
+      time_zone_quality = 'weak (30-35% — lunch hour chop zone)';
+    } else if (minSinceOpen <= 270) {
+      time_zone = 'afternoon_dead';
+      time_zone_quality = 'worst (24% — avoid new entries)';
+    } else {
+      time_zone = 'late_session';
+      time_zone_quality = 'mixed (40% — late moves can be sharp)';
+    }
+
+    const warnings: string[] = [];
+
+    if (consec_f_streak >= 3) {
+      warnings.push(`STOP: ${consec_f_streak} consecutive F-grades today — 0% win rate after 3+ losses in backtest`);
+    } else if (consec_f_streak >= 2) {
+      warnings.push(`Caution: ${consec_f_streak} consecutive F-grades — win rate drops to 31% after 2 losses`);
+    }
+
+    if (minSinceOpen > 180 && minSinceOpen <= 270) {
+      warnings.push('Afternoon dead zone (1:00-2:30 PM ET) — 24% win rate in backtest, strongly avoid new entries');
+    } else if (minSinceOpen > 120 && minSinceOpen <= 180) {
+      warnings.push('Lunch chop zone (11:30-12:30 PM ET) — 30-35% win rate, lower bar for quality');
+    }
+
+    if (entry_sequence_num >= 5) {
+      warnings.push(`Entry #${entry_sequence_num} today — later entries average 36% win rate vs 47% for first 2`);
+    }
+
+    if (prior_entry_grade === 'A') {
+      warnings.push('Prior entry was A-grade — next entry has 59% win rate in backtest, favorable to continue');
+    } else if (prior_entry_grade === 'C' || prior_entry_grade === 'D') {
+      warnings.push(`Prior entry was ${prior_entry_grade}-grade — next entry has ~23% win rate, consider skipping`);
+    }
+
+    return {
+      ticker_tuned: true,
+      minutes_since_open: minSinceOpen,
+      time_zone,
+      time_zone_quality,
+      entry_sequence_num,
+      prior_entry_grade,
+      prior_entry_outcome,
+      consec_f_streak,
+      first_entry_grade,
+      warnings,
+    };
+  }
+
+  // ── QQQ-specific meta-signals (Q1 2026, 331 entries) ─────────────────────
+  if (signal.ticker === 'QQQ') {
+    let time_zone: string;
+    let time_zone_quality: string;
+    if (minSinceOpen <= 30) {
+      time_zone = 'early_open';
+      time_zone_quality = 'weak (30% — QQQ opens are NOT prime, unlike SPY)';
+    } else if (minSinceOpen <= 120) {
+      time_zone = 'best_window';
+      time_zone_quality = 'best (40-42% — QQQ sweet spot is 10:30-11:30)';
+    } else if (minSinceOpen <= 150) {
+      time_zone = 'lunch_fade';
+      time_zone_quality = 'weak (33% — fading quality)';
+    } else if (minSinceOpen <= 180) {
+      time_zone = 'lunch_chop';
+      time_zone_quality = 'bad (28% — lunch chop)';
+    } else if (minSinceOpen <= 210) {
+      time_zone = 'dead_zone';
+      time_zone_quality = 'dead (0% — 12:30-1:00 PM, zero good entries in backtest)';
+    } else if (minSinceOpen <= 300) {
+      time_zone = 'afternoon_dead';
+      time_zone_quality = 'worst (20% — avoid new entries)';
+    } else {
+      time_zone = 'late_session';
+      time_zone_quality = 'poor (20%)';
+    }
+
+    const warnings: string[] = [];
+
+    if (consec_f_streak >= 3) {
+      warnings.push(`STOP: ${consec_f_streak} consecutive F-grades today — 0% win rate after 3+ losses in backtest`);
+    } else if (consec_f_streak >= 2) {
+      warnings.push(`Caution: ${consec_f_streak} consecutive F-grades — win rate drops to 18% after 2 losses`);
+    } else if (consec_f_streak >= 1) {
+      warnings.push('After 1 F-grade — win rate drops to 25%, QQQ degrades faster than SPY');
+    }
+
+    if (minSinceOpen > 180 && minSinceOpen <= 210) {
+      warnings.push('QQQ dead zone (12:30-1:00 PM ET) — 0% win rate in backtest, override to WAIT');
+    } else if (minSinceOpen > 210 && minSinceOpen <= 300) {
+      warnings.push('QQQ afternoon dead zone (1:00-2:30 PM ET) — 20% win rate, strongly avoid');
+    } else if (minSinceOpen > 150 && minSinceOpen <= 180) {
+      warnings.push('QQQ lunch chop (12:00-12:30 PM ET) — 28% win rate');
+    }
+
+    if (entry_sequence_num >= 6) {
+      warnings.push(`Entry #${entry_sequence_num} today — QQQ entry #6 is 18% good / 73% bad, strongly avoid`);
+    } else if (entry_sequence_num >= 5) {
+      warnings.push(`Entry #${entry_sequence_num} today — QQQ later entries average 27% win rate`);
+    }
+
+    if (prior_entry_grade === 'A') {
+      warnings.push('Prior entry was A-grade — next entry has 56% win rate, favorable to continue');
+    } else if (prior_entry_grade === 'B') {
+      warnings.push('Prior entry was B-grade — next entry drops to 22%, B often marks peak for QQQ');
+    } else if (prior_entry_grade === 'C' || prior_entry_grade === 'D') {
+      warnings.push(`Prior entry was ${prior_entry_grade}-grade — next entry has ~20% win rate, consider skipping`);
+    }
+
+    return {
+      ticker_tuned: true,
+      minutes_since_open: minSinceOpen,
+      time_zone,
+      time_zone_quality,
+      entry_sequence_num,
+      prior_entry_grade,
+      prior_entry_outcome,
+      consec_f_streak,
+      first_entry_grade,
+      warnings,
+    };
+  }
+
+  // ── IWM-specific meta-signals (Q1 2026, 175 entries) ─────────────────────
+  // NOTE: IWM guidance is intentionally positive/neutral — the AI over-filtered
+  // when given low win-rate percentages, creating zero-entry days. Only warn
+  // on genuinely bad conditions (after B-grade, entry #5+, afternoon).
+  if (signal.ticker === 'IWM') {
+    const warnings: string[] = [];
+
+    if (consec_f_streak >= 3) {
+      warnings.push(`STOP: ${consec_f_streak} consecutive F-grades today`);
+    } else if (consec_f_streak >= 2) {
+      warnings.push(`Caution: ${consec_f_streak} consecutive F-grades`);
+    }
+
+    // Only warn on truly dead zones, not the main window
+    if (minSinceOpen > 210) {
+      warnings.push('IWM afternoon zone — quality drops after lunch');
+    }
+
+    if (entry_sequence_num >= 5) {
+      warnings.push(`Entry #${entry_sequence_num} today — IWM hard stop at 4 entries, override to WAIT`);
+    }
+
+    if (prior_entry_grade === 'A') {
+      warnings.push('Prior entry was A-grade — IWM continuation is very strong, favor entry');
+    } else if (prior_entry_grade === 'B') {
+      warnings.push('Prior entry was B-grade — move may be done for IWM, consider WAIT');
+    }
+
+    if (first_entry_grade === 'A' && entry_sequence_num > 1) {
+      warnings.push('Day started with A-grade — IWM trending day, favor continuation');
+    }
+
+    return {
+      ticker_tuned: true,
+      minutes_since_open: minSinceOpen,
+      entry_sequence_num,
+      prior_entry_grade,
+      prior_entry_outcome,
+      consec_f_streak,
+      first_entry_grade,
+      warnings,
+    };
+  }
+
+  // ── NVDA-specific meta-signals (Q1 2026, 166 entries) ────────────────────
+  if (signal.ticker === 'NVDA') {
+    const warnings: string[] = [];
+
+    if (consec_f_streak >= 3) {
+      warnings.push(`STOP: ${consec_f_streak} consecutive F-grades today — 0% good in backtest`);
+    } else if (consec_f_streak >= 2) {
+      warnings.push(`Caution: ${consec_f_streak} consecutive F-grades — 14% good / 79% bad after 2 losses`);
+    }
+
+    if (entry_sequence_num >= 5) {
+      warnings.push(`Entry #${entry_sequence_num} today — NVDA maxDailyEntries is 4, should not reach here`);
+    }
+
+    if (prior_entry_grade === 'A') {
+      warnings.push('Prior entry was A-grade — NVDA continuation is 64% good, favor entry');
+    } else if (prior_entry_grade === 'B') {
+      warnings.push('Prior entry was B-grade — drops to 14%, move may be done');
+    } else if (prior_entry_grade === 'C') {
+      warnings.push('Prior entry was C-grade — NVDA after C is 13% good / 88% bad, strongly consider WAIT');
+    }
+
+    if (first_entry_grade === 'A' && entry_sequence_num > 1) {
+      warnings.push('Day started with A-grade — NVDA trending day, rest of day is 66% good');
+    }
+
+    // Direction flip warning — NVDA doesn't reverse well (15% good, 69% bad)
+    const lastDecision = context.recentDecisions[0];
+    if (lastDecision && lastDecision.direction && lastDecision.direction !== signal.direction && lastDecision.createdAt?.slice(0, 10) === today) {
+      warnings.push('Direction flipped from prior entry — NVDA reversals are 15% good / 69% bad, consider WAIT');
+    }
+
+    return {
+      ticker_tuned: true,
+      minutes_since_open: minSinceOpen,
+      entry_sequence_num,
+      prior_entry_grade,
+      prior_entry_outcome,
+      consec_f_streak,
+      first_entry_grade,
+      warnings,
+    };
+  }
+
+  // ── AAPL-specific meta-signals (Q1 2026, 177 entries) ────────────────────
+  // NOTE: AAPL entry sequence is flat (41-43% across #1-4), so no sequence
+  // warnings. Only warn on genuinely bad conditions to avoid over-filtering.
+  if (signal.ticker === 'AAPL') {
+    const warnings: string[] = [];
+
+    if (consec_f_streak >= 2) {
+      warnings.push(`Caution: ${consec_f_streak} consecutive F-grades`);
+    }
+
+    if (prior_entry_grade === 'A') {
+      warnings.push('Prior entry was A-grade — favor continuation');
+    } else if (prior_entry_grade === 'B') {
+      warnings.push('Prior entry was B-grade — move may be done');
+    }
+
+    if (first_entry_grade === 'A' && entry_sequence_num > 1) {
+      warnings.push('Day started with A-grade — favor continuation');
+    }
+
+    // Direction flip warning — AAPL reversals are very bad
+    const lastDecision = context.recentDecisions[0];
+    if (lastDecision && lastDecision.direction && lastDecision.direction !== signal.direction && lastDecision.createdAt?.slice(0, 10) === today) {
+      warnings.push('Direction flipped — AAPL reversals are very poor, consider WAIT');
+    }
+
+    return {
+      ticker_tuned: true,
+      minutes_since_open: minSinceOpen,
+      entry_sequence_num,
+      prior_entry_grade,
+      prior_entry_outcome,
+      consec_f_streak,
+      first_entry_grade,
+      warnings,
+    };
+  }
+
+  // ── Other tickers: basic session tracking only ────────────────────────────
+  // No ticker-specific win rates — just raw data for the AI to consider.
+  // Run backtest-meta-analysis.ts per ticker to generate tuned guidance.
+  return {
+    ticker_tuned: false,
+    minutes_since_open: minSinceOpen,
+    entry_sequence_num,
+    prior_entry_grade,
+    prior_entry_outcome,
+    consec_f_streak,
+    first_entry_grade,
+    warnings: consec_f_streak >= 3
+      ? [`${consec_f_streak} consecutive F-grades today — consider stopping`]
+      : [],
+  };
+}
+
 export class DecisionOrchestrator {
   async run(input: OrchestratorInput, tickerCfg?: import('../ticker-configs.js').TickerConfig): Promise<DecisionResult> {
     const { signal, option, analysis, context, timeGateOk } = input;
@@ -243,6 +553,9 @@ export class DecisionOrchestrator {
       broker_open_orders_count: context.brokerOpenOrders.length,
       account_equity: context.accountEquity,
       account_buying_power: context.accountBuyingPower,
+
+      // ── Session meta-signals (backtest-validated, Q1 2026) ──────────────
+      session_meta: buildSessionMeta(signal, context),
     }, null, 2);
 
     let rawOutput: OrchestratorRawOutput = {
