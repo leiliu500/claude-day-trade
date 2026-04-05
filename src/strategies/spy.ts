@@ -239,7 +239,10 @@ function scoreEntryQuality(tfs: TimeframeIndicators[], dir: SignalDirection): nu
   // E. TD Sequential — exhaustion risk (10%)
   const seqScore = scoreSeq(tfs, dir);
 
-  return slopeScore * 0.30 + vwapScore * 0.25 + divScore * 0.20 + adxScore * 0.15 + seqScore * 0.10;
+  // Backtest-tuned weights: DI slope (slopeScore) at 0.30 rewarded chasing —
+  // high slope = move already happening. Reduce to 0.15, redistribute to
+  // VWAP extension (mean-reversion risk) and OBV divergence (volume quality).
+  return slopeScore * 0.15 + vwapScore * 0.30 + divScore * 0.30 + adxScore * 0.15 + seqScore * 0.10;
 }
 
 // ── Main Confidence Builder (2-layer multiplicative) ────────────────────────
@@ -253,23 +256,51 @@ function buildConfidence(signal: SignalPayload): ConfidenceBreakdown {
   // Layer 2: Entry Quality — is this a good time?
   const entryQuality = scoreEntryQuality(tfs, direction);
 
-  // Multiplicative combination: both must be good for high confidence
-  // Scale to 0-1: sqrt stretches the range (pure multiplication compresses too much)
-  const rawTotal = dirStrength * entryQuality;
-  const total = clamp(Math.sqrt(rawTotal), 0, 1);
+  // Asymmetric multiplicative combination: direction strength matters more.
+  // Backtest (Mar 2026, 117 entries): entries with high dirStrength and low
+  // entryQuality were GOOD (r=+0.20); high entryQuality alone was counter-
+  // predictive (r=-0.20) — entry quality model rewards chasing.
+  // Old: sqrt(dir * quality) = dir^0.5 * quality^0.5 (equal weight)
+  // New: dir^0.65 * quality^0.35 (direction-dominant)
+  let total = clamp(Math.pow(dirStrength, 0.65) * Math.pow(entryQuality, 0.35), 0, 1);
+
+  // Soft compression above 0.78: very high confidence entries (80%+) were
+  // 0/3 GOOD in backtest — the model is most confident when chasing.
+  if (total > 0.78) {
+    total = 0.78 + (total - 0.78) * 0.30;
+  }
 
   // Map into ConfidenceBreakdown for transparency.
   // base = direction strength, the bonuses show entry quality components.
+  // Note: slopeScore is computed inside scoreEntryQuality; recompute for breakdown.
+  const sign = dirSign(direction);
+  let breakdownSlope = 0, bsW = 0;
+  for (let i = 0; i < tfs.length; i++) {
+    const tf = tfs[i]!;
+    const w = TF_WEIGHTS[i] ?? 0.1;
+    const slopeAligned = sign * tf.dmi.diSpreadSlope;
+    let s: number;
+    if (slopeAligned > 5) s = 0.95;
+    else if (slopeAligned > 2) s = 0.80;
+    else if (slopeAligned > 0) s = 0.60;
+    else if (slopeAligned > -2) s = 0.35;
+    else if (slopeAligned > -5) s = 0.15;
+    else s = 0.05;
+    breakdownSlope += s * w;
+    bsW += w;
+  }
+  breakdownSlope = bsW > 0 ? breakdownSlope / bsW : 0.5;
+
   return {
     base: dirStrength,
-    vwapBonus: scoreVwap(tfs, direction) * 0.25,           // VWAP extension (quality)
+    vwapBonus: scoreVwap(tfs, direction) * 0.30,           // VWAP extension (quality)
     diSpreadBonus: dirStrength * 0.50,                      // DI spread (direction)
-    obvBonus: entryQuality * 0.20,                          // OBV divergence (quality)
+    obvBonus: breakdownSlope * 0.15,                        // DI slope freshness (quality)
     tdAdjustment: scoreSeq(tfs, direction) * 0.10,          // TD sequential (quality)
     adxBonus: scoreADX(tfs) * 0.15,                         // ADX context (quality)
     // Repurpose fields for layer transparency
     trendPhaseBonus: entryQuality,                          // full entry quality score
-    momentumAccelBonus: dirStrength - entryQuality,         // gap between layers
+    momentumAccelBonus: dirStrength - entryQuality,         // gap between layers (positive = strong dir)
     // Unused components zeroed
     diCrossBonus: 0,
     alignmentBonus: 0,
