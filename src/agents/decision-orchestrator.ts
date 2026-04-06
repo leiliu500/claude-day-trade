@@ -131,11 +131,15 @@ function buildSessionMeta(
 ): Record<string, unknown> {
   const today = new Date().toISOString().slice(0, 10);
 
+  const toDateStr = (v: unknown): string | null =>
+    v instanceof Date ? v.toISOString().slice(0, 10) :
+    typeof v === 'string' ? v.slice(0, 10) : null;
+
   const todayEvals = context.recentEvaluations.filter(e =>
-    e.evaluatedAt?.slice(0, 10) === today
+    toDateStr(e.evaluatedAt) === today
   );
   const todayEntries = context.recentDecisions.filter(d =>
-    d.decisionType === 'NEW_ENTRY' && d.createdAt?.slice(0, 10) === today
+    d.decisionType === 'NEW_ENTRY' && toDateStr(d.createdAt) === today
   );
   const entry_sequence_num = todayEntries.length + 1;
 
