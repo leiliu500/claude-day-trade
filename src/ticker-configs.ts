@@ -57,6 +57,10 @@ export interface TickerConfig {
   // ── Per-symbol strategy (code-level overrides) ─────────────────────────────
   /** Resolved strategy — merged with defaults at startup. Do not set directly. */
   strategy: TickerStrategy;
+
+  // ── Level-based architecture ──────────────────────────────────────────────
+  /** Use the level-based signal + analysis agents instead of the indicator-based ones. */
+  useLevelBased: boolean;
 }
 
 // ── Default config — used as base for all tickers ────────────────────────────
@@ -76,6 +80,7 @@ export const DEFAULT_TICKER_CONFIG: Omit<TickerConfig, 'ticker'> = {
   entryWindowStartMin: 0,
   entryWindowEndMin: 390,
   strategy: defaultStrategy,
+  useLevelBased: false,
 };
 
 // ── Per-ticker overrides ─────────────────────────────────────────────────────
@@ -90,6 +95,7 @@ const TICKER_OVERRIDES: Record<string, Partial<Omit<TickerConfig, 'ticker' | 'st
     // Entry window: block first 30 min after open + last 30 min before close
     entryWindowStartMin: 30,
     entryWindowEndMin: 360,
+    useLevelBased: true,
   },
   QQQ: {
     // Tuned from Q1 2026 backtest: 6W/3L (67%), +63.5% P&L

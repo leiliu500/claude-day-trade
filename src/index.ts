@@ -37,6 +37,10 @@ async function main(): Promise<void> {
   AlpacaStreamManager.getInstance().connect(AUTO_TICKERS);
   console.log(`[Boot] Alpaca stream connecting — tickers: ${AUTO_TICKERS.join(',')}`);
 
+  // Subscribe sector ETFs for breadth proxy (XLF, XLK, XLE, XLV, XLI)
+  const { subscribeSectorETFs } = await import('./context/breadth-proxy.js');
+  subscribeSectorETFs();
+
   // Seed cache with 2 trading days of historical 1-min bars so indicators
   // have warmup data from boot (rather than waiting for stream to fill up).
   await AlpacaStreamManager.getInstance().seedHistoricalBars(AUTO_TICKERS);

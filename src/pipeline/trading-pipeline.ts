@@ -1,6 +1,8 @@
 import { SignalAgent } from '../agents/signal-agent.js';
+import { LevelSignalAgent } from '../agents/level-signal-agent.js';
 import { OptionAgent } from '../agents/option-agent.js';
 import { AnalysisAgent } from '../agents/analysis-agent.js';
+import { LevelAnalysisAgent } from '../agents/level-analysis-agent.js';
 import { DecisionOrchestrator } from '../agents/decision-orchestrator.js';
 import { ExecutionAgent } from '../agents/execution-agent.js';
 import { OrderAgentRegistry } from '../agents/order-agent-registry.js';
@@ -105,12 +107,14 @@ export interface PipelineResult {
 // Each ticker gets its own DecisionOrchestrator (stateful: confirmation history)
 // and AnalysisAgent (may be extended with per-symbol tuning).
 // Signal, Option, and Execution agents are stateless — shared across tickers.
-const signalAgent    = new SignalAgent();
-const optionAgent    = new OptionAgent();
-const executionAgent = new ExecutionAgent();
+const signalAgent      = new SignalAgent();
+const levelSignalAgent = new LevelSignalAgent();
+const optionAgent      = new OptionAgent();
+const executionAgent   = new ExecutionAgent();
 
 interface TickerAgents {
   analysisAgent: AnalysisAgent;
+  levelAnalysisAgent: LevelAnalysisAgent;
   decisionOrchestrator: DecisionOrchestrator;
 }
 const tickerAgents = new Map<string, TickerAgents>();
@@ -120,6 +124,7 @@ function getAgentsForTicker(ticker: string): TickerAgents {
   if (!agents) {
     agents = {
       analysisAgent: new AnalysisAgent(),
+      levelAnalysisAgent: new LevelAnalysisAgent(),
       decisionOrchestrator: new DecisionOrchestrator(),
     };
     tickerAgents.set(ticker, agents);
@@ -148,8 +153,9 @@ export async function runPipeline(
   trigger: 'AUTO' | 'MANUAL'
 ): Promise<PipelineResult> {
   const tickerCfg = getTickerConfig(ticker);
-  const { analysisAgent, decisionOrchestrator } = getAgentsForTicker(ticker);
-  console.log(`[Pipeline] Starting: ${ticker} ${profile} (${trigger}) [minConf=${tickerCfg.minConfidence}]`);
+  const { analysisAgent, levelAnalysisAgent, decisionOrchestrator } = getAgentsForTicker(ticker);
+  const useLevels = tickerCfg.useLevelBased;
+  console.log(`[Pipeline] Starting: ${ticker} ${profile} (${trigger}) [minConf=${tickerCfg.minConfidence}${useLevels ? ', LEVEL-BASED' : ''}]`);
 
   try {
     // ── Phase 1: Market hours (cheap — determines whether AI calls are needed) ─
@@ -169,7 +175,9 @@ export async function runPipeline(
       ? optionAgent.prefetchContracts(ticker, estimatedAtm)
       : undefined;
 
-    const signal = await signalAgent.run(ticker, profile, trigger, sessionId, tickerCfg);
+    const signal = useLevels
+      ? await levelSignalAgent.run(ticker, profile, trigger, sessionId, tickerCfg)
+      : await signalAgent.run(ticker, profile, trigger, sessionId, tickerCfg);
     const modeLabel = signal.signalMode === 'range'
       ? ` [RANGE mode: support=$${signal.rangeSupport?.toFixed(2)}, resist=$${signal.rangeResistance?.toFixed(2)}]`
       : signal.signalMode === 'breakout'
@@ -203,9 +211,15 @@ export async function runPipeline(
     console.log(`[Pipeline] Option: winner=${optionEval.winner ?? 'none'}, liq=${optionEval.liquidityOk}`);
 
     // ── Phase 5: Analysis (deterministic confidence; AI explanation only when market open) ──
-    const analysis = await analysisAgent.run(signal, optionEval, timeGateOk, tickerCfg);
+    const analysis = useLevels
+      ? await levelAnalysisAgent.run(signal as any, optionEval, timeGateOk, tickerCfg)
+      : await analysisAgent.run(signal, optionEval, timeGateOk, tickerCfg);
     console.log(`[Pipeline] Analysis: confidence=${analysis.confidence.toFixed(2)}, threshold=${analysis.meetsEntryThreshold}`);
-    if (analysis.confidenceBreakdown) {
+    if (useLevels && analysis.confidenceBreakdown) {
+      const cb = analysis.confidenceBreakdown;
+      // Level-based breakdown uses repurposed fields
+      console.log(`[Pipeline] LevelBreakdown[${ticker}]: base=${cb.base.toFixed(2)} lvlStr=${cb.structureBonus.toFixed(3)} interact=${cb.recentPriceActionBonus.toFixed(3)} struct=${cb.alignmentBonus.toFixed(3)} ctx=${cb.trendPhaseBonus.toFixed(3)} vol=${cb.obvBonus.toFixed(3)} vwap=${cb.vwapBonus.toFixed(3)} rr=${cb.priceVelocityBonus.toFixed(3)} failBk=${cb.orbBonus.toFixed(3)} theta=${cb.thetaDecayPenalty.toFixed(3)} total=${cb.total.toFixed(3)}`);
+    } else if (analysis.confidenceBreakdown) {
       const cb = analysis.confidenceBreakdown;
       console.log(`[Pipeline] ConfBreakdown[${ticker}]: base=${cb.base.toFixed(2)} di=${cb.diSpreadBonus.toFixed(3)} adx=${cb.adxBonus.toFixed(2)} cross=${cb.diCrossBonus.toFixed(3)} align=${cb.alignmentBonus.toFixed(2)} td=${cb.tdAdjustment.toFixed(3)} obv=${cb.obvBonus.toFixed(3)} vwap=${cb.vwapBonus.toFixed(3)} oiVol=${cb.oiVolumeBonus.toFixed(3)} pos=${cb.pricePositionAdjustment.toFixed(3)} maturity=${cb.adxMaturityPenalty.toFixed(3)} phase=${cb.trendPhaseBonus.toFixed(3)} accel=${cb.momentumAccelBonus.toFixed(3)} struct=${cb.structureBonus.toFixed(3)} orb=${cb.orbBonus.toFixed(3)} rpa=${cb.recentPriceActionBonus.toFixed(3)} trc=${cb.trContractionPenalty.toFixed(3)} lvp=${cb.lowVolPenalty.toFixed(3)} mex=${cb.moveExhaustionPenalty.toFixed(3)} con=${cb.consolidationPenalty.toFixed(3)} nlv=${cb.nearLevelPenalty.toFixed(3)} thd=${cb.thetaDecayPenalty.toFixed(3)} per=${cb.trendPersistenceBonus.toFixed(3)}`);
     }
