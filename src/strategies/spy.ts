@@ -292,8 +292,6 @@ function buildConfidence(signal: SignalPayload): ConfidenceBreakdown {
 
   const htf = tfs[tfs.length - 1]!;
   const ltf = tfs[0]!;
-  const ds = dirSign(direction);
-
   // ── A. Leading indicator VETO ────────────────────────────────────────────
   // LTF OBV divergence opposing entry = volume already reversing.
   // April 6 10:01: LTF OBV bearish divergence while entering bullish → 75% conf.
@@ -305,9 +303,6 @@ function buildConfidence(signal: SignalPayload): ConfidenceBreakdown {
       (direction === 'bearish' && ltf.obv.divergence === 'bullish');
 
     if (ltfOBVOpposes) {
-      // Heavy penalty: OBV divergence means volume has already reversed.
-      // The trend-following model is entering a confirmed trend, but the
-      // smart money (volume) is already going the other way.
       total = Math.max(0, total - 0.12);
     }
   }
