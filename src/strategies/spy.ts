@@ -272,19 +272,100 @@ function buildConfidence(signal: SignalPayload): ConfidenceBreakdown {
     total = 0.78 + (total - 0.78) * 0.30;
   }
 
-  // ── Soft penalties for conditions the 2-layer model misses ────────────────
-  // The multiplicative model captures direction strength and entry timing but
-  // lacks awareness of: prior-day structure, price action reversals, move
-  // exhaustion, ADX maturity, and regime clarity. These are the same factors
-  // that caused zero-entry days and overfitting in the 29-component model.
-  // Applied as smooth subtractive penalties (not hard caps).
+  // ── Leading indicator veto + early entry detection ─────────────────────────
+  //
+  // The 2-layer model (dirStrength * entryQuality) uses lagging indicators:
+  // DI spread, OBV trend, alignment. These peak at the END of moves, making
+  // the model most confident at the worst time to enter.
+  //
+  // Leading indicators flip 4-10 min before lagging ones:
+  //   - LTF OBV divergence: 4 min before top on April 6
+  //   - LTF velocity reversal: 3-4 min after turn
+  //   - LTF DMI flip: 5-10 min after turn
+  //
+  // Two mechanisms:
+  //   A. VETO: When LTF leading indicators oppose the entry direction,
+  //      apply a heavy penalty (0.10-0.15) that kills the entry.
+  //   B. BOOST: When LTF leading indicators converge on a new direction
+  //      but lagging indicators haven't caught up, boost confidence so
+  //      the system enters the move 12-20 min after the turn instead of 50-70.
 
   const htf = tfs[tfs.length - 1]!;
   const ltf = tfs[0]!;
+  const ds = dirSign(direction);
+
+  // ── A. Leading indicator VETO ────────────────────────────────────────────
+  // LTF OBV divergence opposing entry = volume already reversing.
+  // April 6 10:01: LTF OBV bearish divergence while entering bullish → 75% conf.
+  // This should have been a hard veto. Currently the divergence only contributes
+  // ~0.03 through entry quality layer — not enough.
+  {
+    const ltfOBVOpposes =
+      (direction === 'bullish' && ltf.obv.divergence === 'bearish') ||
+      (direction === 'bearish' && ltf.obv.divergence === 'bullish');
+
+    if (ltfOBVOpposes) {
+      // Heavy penalty: OBV divergence means volume has already reversed.
+      // The trend-following model is entering a confirmed trend, but the
+      // smart money (volume) is already going the other way.
+      total = Math.max(0, total - 0.12);
+    }
+  }
+
+  // LTF OBV trend + velocity both opposing = move is over, price turning.
+  // Weaker than divergence but still significant when both agree.
+  {
+    const ltfOBVTrendOpposes =
+      (direction === 'bullish' && ltf.obv.trend === 'bearish') ||
+      (direction === 'bearish' && ltf.obv.trend === 'bullish');
+    const ltfVelOpposes = ltf.priceVelocity
+      ? ((direction === 'bullish' && ltf.priceVelocity.directionalVelocity < -0.015) ||
+         (direction === 'bearish' && ltf.priceVelocity.directionalVelocity > 0.015))
+      : false;
+
+    if (ltfOBVTrendOpposes && ltfVelOpposes) {
+      total = Math.max(0, total - 0.08);
+    }
+  }
+
+  // ── B. Leading indicator convergence BOOST ───────────────────────────────
+  // When LTF DMI + OBV + velocity all agree on the ENTRY direction but
+  // higher TFs haven't caught up yet → this is an early move signal.
+  // April 6 13:26: LTF DMI=bullish, OBV=bullish, vel=+0.035 — but system
+  // direction was still bearish at 44% conf. By the time MTF confirmed,
+  // the entry was 71 min late.
+  //
+  // Boost only fires when alignment is 'mixed' or 'mtf_ltf_aligned' (proving
+  // the higher TFs haven't caught up). If all_aligned, the lagging model is
+  // already scoring high — no boost needed.
+  {
+    const ltfDMIConfirms =
+      (direction === 'bullish' && ltf.dmi.trend === 'bullish') ||
+      (direction === 'bearish' && ltf.dmi.trend === 'bearish');
+    const ltfOBVConfirms =
+      (direction === 'bullish' && ltf.obv.trend === 'bullish') ||
+      (direction === 'bearish' && ltf.obv.trend === 'bearish');
+    const ltfVelConfirms = ltf.priceVelocity
+      ? ((direction === 'bullish' && ltf.priceVelocity.directionalVelocity > 0.01) ||
+         (direction === 'bearish' && ltf.priceVelocity.directionalVelocity < -0.01))
+      : false;
+
+    const leadingConvergence = ltfDMIConfirms && ltfOBVConfirms && ltfVelConfirms;
+    const htfLags = htf.dmi.trend !== direction; // HTF hasn't caught up
+    const isEarlyMove = signal.leadingSignalOverride || signal.reversalOverride;
+
+    if (leadingConvergence && htfLags) {
+      // 3 LTF indicators converge on entry direction while HTF still opposes.
+      // This is the signature of a turning point entry. Boost confidence.
+      total = Math.min(1, total + 0.10);
+    } else if (leadingConvergence && isEarlyMove) {
+      // Leading override fired + LTF indicators confirm. Smaller boost
+      // when HTF has already caught up (less upside remaining).
+      total = Math.min(1, total + 0.05);
+    }
+  }
 
   // ── Soft penalties calibrated for SPY's 2-layer model ──
-  // SPY's model produces 0.50-0.78 range. Penalties must be small (0.02-0.05)
-  // to differentiate good from bad setups without killing all entries.
 
   // 1. Recent price action: last 2 bars opposing → reversal warning
   if (ltf.bars.length >= 3) {
