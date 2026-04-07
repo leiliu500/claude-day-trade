@@ -160,10 +160,12 @@ function computeTimeframeIndicators(
 ): TimeframeIndicators {
   const skipGaps = timeframe !== '1d';
   const dmiPeriod = isLTF ? 8 : 14;
+  const dmi = computeDMI(bars, dmiPeriod, skipGaps);
   return {
     timeframe,
     bars,
-    dmi: computeDMI(bars, dmiPeriod, skipGaps),
+    dmi,
+    fastDmi: isLTF ? dmi : computeDMI(bars, 7, skipGaps),
     atr: computeATR(bars, 14, skipGaps),
     obv: computeOBV(bars, 14),
     td: computeTD(bars),

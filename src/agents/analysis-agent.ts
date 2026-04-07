@@ -103,16 +103,35 @@ function computeConfidence(signal: SignalPayload, option: OptionEvaluation): Con
     const mtfConvCross = signal.direction === 'bullish' ? mtf.dmi.convergenceCrossUp : mtf.dmi.convergenceCrossDown;
     if (htfConvCross) diCrossBonus += 0.06;
     if (mtfConvCross) diCrossBonus += 0.03;
+    // Fast DMI cross: period-7 DMI crossed on HTF/MTF but regular DMI-14 hasn't yet.
+    // Catches sharp reversals ~5-7 bars earlier than the standard cross.
+    const htfFastAligned = signal.direction === 'bullish' ? htf.fastDmi.recentCrossUp : htf.fastDmi.recentCrossDown;
+    const mtfFastAligned = signal.direction === 'bullish' ? mtf.fastDmi.recentCrossUp : mtf.fastDmi.recentCrossDown;
+    const htfFastAdverse = signal.direction === 'bullish' ? htf.fastDmi.recentCrossDown : htf.fastDmi.recentCrossUp;
+    if (htfFastAligned && !htfAligned) diCrossBonus += 0.05; // fast HTF cross leading regular
+    if (mtfFastAligned && !mtfAligned) diCrossBonus += 0.02; // fast MTF cross leading regular
+    if (htfFastAdverse && !htfAdverse) diCrossBonus -= 0.04; // fast adverse = momentum fading
+    // Leading cross: LTF+MTF both crossed in signal direction while HTF DI lines are
+    // close (spread < 5) and converging — HTF cross is imminent, don't wait for it.
+    const ltfAligned = signal.direction === 'bullish' ? ltf.dmi.recentCrossUp : ltf.dmi.recentCrossDown;
+    const mtfRecentAligned = signal.direction === 'bullish' ? mtf.dmi.recentCrossUp : mtf.dmi.recentCrossDown;
+    const htfSpread = Math.abs(htf.dmi.plusDI - htf.dmi.minusDI);
+    const htfApproachingCross = htfSpread < 5 && htf.dmi.diConverging;
+    if (ltfAligned && mtfRecentAligned && htfApproachingCross && !htfAligned) {
+      diCrossBonus += 0.06; // treat as early HTF cross
+    }
     // Discount cross bonus when HTF ADX is low AND declining — a cross in a fading
     // low-ADX market is unreliable (loser #5: ADX=13, slope=-2.1).
     // Any positive ADX slope means trend is emerging — trust the cross.
-    // Skip discount for convergence crosses — convergence itself validates the setup.
-    if (diCrossBonus > 0 && htf.dmi.adx < 20 && htf.dmi.adxSlope <= 0 && !htfConvCross) {
+    // Skip discount for convergence/leading/fast crosses — validated by structure.
+    const hasLeadingCross = ltfAligned && mtfRecentAligned && htfApproachingCross;
+    const hasFastCross = htfFastAligned && !htfAligned;
+    if (diCrossBonus > 0 && htf.dmi.adx < 20 && htf.dmi.adxSlope <= 0 && !htfConvCross && !hasLeadingCross && !hasFastCross) {
       diCrossBonus *= 0.50; // half credit for crosses in low-ADX with declining momentum
     }
     // DI Cross without established trend is unreliable — cap at +0.05
-    // Convergence crosses bypass this cap — the squeeze validates the signal.
-    if (diCrossBonus > 0.05 && htf.dmi.adx < 25 && !htfConvCross) diCrossBonus = 0.05;
+    // Convergence, leading, and fast crosses bypass this cap.
+    if (diCrossBonus > 0.05 && htf.dmi.adx < 25 && !htfConvCross && !hasLeadingCross && !hasFastCross) diCrossBonus = 0.05;
     diCrossBonus = Math.max(-0.06, Math.min(0.15, diCrossBonus));
   }
 
@@ -1618,6 +1637,8 @@ async function generateExplanation(
       adx_slope: parseFloat(tf.dmi.adxSlope.toFixed(1)),
       di_spread_slope: parseFloat(tf.dmi.diSpreadSlope.toFixed(1)),
       di_cross: diCross,
+      fast_di_cross: tf.fastDmi.recentCrossUp ? 'bullish' : tf.fastDmi.recentCrossDown ? 'bearish' : 'none',
+      di_converging: tf.dmi.diConverging,
       obv_trend: tf.obv.trend,
       obv_divergence: tf.obv.divergence,
       td_setup: tf.td.setup,

@@ -96,10 +96,12 @@ function computeTimeframeIndicators(
   // which misses the first 30+ minutes of a move. Period 8 halves this lag
   // while still filtering noise. HTF/MTF keep 14 for stability.
   const dmiPeriod = isLTF ? 8 : 14;
+  const dmi = computeDMI(bars, dmiPeriod, skipGaps);
   return {
     timeframe,
     bars,
-    dmi: computeDMI(bars, dmiPeriod, skipGaps),
+    dmi,
+    fastDmi: isLTF ? dmi : computeDMI(bars, 7, skipGaps),
     atr: computeATR(bars, 14, skipGaps),
     obv: computeOBV(bars, 14),
     td: computeTD(bars),

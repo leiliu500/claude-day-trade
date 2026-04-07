@@ -1120,10 +1120,13 @@ function renderAnalysisCard(sig) {
             ? `<span class="${adxSlope > 0 ? 'bullish' : adxSlope < 0 ? 'bearish' : ''}">${adxSlope > 0 ? '+' : ''}${adxSlope.toFixed(1)}</span>`
             : '—';
           // DI cross indicator — highlight growth crosses (phase-change signal)
+          const fastDmi = tf.fastDmi || {};
           const diCrossStr = dmi.convergenceCrossUp ? '<span class="bullish" style="font-weight:bold">▲ CONV</span>'
             : dmi.convergenceCrossDown ? '<span class="bearish" style="font-weight:bold">▼ CONV</span>'
             : dmi.growthCrossUp ? '<span class="bullish" style="font-weight:bold">▲ GROWTH</span>'
             : dmi.growthCrossDown ? '<span class="bearish" style="font-weight:bold">▼ GROWTH</span>'
+            : (fastDmi.recentCrossUp && !dmi.crossedUp) ? '<span class="bullish" style="font-style:italic">▲ fast</span>'
+            : (fastDmi.recentCrossDown && !dmi.crossedDown) ? '<span class="bearish" style="font-style:italic">▼ fast</span>'
             : dmi.crossedUp ? '<span class="bullish">▲ cross</span>'
             : dmi.crossedDown ? '<span class="bearish">▼ cross</span>'
             : '—';

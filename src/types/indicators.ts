@@ -91,6 +91,7 @@ export interface TimeframeIndicators {
   timeframe: Timeframe;
   bars: OHLCVBar[];
   dmi: DMIResult;
+  fastDmi: DMIResult;   // period-7 DMI for early cross detection (MTF/HTF only; same as dmi on LTF)
   atr: ATRResult;
   obv: OBVResult;
   td: TDResult;

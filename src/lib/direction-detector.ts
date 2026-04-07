@@ -65,7 +65,20 @@ export function detectDirection(
     computeDMI(mtfBars, 10, skipSessionGaps),
     computeDMI(htfBars, 14, skipSessionGaps),
   ];
+  // Fast HTF DMI (period 7) — catches sharp reversals 5-7 bars before the regular HTF DMI-14.
+  // Gets a vote only when it disagrees with the regular HTF (i.e. it has crossed but HTF-14 hasn't).
+  const htfFastDmi = computeDMI(htfBars, 7, skipSessionGaps);
   const directionVotes = dmiOnly.map(d => d.trend);
+  // Fast HTF vote: when fast DMI-7 disagrees with regular HTF DMI-14, it's an early
+  // reversal signal. Weight depends on how much the regular HTF is fading:
+  //   - HTF spread shrinking (diSpreadSlope < -1): double vote (forces direction flip)
+  //   - Otherwise: single vote (tie-breaker only)
+  if (htfFastDmi.trend !== 'neutral' && htfFastDmi.trend !== dmiOnly[2].trend) {
+    directionVotes.push(htfFastDmi.trend);
+    if (dmiOnly[2].diSpreadSlope < -1) {
+      directionVotes.push(htfFastDmi.trend); // double weight — HTF is fading, trust the fast signal
+    }
+  }
   const bullishVotes = directionVotes.filter(v => v === 'bullish').length;
   const bearishVotes = directionVotes.filter(v => v === 'bearish').length;
   let direction: SignalDirection =
@@ -93,7 +106,12 @@ export function detectDirection(
   if (direction !== 'neutral' && ltfDmi && htfDmi) {
     const ltfOpposesDir = direction === 'bullish' ? ltfDmi.trend === 'bearish'
                                                    : ltfDmi.trend === 'bullish';
-    const htfFading = htfDmi.diSpreadSlope < -2;
+    // Fast DMI-5 on LTF: updates every 1m, catches direction changes ~5 bars before DMI-8.
+    // Only used as an opposition signal, NOT as an HTF fading signal (too noisy for that).
+    const ltfFastDmi = computeDMI(ltfBars.slice(-30), 5, skipSessionGaps);
+    const ltfFastOpposesDir = direction === 'bullish' ? ltfFastDmi.trend === 'bearish'
+                                                      : ltfFastDmi.trend === 'bullish';
+    const htfFading = htfDmi.diSpreadSlope < -2 || htfFastDmi.diSpreadSlope < -5;
     const htfBarsForRange = htfBars.slice(-20);
     let rangeHigh = -Infinity, rangeLow = Infinity;
     for (const b of htfBarsForRange) {
@@ -103,14 +121,14 @@ export function detectDirection(
     const rangeSize = rangeHigh - rangeLow;
     const lastPrice = htfBarsForRange[htfBarsForRange.length - 1]?.close ?? 0;
     const rangePos = rangeSize > 0 ? (lastPrice - rangeLow) / rangeSize : 0.5;
-    const atExtreme = direction === 'bullish' ? rangePos >= 0.75 : rangePos <= 0.25;
+    const atExtreme = direction === 'bullish' ? rangePos >= 0.70 : rangePos <= 0.30;
 
     const velForReversal = computePriceVelocity(ltfBars);
     const velOpposesDir = (direction === 'bullish' && velForReversal.directionalVelocity < -0.05)
                        || (direction === 'bearish' && velForReversal.directionalVelocity > 0.05);
     const rocOpposesDir = (direction === 'bullish' && extRoc < -0.06)
                        || (direction === 'bearish' && extRoc > 0.06);
-    if ((ltfOpposesDir || velOpposesDir || rocOpposesDir) && htfFading && atExtreme) {
+    if ((ltfOpposesDir || ltfFastOpposesDir || velOpposesDir || rocOpposesDir) && htfFading && atExtreme) {
       direction = direction === 'bullish' ? 'bearish' : 'bullish';
       reversalOverride = true;
     }

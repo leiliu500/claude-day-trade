@@ -107,6 +107,7 @@ function computeTimeframeIndicators(bars: OHLCVBar[], timeframe: Timeframe, dire
   return {
     timeframe, bars,
     dmi: computeDMI(bars, isLTF ? 8 : 14, skipGaps),
+    fastDmi: computeDMI(bars, isLTF ? 8 : 7, skipGaps),
     atr: computeATR(bars, 14, skipGaps),
     obv: computeOBV(bars, 14),
     td: computeTD(bars),

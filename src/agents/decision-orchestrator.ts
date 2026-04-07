@@ -291,6 +291,10 @@ export class DecisionOrchestrator {
           tfPrice < tfLower          ? 'below_2sigma' :
           tfPrice < tfVwap - tfDev   ? 'below_1sigma' : 'near_vwap';
         const diCross =
+          tf.dmi.convergenceCrossUp  ? 'bullish_convergence' :
+          tf.dmi.convergenceCrossDown ? 'bearish_convergence' :
+          tf.dmi.growthCrossUp  ? 'bullish_growth' :
+          tf.dmi.growthCrossDown ? 'bearish_growth' :
           tf.dmi.crossedUp   ? 'bullish' :
           tf.dmi.crossedDown ? 'bearish' : 'none';
         return {
@@ -301,6 +305,8 @@ export class DecisionOrchestrator {
           di_plus: tf.dmi.plusDI.toFixed(1),
           di_minus: tf.dmi.minusDI.toFixed(1),
           di_cross: diCross,
+          fast_di_cross: tf.fastDmi.recentCrossUp ? 'bullish' : tf.fastDmi.recentCrossDown ? 'bearish' : 'none',
+          di_converging: tf.dmi.diConverging,
           td_setup: tf.td.setup,
           td_countdown: tf.td.countdown,
           obv_trend: tf.obv.trend,
@@ -500,10 +506,21 @@ export class DecisionOrchestrator {
       const ltfTf = signal.timeframes[0];
       // Tightened: require conf >= 0.65, ADX >= 20, positive price action, no near-level penalty.
       // Backtest showed phase-change entries with low ADX/negative PA/near-level are traps.
+      const mtfTf = signal.timeframes[1] ?? signal.timeframes[0];
+      // Leading cross: LTF+MTF crossed in signal direction, HTF DI spread < 5 and converging
+      const htfHasCross = (signal.direction === 'bullish' ? htfTf.dmi.growthCrossUp : htfTf.dmi.growthCrossDown) ||
+        (signal.direction === 'bullish' ? htfTf.dmi.convergenceCrossUp : htfTf.dmi.convergenceCrossDown);
+      const ltfCrossed = signal.direction === 'bullish' ? ltfTf!.dmi.recentCrossUp : ltfTf!.dmi.recentCrossDown;
+      const mtfCrossed = signal.direction === 'bullish' ? mtfTf.dmi.recentCrossUp : mtfTf.dmi.recentCrossDown;
+      const htfLeading = !htfHasCross && ltfCrossed && mtfCrossed &&
+        Math.abs(htfTf.dmi.plusDI - htfTf.dmi.minusDI) < 5 && htfTf.dmi.diConverging;
+      // Fast DMI cross: period-7 DMI crossed on HTF but regular DMI-14 hasn't yet
+      const htfFastCross = (signal.direction === 'bullish' ? htfTf.fastDmi.recentCrossUp : htfTf.fastDmi.recentCrossDown) &&
+        !htfHasCross;
       const phaseChangeStructuralOk = !!htfTf &&
         analysis.confidence >= 0.65 &&
         signal.alignment !== 'mixed' &&
-        (signal.direction === 'bullish' ? htfTf.dmi.growthCrossUp : htfTf.dmi.growthCrossDown) &&
+        (htfHasCross || htfLeading || htfFastCross) &&
         htfTf.dmi.adx >= 20 &&
         analysis.confidenceBreakdown.recentPriceActionBonus >= 0 &&
         analysis.confidenceBreakdown.nearLevelPenalty > -0.03;
@@ -749,8 +766,9 @@ export class DecisionOrchestrator {
       } else if (phaseChangeOk && priorCount < 1 && !overrideOk) {
         isPhaseChangeOverride = true;
         const side = signal.direction === 'bullish' ? 'CALL' : 'PUT';
-        rawOutput.reasoning = `[PHASE-CHANGE OVERRIDE] HTF DI cross ${signal.direction} + rising ADX → immediate ${side} entry (no 2-stage wait). ${rawOutput.reasoning}`;
-        console.log(`[DecisionOrchestrator] NEW_ENTRY phase-change override applied — ${side} (priorCount=${priorCount}, confidence=${analysis.confidence.toFixed(2)}, alignment=${signal.alignment}, htfADXSlope=${htfTf!.dmi.adxSlope.toFixed(1)})`);
+        const crossType = htfFastCross ? 'Fast DMI-7 cross (leading DMI-14)' : htfLeading ? 'LTF+MTF leading cross (HTF converging)' : 'HTF DI cross';
+        rawOutput.reasoning = `[PHASE-CHANGE OVERRIDE] ${crossType} ${signal.direction} + rising ADX → immediate ${side} entry (no 2-stage wait). ${rawOutput.reasoning}`;
+        console.log(`[DecisionOrchestrator] NEW_ENTRY phase-change override applied — ${side} ${htfFastCross ? '[FAST]' : htfLeading ? '[LEADING]' : ''} (priorCount=${priorCount}, confidence=${analysis.confidence.toFixed(2)}, alignment=${signal.alignment}, htfADXSlope=${htfTf!.dmi.adxSlope.toFixed(1)}, htfSpread=${Math.abs(htfTf!.dmi.plusDI - htfTf!.dmi.minusDI).toFixed(1)})`);
       }
     }
 
