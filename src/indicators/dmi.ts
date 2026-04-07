@@ -9,7 +9,7 @@ import type { DMIResult } from '../types/indicators.js';
  */
 export function computeDMI(bars: OHLCVBar[], period = 14, skipSessionGaps = false): DMIResult {
   if (bars.length < period + 1) {
-    return { plusDI: 0, minusDI: 0, adx: 0, trend: 'neutral', adxStrength: 'weak', crossedUp: false, crossedDown: false, recentCrossUp: false, recentCrossDown: false, adxBarsAbove25: 0, adxSlope: 0, diSpreadSlope: 0, growthCrossUp: false, growthCrossDown: false };
+    return { plusDI: 0, minusDI: 0, adx: 0, trend: 'neutral', adxStrength: 'weak', crossedUp: false, crossedDown: false, recentCrossUp: false, recentCrossDown: false, adxBarsAbove25: 0, adxSlope: 0, diSpreadSlope: 0, growthCrossUp: false, growthCrossDown: false, diConverging: false, convergenceCrossUp: false, convergenceCrossDown: false };
   }
 
   const n = bars.length;
@@ -132,5 +132,27 @@ export function computeDMI(bars: OHLCVBar[], period = 14, skipSessionGaps = fals
   const growthCrossUp   = recentCrossUp   && adxSlope > 0;
   const growthCrossDown = recentCrossDown && adxSlope > 0;
 
-  return { plusDI, minusDI, adx, trend, adxStrength, crossedUp, crossedDown, recentCrossUp, recentCrossDown, adxBarsAbove25, adxSlope, diSpreadSlope, growthCrossUp, growthCrossDown };
+  // DI convergence: detect when DI+ and DI- have been narrowing (spread shrinking) over last 5 bars.
+  // A cross after convergence is high-conviction — the lines squeezed together then flipped.
+  let diConverging = false;
+  const convLookback = 5;
+  if (diPlusArr.length >= convLookback + 1) {
+    const spreads: number[] = [];
+    for (let i = diPlusArr.length - convLookback - 1; i < diPlusArr.length; i++) {
+      spreads.push(Math.abs((diPlusArr[i] ?? 0) - (diMinusArr[i] ?? 0)));
+    }
+    // Convergence = spread was shrinking: compare first half avg vs second half avg
+    const firstHalf = spreads.slice(0, 3);
+    const secondHalf = spreads.slice(3);
+    const firstAvg = firstHalf.reduce((a, b) => a + b, 0) / firstHalf.length;
+    const secondAvg = secondHalf.reduce((a, b) => a + b, 0) / secondHalf.length;
+    // Lines were converging if earlier spread was wider than recent spread by at least 2 pts
+    diConverging = firstAvg - secondAvg >= 2;
+  }
+
+  // Convergence cross: DI lines were converging AND just crossed — high-conviction entry
+  const convergenceCrossUp   = recentCrossUp   && diConverging;
+  const convergenceCrossDown = recentCrossDown && diConverging;
+
+  return { plusDI, minusDI, adx, trend, adxStrength, crossedUp, crossedDown, recentCrossUp, recentCrossDown, adxBarsAbove25, adxSlope, diSpreadSlope, growthCrossUp, growthCrossDown, diConverging, convergenceCrossUp, convergenceCrossDown };
 }

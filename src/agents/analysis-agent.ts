@@ -98,15 +98,22 @@ function computeConfidence(signal: SignalPayload, option: OptionEvaluation): Con
     // Growth cross (DI cross + rising ADX) is a phase-change signal — extra bonus
     const htfGrowth = signal.direction === 'bullish' ? htf.dmi.growthCrossUp : htf.dmi.growthCrossDown;
     if (htfGrowth) diCrossBonus += 0.04;
+    // Convergence cross — DI lines squeezed together then crossed. High-conviction entry.
+    const htfConvCross = signal.direction === 'bullish' ? htf.dmi.convergenceCrossUp : htf.dmi.convergenceCrossDown;
+    const mtfConvCross = signal.direction === 'bullish' ? mtf.dmi.convergenceCrossUp : mtf.dmi.convergenceCrossDown;
+    if (htfConvCross) diCrossBonus += 0.06;
+    if (mtfConvCross) diCrossBonus += 0.03;
     // Discount cross bonus when HTF ADX is low AND declining — a cross in a fading
     // low-ADX market is unreliable (loser #5: ADX=13, slope=-2.1).
     // Any positive ADX slope means trend is emerging — trust the cross.
-    if (diCrossBonus > 0 && htf.dmi.adx < 20 && htf.dmi.adxSlope <= 0) {
+    // Skip discount for convergence crosses — convergence itself validates the setup.
+    if (diCrossBonus > 0 && htf.dmi.adx < 20 && htf.dmi.adxSlope <= 0 && !htfConvCross) {
       diCrossBonus *= 0.50; // half credit for crosses in low-ADX with declining momentum
     }
     // DI Cross without established trend is unreliable — cap at +0.05
-    if (diCrossBonus > 0.05 && htf.dmi.adx < 25) diCrossBonus = 0.05;
-    diCrossBonus = Math.max(-0.06, Math.min(0.10, diCrossBonus));
+    // Convergence crosses bypass this cap — the squeeze validates the signal.
+    if (diCrossBonus > 0.05 && htf.dmi.adx < 25 && !htfConvCross) diCrossBonus = 0.05;
+    diCrossBonus = Math.max(-0.06, Math.min(0.15, diCrossBonus));
   }
 
   // Alignment bonus
@@ -1595,6 +1602,8 @@ async function generateExplanation(
         tfPrice < tfLower             ? 'below_2sigma' :
         tfPrice < tfVwap - tfDev      ? 'below_1sigma' : 'near_vwap';
       const diCross =
+        tf.dmi.convergenceCrossUp  ? 'bullish_convergence' :
+        tf.dmi.convergenceCrossDown ? 'bearish_convergence' :
         tf.dmi.growthCrossUp  ? 'bullish_growth' :
         tf.dmi.growthCrossDown ? 'bearish_growth' :
         tf.dmi.crossedUp   ? 'bullish' :

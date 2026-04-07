@@ -18,6 +18,9 @@ export interface DMIResult {
   diSpreadSlope: number;  // directional DI spread change over last 3 bars (positive = widening)
   growthCrossUp: boolean;   // DI+ crossed above DI- within last 2 bars (still holding) AND ADX slope > 0 (bullish phase change)
   growthCrossDown: boolean; // DI- crossed above DI+ within last 2 bars (still holding) AND ADX slope > 0 (bearish phase change)
+  diConverging: boolean;    // DI spread narrowing over last 5 bars (lines getting closer)
+  convergenceCrossUp: boolean;   // DI+ crossed above DI- after convergence (high-conviction bullish)
+  convergenceCrossDown: boolean; // DI- crossed above DI+ after convergence (high-conviction bearish)
 }
 
 export interface ATRResult {
