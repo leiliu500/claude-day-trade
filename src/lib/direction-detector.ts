@@ -98,12 +98,13 @@ export function detectDirection(
        / todayBarsForRoc[rocLen - 1 - rocLookback]!.close) * 100
     : 0;
 
-  // ── Reversal override ──────────────────────────────────────────────────────
-  // When LTF/velocity/ROC opposes majority, HTF momentum is fading, and price
-  // is at range extreme → the LTF is leading a direction change.
   let reversalOverride = false;
   const [ltfDmi, mtfDmi, htfDmi] = dmiOnly;
-  if (direction !== 'neutral' && ltfDmi && htfDmi) {
+
+  // ── Reversal override (DMI-based) ─────────────────────────────────────────
+  // When LTF/velocity/ROC opposes majority, HTF momentum is fading, and price
+  // is at range extreme → the LTF is leading a direction change.
+  if (!reversalOverride && direction !== 'neutral' && ltfDmi && htfDmi) {
     const ltfOpposesDir = direction === 'bullish' ? ltfDmi.trend === 'bearish'
                                                    : ltfDmi.trend === 'bullish';
     // Fast DMI-5 on LTF: updates every 1m, catches direction changes ~5 bars before DMI-8.

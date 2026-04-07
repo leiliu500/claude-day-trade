@@ -595,21 +595,19 @@ export class AlpacaStreamManager extends EventEmitter {
 
   /**
    * Aggregate 1-minute bars into N-minute bars aligned to epoch boundaries.
-   * Incomplete (in-progress) buckets are excluded — only complete bars.
+   * Includes the in-progress (partial) bucket — gives the direction detector
+   * fresh HTF data every 1m instead of waiting for 5m bar completion.
    */
   private _aggregate(oneMins: OHLCVBar[], timeframe: Timeframe): OHLCVBar[] {
     const n = this._tfMinutes(timeframe);
     if (n <= 1) return [...oneMins];
 
     const bucketMs = n * 60_000;
-    const nowBucket = Math.floor(Date.now() / bucketMs) * bucketMs;
 
     const groups = new Map<number, OHLCVBar[]>();
     for (const bar of oneMins) {
       const ts = new Date(bar.timestamp).getTime();
       const bucket = Math.floor(ts / bucketMs) * bucketMs;
-      // Exclude the currently-forming bucket (not yet complete)
-      if (bucket >= nowBucket) continue;
       let g = groups.get(bucket);
       if (!g) { g = []; groups.set(bucket, g); }
       g.push(bar);

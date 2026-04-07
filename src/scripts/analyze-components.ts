@@ -80,13 +80,11 @@ function aggregate1mBars(oneMins: OHLCVBar[], timeframe: Timeframe, upToTs: numb
   const n = { '1m': 1, '2m': 2, '3m': 3, '5m': 5, '15m': 15, '1h': 60, '1d': 1440 }[timeframe] ?? 1;
   if (n <= 1) return oneMins.filter(b => new Date(b.timestamp).getTime() <= upToTs);
   const bucketMs = n * 60_000;
-  const currentBucket = Math.floor(upToTs / bucketMs) * bucketMs;
   const groups = new Map<number, OHLCVBar[]>();
   for (const bar of oneMins) {
     const ts = new Date(bar.timestamp).getTime();
     if (ts > upToTs) continue;
     const bucket = Math.floor(ts / bucketMs) * bucketMs;
-    if (bucket >= currentBucket) continue;
     let g = groups.get(bucket);
     if (!g) { g = []; groups.set(bucket, g); }
     g.push(bar);

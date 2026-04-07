@@ -118,15 +118,13 @@ function aggregate1mBars(oneMins: OHLCVBar[], timeframe: Timeframe, upToTs: numb
   if (n <= 1) return oneMins.filter(b => new Date(b.timestamp).getTime() <= upToTs);
 
   const bucketMs = n * 60_000;
-  // Current bucket at upToTs is still forming — exclude it
-  const currentBucket = Math.floor(upToTs / bucketMs) * bucketMs;
-
+  // Include the partial (in-progress) bucket — gives the direction detector
+  // fresh HTF data every 1m instead of waiting for 5m bar completion.
   const groups = new Map<number, OHLCVBar[]>();
   for (const bar of oneMins) {
     const ts = new Date(bar.timestamp).getTime();
     if (ts > upToTs) continue; // future bar
     const bucket = Math.floor(ts / bucketMs) * bucketMs;
-    if (bucket >= currentBucket) continue; // in-progress bucket
     let g = groups.get(bucket);
     if (!g) { g = []; groups.set(bucket, g); }
     g.push(bar);
