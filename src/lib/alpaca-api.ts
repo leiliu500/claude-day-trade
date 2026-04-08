@@ -100,6 +100,25 @@ export async function submitLimitSellOrder(
   }
 }
 
+/** Replace (reprice) an existing order via PATCH. Returns the replacement order or null on failure. */
+export async function replaceOrderPrice(
+  orderId: string,
+  newLimitPrice: number,
+): Promise<AlpacaOrderResponse | null> {
+  try {
+    const res = await fetch(`${config.ALPACA_BASE_URL}/v2/orders/${orderId}`, {
+      method: 'PATCH',
+      headers: headers(),
+      signal: AbortSignal.timeout(10_000),
+      body: JSON.stringify({ limit_price: newLimitPrice.toFixed(2) }),
+    });
+    if (!res.ok) return null;
+    return res.json() as Promise<AlpacaOrderResponse>;
+  } catch {
+    return null;
+  }
+}
+
 /** Cancel a single order by ID. Returns true if cancelled successfully. */
 export async function cancelOrder(orderId: string): Promise<boolean> {
   try {

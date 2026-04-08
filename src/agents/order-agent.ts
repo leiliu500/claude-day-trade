@@ -41,6 +41,7 @@ import {
   getAlpacaPositionPrices,
   cancelOpenOrdersForSymbol,
   fetchOptionMid,
+  replaceOrderPrice,
 } from '../lib/alpaca-api.js';
 import { AlpacaStreamManager } from '../lib/alpaca-stream.js';
 import type { TradeUpdateEvent } from '../lib/alpaca-stream.js';
@@ -138,6 +139,9 @@ const FILL_TIMEOUT_MS           = 90_000;   // cancel unfilled limit order after
 const FILL_STALE_CHECK_MS    = 20_000; // first stale check at 20 s (was 45 s — too late to catch reversals)
 const FILL_STALE_ABORT_PCT   = 0.10;  // cancel if current mid dropped > 10% below limit price (was 15%)
 const UNDERLYING_DRIFT_PCT   = 0.0025; // 0.25% underlying move against signal direction → stale signal exit
+const REPRICE_AFTER_MS       = 15_000; // reprice unfilled limit order after 15 s
+const REPRICE_INTERVAL_MS    = 15_000; // re-check and reprice every 15 s thereafter
+const REPRICE_MAX_DRIFT_PCT  = 0.05;   // abandon (don't reprice) if mid moved > 5% from original limit
 
 const openai            = new OpenAI({ apiKey: config.OPENAI_API_KEY });
 const ORDER_AGENT_SKILL = loadSkill('order-agent');
@@ -192,6 +196,8 @@ export class OrderAgent {
   private priceHistory: { price: number; ts: number }[] = [];
   /** True once we've scaled out (sold half) at the profit-take threshold — prevents double-reduce. */
   private hasScaledOut = false;
+  /** Timestamp (ms) of last limit-order reprice — throttles reprice attempts to REPRICE_INTERVAL_MS. */
+  private lastRepriceMs = 0;
 
   constructor(private readonly cfg: OrderAgentConfig | RestoredOrderAgentConfig) {
     if ('positionId' in cfg) {
@@ -777,6 +783,51 @@ export class OrderAgent {
       this._stopTick();
       this._selfRemove();
       return;
+    }
+
+    // ── Reprice unfilled limit order ──────────────────────────────────────────
+    // If the option ask moved above our limit, the order sits on the book doing
+    // nothing.  After REPRICE_AFTER_MS, re-quote at current mid + 30% spread to
+    // chase the fill while the signal is still live.
+    // Guard: don't reprice if mid drifted > REPRICE_MAX_DRIFT_PCT from original
+    // limit — that's a runaway move and the stale checks below will handle it.
+    if (
+      elapsedMs >= REPRICE_AFTER_MS &&
+      this.alpacaOrderId &&
+      Date.now() - this.lastRepriceMs >= REPRICE_INTERVAL_MS
+    ) {
+      const { decision, candidate } = this.cfg;
+      const currentMid = await fetchOptionMid(candidate.contract.symbol);
+      if (currentMid !== null) {
+        const originalLimit = this.cfg.sizing.limitPrice;
+        const driftPct = (currentMid - originalLimit) / originalLimit;
+        // Only reprice upward (ask moved away) within the drift cap
+        if (driftPct > 0.005 && driftPct <= REPRICE_MAX_DRIFT_PCT) {
+          const newLimit = Math.round((currentMid + 0.30 * candidate.contract.spread) * 100) / 100;
+          const replaced = await replaceOrderPrice(this.alpacaOrderId, newLimit);
+          if (replaced) {
+            // Alpaca PATCH returns a new order ID
+            const newOrderId = replaced.id ?? this.alpacaOrderId;
+            console.log(
+              `[OrderAgent ${decision.ticker} ${candidate.contract.symbol}] ` +
+              `REPRICE — limit $${originalLimit.toFixed(2)} → $${newLimit.toFixed(2)} ` +
+              `(mid=$${currentMid.toFixed(2)}, drift=+${(driftPct * 100).toFixed(1)}%, ` +
+              `elapsed=${Math.round(elapsedMs / 1000)}s)` +
+              (newOrderId !== this.alpacaOrderId ? ` newOrderId=${newOrderId}` : ''),
+            );
+            // Re-register stream watcher if order ID changed
+            if (newOrderId !== this.alpacaOrderId) {
+              AlpacaStreamManager.getInstance().unwatchOrder(this.alpacaOrderId);
+              this.alpacaOrderId = newOrderId;
+              AlpacaStreamManager.getInstance().watchOrder(newOrderId, (event) => {
+                void this._handleTradeUpdate(event);
+              });
+            }
+            this.cfg.sizing.limitPrice = newLimit;
+            this.lastRepriceMs = Date.now();
+          }
+        }
+      }
     }
 
     // Mid-wait stale-price guard: if the option mid has dropped significantly from our
