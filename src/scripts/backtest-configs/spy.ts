@@ -39,6 +39,10 @@ function spyShouldAllowEntry(ctx: EntryContext): true | string {
   if (signalMode === 'trend'
       && ctx.rangeExhaustion > 6.0
       && ctx.choppiness >= 2.0) return `trend exhausted+choppy rExh=${ctx.rangeExhaustion.toFixed(1)} chop=${ctx.choppiness.toFixed(2)}`;
+  // Exhausted + fading velocity: rExh >= 8.0 + dvel < 0.05 = move spent and stalled.
+  if (signalMode === 'trend'
+      && ctx.rangeExhaustion >= 8.0
+      && displacementVelocity < 0.04) return `trend exhausted+fading rExh=${ctx.rangeExhaustion.toFixed(1)} dvel=${displacementVelocity.toFixed(4)} (stalled)`;
   // bullish rangeExhaustion >= 6.0 removed for trends: Q1 counterfactual net costly
   if (direction === 'bullish' && displacementVelocity < -0.04) return `bullish dvel ${displacementVelocity.toFixed(4)} < -0.04`;
   if (signalMode === 'breakout' && ctx.rangeExhaustion < 1.0) return `breakout rangeExhaustion ${ctx.rangeExhaustion.toFixed(1)} < 1.0 (early morning)`;

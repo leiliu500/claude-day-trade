@@ -224,6 +224,15 @@ function spyShouldAllowEntry(ctx: EntryContext): true | string {
       && ctx.rangeExhaustion !== undefined && ctx.rangeExhaustion > 6.0
       && ctx.choppiness !== undefined && ctx.choppiness >= 2.0) return `trend exhausted+choppy rExh=${ctx.rangeExhaustion.toFixed(1)} chop=${ctx.choppiness.toFixed(2)}`;
 
+  // Exhausted + fading velocity: at rExh >= 8.0 with dvel < 0.05, the daily move
+  // is spent AND no longer accelerating. Apr 9: rExh 8.3-8.5 + dvel 0.004-0.038
+  // → 4F+1D, all DECLINING_SINCE_FILL. rExh >= 8.0 alone is too broad (blocks
+  // strong trending days where dvel is still high). Adding dvel < 0.05 ensures we
+  // only block entries where the move has genuinely stalled.
+  if (signalMode === 'trend'
+      && ctx.rangeExhaustion !== undefined && ctx.rangeExhaustion >= 8.0
+      && ctx.displacementVelocity !== undefined && ctx.displacementVelocity < 0.04) return `trend exhausted+fading rExh=${ctx.rangeExhaustion.toFixed(1)} dvel=${ctx.displacementVelocity.toFixed(4)} (stalled)`;
+
   // bullish rangeExhaustion >= 6.0 removed for trends: Q1 counterfactual net costly —
   // exhausted+choppy (chop >= 2.0) now handles the high-risk cases
 
