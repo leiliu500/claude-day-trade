@@ -378,7 +378,15 @@ async function main() {
   const RANGE_COOLDOWN_MIN = 20;   // min minutes between range entries
   const MAX_RANGE_ENTRIES = 1;      // max 1 range entry per day — 2nd range entries were 3W/7L across Feb+Mar
   const MAX_DAILY_ENTRIES = TCFG.maxDailyEntries; // per-ticker daily cap
-  let dailyEntryCount = 0;
+  let dailyEntryCount = 0;  // total for reporting only
+
+  // ── Rolling daily cap (matches live context-builder.ts) ────────────────────
+  // Live system queries: last 10 decisions from last 30 min, counts NEW_ENTRY.
+  // Older entries fall off the window, so the cap resets over time.
+  // Track all decision timestamps (every processed tick = one decision) and
+  // confirmed entry timestamps separately to replicate this behavior.
+  const rollingDecisionTs: number[] = [];   // every tick = one decision (WAIT or ENTRY)
+  const rollingEntryTs: number[] = [];      // only confirmed entries
   const RANGE_WAIT_MIN = 45;       // don't range trade in first 45 min (let day establish)
 
   // ── VWAP reversion mode state ────────────────────────────────────────────
@@ -765,7 +773,7 @@ async function main() {
     if (intradayLosses >= MAX_LOSSES_BEFORE_BUMP) {
       effectiveThreshold += LOSS_THRESHOLD_BUMP;
     }
-    const meetsThreshold = cb.total >= effectiveThreshold;
+    let meetsThreshold = cb.total >= effectiveThreshold;
 
     // Per-ticker: filter breakout entries with stale/insufficient data (abnormally low ATR%)
     // Only applied to breakout mode — trend entries with low ATR can still be valid
@@ -773,6 +781,7 @@ async function main() {
     const atrOk = signalMode !== 'breakout' || atrPct >= TCFG.minAtrPct;
 
     tickCount++;
+    rollingDecisionTs.push(currentTs);  // every processed tick = one decision (matches live pipeline)
     allTicks.push({ time: timeStr, timeET, price: currentPrice, direction, alignment, confidence: cb.total, meetsThreshold, signalMode });
 
     // Debug: dump confidence breakdown for ticks with conf >= 0.50 in afternoon
@@ -970,11 +979,14 @@ async function main() {
           createdAt: timeStr,
         };
 
+        // Match live context-builder: last 10 decisions from last 30 min
+        const thirtyMinAgoISO = new Date(currentTs - 30 * 60_000).toISOString();
+        const recentInWindow = backtestRecentDecisions.filter(d => d.createdAt >= thirtyMinAgoISO);
         const context: PositionContext = {
           openPositions: [],
           brokerPositions: [],
           brokerOpenOrders: [],
-          recentDecisions: backtestRecentDecisions.slice(0, 10),
+          recentDecisions: recentInWindow.slice(0, 10),
           confirmationStreaks: [],
           recentEvaluations: [],
           accountEquity: 100_000,
@@ -1011,6 +1023,7 @@ async function main() {
           }
           lastEntryTs = currentTs;
           dailyEntryCount++;
+          rollingEntryTs.push(currentTs);  // rolling cap tracking
         } else if (decision.reasoning.includes('[STAGE-1 OBSERVE]')) {
           gateResult = 'STAGE1_OBSERVE';
         } else if (decision.reasoning.includes('[WEAKENING-SIGNAL BLOCK]')) {
@@ -1051,23 +1064,25 @@ async function main() {
         }
       }
 
-      // Per-ticker entry filter hook — soft annotation only (matches live: DecisionOrchestrator
-      // does NOT call shouldAllowEntry, only AnalysisAgent does for meetsEntryThreshold which
-      // the orchestrator then ignores via its bypass paths).
-      // Record the block reason for counterfactual analysis but don't prevent entry.
+      // Per-ticker entry filter hook — HARD blocker (matches live AnalysisAgent:
+      // shouldAllowEntry failure sets meetsEntryThreshold=false, which prevents the
+      // AI orchestrator from running entirely via needsAIOrchestration()).
+      // Record the block for counterfactual analysis AND prevent entry.
       const tickerAllowsResult = !meetsThreshold || LIVE_TICKER_CFG.strategy.shouldAllowEntry(entryCtx);
       const tickerAllows = tickerAllowsResult === true;
       if (meetsThreshold && !tickerAllows && typeof tickerAllowsResult === 'string') {
         pushFilterBlocked(tickerAllowsResult);
+        meetsThreshold = false; // hard block — matches live AnalysisAgent
       }
 
-      // Entry time window — soft annotation only (matches live: AnalysisAgent sets
-      // meetsEntryThreshold=false but DecisionOrchestrator ignores it via bypass paths).
+      // Entry time window — HARD blocker (matches live AnalysisAgent: sets
+      // meetsEntryThreshold=false, preventing AI orchestrator from running).
       const minutesSinceOpenForWindow = (currentTs - openTime.getTime()) / 60_000;
       const inEntryWindow = minutesSinceOpenForWindow >= TCFG.entryWindowStartMin
                          && minutesSinceOpenForWindow <= TCFG.entryWindowEndMin;
       if (meetsThreshold && !inEntryWindow) {
         pushFilterBlocked(`entry_window: ${minutesSinceOpenForWindow.toFixed(0)}m outside [${TCFG.entryWindowStartMin}-${TCFG.entryWindowEndMin}]`);
+        meetsThreshold = false; // hard block — matches live AnalysisAgent
       }
 
       if (meetsThreshold && direction !== 'neutral') {
@@ -1103,7 +1118,16 @@ async function main() {
           lastBreakoutEntryAgeMin: lastBreakoutEntryTs === 0 ? null : (currentTs - lastBreakoutEntryTs) / 60_000,
           vwapRevEntryCount,
           lastVwapRevEntryAgeMin: lastVwapRevEntryTs === 0 ? null : (currentTs - lastVwapRevEntryTs) / 60_000,
-          totalDailyEntries: dailyEntryCount,
+          // Rolling daily cap — matches live context-builder.ts:
+          // Live queries last 10 decisions from last 30 min, counts NEW_ENTRY.
+          // Here we replicate: find the 10th-most-recent decision timestamp,
+          // then count confirmed entries at or after that timestamp.
+          totalDailyEntries: (() => {
+            const thirtyMinAgo = currentTs - 30 * 60_000;
+            const recentDecs = rollingDecisionTs.filter(t => t >= thirtyMinAgo);
+            const windowStart = recentDecs.length > 10 ? recentDecs[recentDecs.length - 10]! : thirtyMinAgo;
+            return rollingEntryTs.filter(t => t >= windowStart).length;
+          })(),
           hasRecentPhaseChangeEntry: false, // backtest doesn't track phase-change history
           maxDailyEntries: MAX_DAILY_ENTRIES,
         };
@@ -1148,6 +1172,7 @@ async function main() {
           else if (signalMode === 'vwap_reversion') { lastVwapRevEntryTs = currentTs; vwapRevEntryCount++; }
           else { lastTrendEntryTs = currentTs; trendEntryCount++; }
           dailyEntryCount++;
+          rollingEntryTs.push(currentTs);  // rolling cap tracking
           if (fwd.entryGrade === 'F' || fwd.entryGrade === 'D') intradayLosses++;
 
           entries.push({
@@ -1172,8 +1197,10 @@ async function main() {
   console.log(`  RESULTS: ${tickCount} ticks processed, ${entries.length} potential entries found`);
   console.log(`${'='.repeat(80)}\n`);
 
-  // Deduplicate consecutive entries (same direction within 3 min = same signal).
-  // 3-min window matches live scheduler cycle — live can enter every 3-min tick.
+  // Deduplicate consecutive entries (same direction within 1 min = same signal).
+  // Live pipeline triggers on every 1-min stream bar and can enter every 2 minutes
+  // (STAGE-1 → NEW_ENTRY pattern). Use 1-min window to avoid same-bar duplicates
+  // while allowing the rapid re-entry that matches live behavior.
   // Within each window, prefer confirmed entries over blocked ones.
   const isConfirmed = (e: EntryRecord) => e.gateResult === 'PASSED' || e.gateResult === 'HIGH_CONV_OVERRIDE' || e.gateResult === 'PHASE_CHANGE_OVERRIDE';
   const dedupedEntries: EntryRecord[] = [];
@@ -1182,7 +1209,7 @@ async function main() {
     if (prev && prev.direction === entry.direction) {
       const prevTs = new Date(prev.time).getTime();
       const currTs = new Date(entry.time).getTime();
-      if (currTs - prevTs < 3 * 60_000) {
+      if (currTs - prevTs < 1 * 60_000) {
         // Within same window: upgrade if current is confirmed but prev was blocked
         if (isConfirmed(entry) && !isConfirmed(prev)) {
           dedupedEntries[dedupedEntries.length - 1] = entry;
@@ -1275,7 +1302,7 @@ async function main() {
 
     // Print validation results
     console.log(`  ── Entry Validation ──`);
-    console.log(`  Entry counts: ${confirmedEntries.length}/${MAX_DAILY_ENTRIES} daily cap | Range: ${confirmedRange}/${MAX_RANGE_ENTRIES} | Breakout: ${confirmedBreakout}/${MAX_BREAKOUT_ENTRIES} | Trend: ${confirmedTrend}/${MAX_TREND_ENTRIES} | VWAP Rev: ${confirmedVwapRev}/1`);
+    console.log(`  Entry counts: ${confirmedEntries.length} total (${MAX_DAILY_ENTRIES}/30min rolling cap) | Range: ${confirmedRange}/${MAX_RANGE_ENTRIES} | Breakout: ${confirmedBreakout}/${MAX_BREAKOUT_ENTRIES} | Trend: ${confirmedTrend}/${MAX_TREND_ENTRIES} | VWAP Rev: ${confirmedVwapRev}/1`);
 
     if (confirmedEntries.length > 0) {
       const firstEntry = confirmedEntries[0]!;
