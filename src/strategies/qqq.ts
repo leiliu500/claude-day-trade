@@ -140,6 +140,16 @@ function qqqAdjustConfidence(cb: ConfidenceBreakdown, ctx: EntryContext): Confid
     adjusted.total = Math.min(adjusted.total, 0.64);
   }
 
+  // Suppress PA bonus for bullish trend entries at high regime — ported from SPY.
+  // At regime >= 75, confirming candles are exhaustion signals, not fresh momentum.
+  // Apr 9 QQQ: entries at regime 71-77 got +0.08 PA bonus while buying the top.
+  if (ctx.signalMode === 'trend' && ctx.direction === 'bullish'
+      && _lastRegimeScore >= 75 && adjusted.recentPriceActionBonus > 0) {
+    adjusted.total -= adjusted.recentPriceActionBonus;
+    adjusted.recentPriceActionBonus = 0;
+    adjusted.total = Math.max(0, adjusted.total);
+  }
+
   // Strong trend continuation relief — mirrors SPY logic.
   // When all timeframes align + ADX strong & rising, adxMaturity and moveExhaustion
   // penalties over-penalize genuine continuation (especially on gap days where
@@ -192,12 +202,18 @@ function qqqShouldAllowEntry(ctx: EntryContext): true | string {
   if (signalMode === 'trend' && ctx.displacementVelocity !== undefined
       && ctx.displacementVelocity > 0.10) return `trend high dvel ${ctx.displacementVelocity.toFixed(4)} > 0.10 (chasing)`;
 
+  // Exhausted+choppy: lowered rExh from 7.0 to 6.0 to match SPY (line 224).
+  // Apr 9 QQQ: entries at rExh 6.0-7.6 were 5F+1D — move was fully extended.
   if (signalMode === 'trend'
-      && ctx.rangeExhaustion !== undefined && ctx.rangeExhaustion > 7.0
+      && ctx.rangeExhaustion !== undefined && ctx.rangeExhaustion > 6.0
       && ctx.choppiness !== undefined && ctx.choppiness >= 2.0) return `trend exhausted+choppy rExh=${ctx.rangeExhaustion.toFixed(1)} chop=${ctx.choppiness.toFixed(2)}`;
 
-  // bullish rangeExhaustion >= 6.0 removed: Mar 31 blocked Grade A 1.45% move.
-  // SPY already removed this — exhausted+choppy (chop >= 2.0) handles the high-risk cases.
+  // Exhausted+fading: ported from SPY. When range exhaustion is high AND displacement
+  // velocity has stalled, the trend is dying. Apr 9 QQQ entries #5-6: rExh 7.5-7.6
+  // with dvel near 0 entered right at the top before a reversal.
+  if (signalMode === 'trend'
+      && ctx.rangeExhaustion !== undefined && ctx.rangeExhaustion >= 7.0
+      && ctx.displacementVelocity !== undefined && ctx.displacementVelocity < 0.04) return `trend exhausted+fading rExh=${ctx.rangeExhaustion.toFixed(1)} dvel=${ctx.displacementVelocity.toFixed(4)} (stalled)`;
 
   if (direction === 'bullish'
       && ctx.displacementVelocity !== undefined && ctx.displacementVelocity < -0.04) return `bullish dvel ${ctx.displacementVelocity.toFixed(4)} < -0.04`;
