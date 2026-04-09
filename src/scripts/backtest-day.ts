@@ -930,9 +930,34 @@ async function main() {
 
     if (USE_AI && orchestrator) {
       // ── AI Orchestrator path ──────────────────────────────────────────────
-      // Call the real DecisionOrchestrator for every tick that meets threshold
-      // (same condition as live: meetsEntryThreshold && timeGateOk)
-      if (meetsThreshold && direction !== 'neutral') {
+      // Match live AnalysisAgent gating: meetsEntryThreshold requires confidence >= threshold
+      // AND passing shouldAllowEntry + entry window checks. If any block, AI is NOT called
+      // (live pipeline calls deterministicWait instead).
+      let aiMeetsThreshold = meetsThreshold && direction !== 'neutral';
+
+      // Per-ticker shouldAllowEntry — hard blocker (same as live AnalysisAgent line 1963)
+      if (aiMeetsThreshold) {
+        const tickerAllowsResult = LIVE_TICKER_CFG.strategy.shouldAllowEntry(entryCtx);
+        if (tickerAllowsResult !== true) {
+          aiMeetsThreshold = false;
+          if (typeof tickerAllowsResult === 'string') {
+            pushFilterBlocked(tickerAllowsResult);
+          }
+        }
+      }
+
+      // Entry window — hard blocker (same as live AnalysisAgent line 1947-1959)
+      if (aiMeetsThreshold) {
+        const minutesSinceOpenForWindow = (currentTs - openTime.getTime()) / 60_000;
+        const inEntryWindow = minutesSinceOpenForWindow >= TCFG.entryWindowStartMin
+                           && minutesSinceOpenForWindow <= TCFG.entryWindowEndMin;
+        if (!inEntryWindow) {
+          aiMeetsThreshold = false;
+          pushFilterBlocked(`entry_window: ${minutesSinceOpenForWindow.toFixed(0)}m outside [${TCFG.entryWindowStartMin}-${TCFG.entryWindowEndMin}]`);
+        }
+      }
+
+      if (aiMeetsThreshold) {
         const analysis: AnalysisResult = {
           signalId: signal.id,
           confidence: cb.total,
