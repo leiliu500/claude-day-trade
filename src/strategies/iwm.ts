@@ -112,16 +112,26 @@ function iwmDetectMode(
 // ── IWM Confidence Adjustment ───────────────────────────────────────────────
 
 function iwmAdjustConfidence(cb: ConfidenceBreakdown, ctx: EntryContext): ConfidenceBreakdown {
+  const adjusted = { ...cb };
+
+  // Suppress PA bonus for bullish trend entries at high regime — ported from SPY/QQQ.
+  // At regime >= 75, confirming candles are exhaustion signals, not fresh momentum.
+  if (ctx.signalMode === 'trend' && ctx.direction === 'bullish'
+      && _lastRegimeScore >= 75 && adjusted.recentPriceActionBonus > 0) {
+    adjusted.total -= adjusted.recentPriceActionBonus;
+    adjusted.recentPriceActionBonus = 0;
+    adjusted.total = Math.max(0, adjusted.total);
+  }
+
   // Strong trend continuation relief — mirrors SPY/QQQ logic.
   // When all timeframes align + ADX strong & rising, adxMaturity and moveExhaustion
   // penalties over-penalize genuine continuation (especially on gap days where
   // prior-day warmup bars inflate maturity counts).
   if (ctx.signalMode === 'trend'
       && ctx.alignment === 'all_aligned'
-      && cb.trendPhaseBonus > 0          // ADX still rising
-      && cb.adxBonus >= 0.05             // ADX > 25
-      && cb.moveExhaustionPenalty <= -0.10) {
-    const adjusted = { ...cb };
+      && adjusted.trendPhaseBonus > 0          // ADX still rising
+      && adjusted.adxBonus >= 0.05             // ADX > 25
+      && adjusted.moveExhaustionPenalty <= -0.10) {
     // Halve move exhaustion penalty
     const exhRelief = -adjusted.moveExhaustionPenalty * 0.5;
     adjusted.moveExhaustionPenalty *= 0.5;
@@ -137,9 +147,8 @@ function iwmAdjustConfidence(cb: ConfidenceBreakdown, ctx: EntryContext): Confid
       adjusted.structureBonus = 0.01;
     }
     adjusted.total = Math.max(0, Math.min(1, adjusted.total));
-    return adjusted;
   }
-  return cb;
+  return adjusted;
 }
 
 // ── IWM Entry Filter (mirrors SPY) ─────────────────────────────────────────
@@ -171,12 +180,17 @@ function iwmShouldAllowEntry(ctx: EntryContext): true | string {
   if (signalMode === 'trend' && ctx.displacementVelocity !== undefined
       && ctx.displacementVelocity > 0.20) return `trend high dvel ${ctx.displacementVelocity.toFixed(4)} > 0.20 (chasing)`;
 
+  // Exhausted+choppy: lowered rExh from 7.0 to 6.0 to match SPY/QQQ.
+  // Apr 9 IWM: entries at rExh 6.0-7.0 with high chop were all F-grade.
   if (signalMode === 'trend'
-      && ctx.rangeExhaustion !== undefined && ctx.rangeExhaustion > 7.0
+      && ctx.rangeExhaustion !== undefined && ctx.rangeExhaustion > 6.0
       && ctx.choppiness !== undefined && ctx.choppiness >= 2.0) return `trend exhausted+choppy rExh=${ctx.rangeExhaustion.toFixed(1)} chop=${ctx.choppiness.toFixed(2)}`;
 
-  // bullish rangeExhaustion >= 6.0 removed: Mar 31 blocked Grade A 2.10% move.
-  // SPY already removed this — exhausted+choppy (chop >= 2.0) handles the high-risk cases.
+  // Exhausted+fading: ported from SPY/QQQ. When range exhaustion is high AND displacement
+  // velocity has stalled, the trend is dying — further entries are chasing.
+  if (signalMode === 'trend'
+      && ctx.rangeExhaustion !== undefined && ctx.rangeExhaustion >= 7.0
+      && ctx.displacementVelocity !== undefined && ctx.displacementVelocity < 0.04) return `trend exhausted+fading rExh=${ctx.rangeExhaustion.toFixed(1)} dvel=${ctx.displacementVelocity.toFixed(4)} (stalled)`;
 
   if (direction === 'bullish'
       && ctx.displacementVelocity !== undefined && ctx.displacementVelocity < -0.04) return `bullish dvel ${ctx.displacementVelocity.toFixed(4)} < -0.04`;
