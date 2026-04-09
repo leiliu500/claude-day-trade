@@ -111,7 +111,7 @@ const TICKER_OVERRIDES: Record<string, Partial<Omit<TickerConfig, 'ticker' | 'st
   NVDA: {
     // Tuned Q4 2025 + Q1 2026: 6B/1C/2F (67% good)
     minConfidence: 0.65,
-    maxDailyEntries: 1,    // NVDA: 2nd entries were 0W/3L
+    maxDailyEntries: 4,
     maxContracts: 5,
     enabled: false,
     strategy: nvdaStrategy,
