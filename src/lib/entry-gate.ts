@@ -161,9 +161,14 @@ export function evaluateEntryGate(input: GateInput): GateDecision {
   // ── Strong-signal bypass ──
   // conf >= 0.75 + all_aligned → immediate entry for ALL non-breakout modes.
   // Breakout is excluded: breakout entries have their own bypass with trendPhase >= 0.
+  // Require non-negative PA: when recent candles are against the signal (PA < 0),
+  // price is pulling back — defer to normal 2-stage gate so the pullback can resolve.
+  // Apr 9 SPY: bypass at PA=-0.08 entered 20min before the move → 3 quick losses.
+  // Same day: bypass at PA=0 entered during the trend → TP hit at +32%.
   const strongSignalBypass = !highConvOverride && !phaseChangeOk && priorCount < 1
     && signalMode !== 'breakout'
-    && confidence >= 0.75 && alignment === 'all_aligned';
+    && confidence >= 0.75 && alignment === 'all_aligned'
+    && recentPriceActionBonus >= 0;
 
   // ── Range bypass ──
   let rangeBypass = false;
