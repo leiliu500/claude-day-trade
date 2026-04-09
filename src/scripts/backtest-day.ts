@@ -13,16 +13,7 @@
 
 import 'dotenv/config';
 import { config } from '../config.js';
-import { computeDMI } from '../indicators/dmi.js';
-import { computeATR } from '../indicators/atr.js';
-import { computeOBV } from '../indicators/obv.js';
-import { computeTD } from '../indicators/td-sequential.js';
-import { detectCandlePattern, detectAllPatterns } from '../indicators/candle-patterns.js';
-import { computePriceStructure } from '../indicators/price-structure.js';
-import { computeVWAP } from '../indicators/vwap.js';
 import { computePriorDayLevels, computeORB } from '../indicators/market-structure.js';
-import { computePriceVelocity } from '../indicators/price-velocity.js';
-import { computeVolumeSurge } from '../indicators/volume-surge.js';
 import type { OHLCVBar, Timeframe, AlpacaBarsResponse } from '../types/market.js';
 import type { TimeframeIndicators } from '../types/indicators.js';
 import type { SignalPayload, AlignmentType, SignalDirection } from '../types/signal.js';
@@ -32,9 +23,11 @@ import type { PositionContext, DecisionResult, DecisionType } from '../types/dec
 import { normalizeAlpacaBars } from '../types/market.js';
 import { v4 as uuidv4 } from 'uuid';
 import { DecisionOrchestrator } from '../agents/decision-orchestrator.js';
+import { evaluateEntryGate, type GateInput } from '../lib/entry-gate.js';
 import type { SimResult } from '../lib/order-agent-sim.js';
 import { evaluateTrend, evaluateRange, evaluateBreakout, evaluateVwapReversion, resolveMode } from '../strategies/default.js';
 import { computeTrendConfidenceFn, computeRangeConfidenceFn, computeBreakoutConfidenceFn } from '../agents/analysis-agent.js';
+import { computeTimeframeIndicators, classifyAlignment } from '../agents/signal-agent.js';
 import { computeEntryMetrics } from '../lib/entry-context.js';
 import { getTickerConfig } from '../ticker-configs.js';
 import { detectDirection } from '../lib/direction-detector.js';
@@ -147,44 +140,8 @@ function aggregate1mBars(oneMins: OHLCVBar[], timeframe: Timeframe, upToTs: numb
     }));
 }
 
-// ── Indicator computation (same as signal-agent.ts) ──────────────────────────
-
-function computeTimeframeIndicators(
-  bars: OHLCVBar[],
-  timeframe: Timeframe,
-  direction: 'bullish' | 'bearish' | 'neutral' = 'neutral',
-  isLTF = false,
-): TimeframeIndicators {
-  const skipGaps = timeframe !== '1d';
-  const dmiPeriod = isLTF ? 8 : 14;
-  return {
-    timeframe,
-    bars,
-    dmi: computeDMI(bars, dmiPeriod, skipGaps),
-    atr: computeATR(bars, 14, skipGaps),
-    obv: computeOBV(bars, 14),
-    td: computeTD(bars),
-    vwap: computeVWAP(bars),
-    candlePattern: detectCandlePattern(bars),
-    allCandlePatterns: detectAllPatterns(bars),
-    priceStructure: computePriceStructure(bars, 20, direction),
-    priceVelocity: computePriceVelocity(bars),
-    volumeSurge: computeVolumeSurge(bars),
-    currentPrice: bars[bars.length - 1]?.close ?? 0,
-  };
-}
-
-function classifyAlignment(tfs: TimeframeIndicators[], direction: SignalDirection): AlignmentType {
-  const [ltf, mtf, htf] = tfs;
-  if (!ltf || !mtf || !htf) return 'mixed';
-  const ltfMatch = ltf.dmi.trend === direction;
-  const mtfMatch = mtf.dmi.trend === direction;
-  const htfMatch = htf.dmi.trend === direction;
-  if (ltfMatch && mtfMatch && htfMatch) return 'all_aligned';
-  if (htfMatch && mtfMatch) return 'htf_mtf_aligned';
-  if (mtfMatch && ltfMatch) return 'mtf_ltf_aligned';
-  return 'mixed';
-}
+// ── Indicator computation — imported from signal-agent.ts ────────────────────
+// computeTimeframeIndicators() and classifyAlignment() are shared with signal-agent.
 
 // ── Theta decay simulation ───────────────────────────────────────────────────
 // Simulates the theta decay penalty that the live system applies based on option
@@ -606,7 +563,7 @@ async function main() {
     const currentPrice = ltfBars[ltfBars.length - 1]!.close;
     const atr = tfIndicators[2]?.atr.atr ?? tfIndicators[0]?.atr.atr ?? 0;
     const atm = Math.round(currentPrice);
-    const htfAdx = tfIndicators[2]?.dmi.adx ?? 0;
+    const htfAdx = tfIndicators[2]?.dmi.adx ?? tfIndicators[1]?.dmi.adx ?? 0;
     const strengthScore = Math.min(100, Math.round(htfAdx * 2));
     const priorDayLevels = computePriorDayLevels(dailyBars, currentPrice);
     const orb = computeORB(ltfBars, currentPrice);
@@ -777,7 +734,21 @@ async function main() {
       }
       if (consecutiveCount >= 2) {
         const persistenceBonus = Math.min(0.12, (consecutiveCount - 1) * 0.03);
-        cb = { ...cb, trendPersistenceBonus: persistenceBonus, total: Math.max(0, Math.min(1, cb.total + persistenceBonus)) };
+        let agingReduction = 0;
+        // When persistence is strong (3+ consecutive aligned signals), halve negative
+        // maturity/phase/accel penalties — matches live analysis-agent.ts logic.
+        if (persistenceBonus >= 0.06) {
+          const matRed = cb.adxMaturityPenalty < 0 ? -cb.adxMaturityPenalty * 0.5 : 0;
+          const phRed = cb.trendPhaseBonus < 0 ? -cb.trendPhaseBonus * 0.5 : 0;
+          const accRed = cb.momentumAccelBonus < 0 ? -cb.momentumAccelBonus * 0.5 : 0;
+          agingReduction = matRed + phRed + accRed;
+          cb = { ...cb,
+            adxMaturityPenalty: cb.adxMaturityPenalty < 0 ? cb.adxMaturityPenalty * 0.5 : cb.adxMaturityPenalty,
+            trendPhaseBonus: cb.trendPhaseBonus < 0 ? cb.trendPhaseBonus * 0.5 : cb.trendPhaseBonus,
+            momentumAccelBonus: cb.momentumAccelBonus < 0 ? cb.momentumAccelBonus * 0.5 : cb.momentumAccelBonus,
+          };
+        }
+        cb = { ...cb, trendPersistenceBonus: persistenceBonus, total: Math.max(0, Math.min(1, cb.total + persistenceBonus + agingReduction)) };
       }
     }
     // Record this signal for future persistence lookups
@@ -1055,225 +1026,112 @@ async function main() {
         }
       }
 
-      // Per-ticker entry filter hook — allows QQQ etc. to block entries with custom logic
-      // Use live strategy's shouldAllowEntry — same code that runs in production
+      // Per-ticker entry filter hook — soft annotation only (matches live: DecisionOrchestrator
+      // does NOT call shouldAllowEntry, only AnalysisAgent does for meetsEntryThreshold which
+      // the orchestrator then ignores via its bypass paths).
+      // Record the block reason for counterfactual analysis but don't prevent entry.
       const tickerAllowsResult = !meetsThreshold || LIVE_TICKER_CFG.strategy.shouldAllowEntry(entryCtx);
       const tickerAllows = tickerAllowsResult === true;
       if (meetsThreshold && !tickerAllows && typeof tickerAllowsResult === 'string') {
         pushFilterBlocked(tickerAllowsResult);
       }
 
-      // Entry time window — only allow new entries within configured window
+      // Entry time window — soft annotation only (matches live: AnalysisAgent sets
+      // meetsEntryThreshold=false but DecisionOrchestrator ignores it via bypass paths).
       const minutesSinceOpenForWindow = (currentTs - openTime.getTime()) / 60_000;
       const inEntryWindow = minutesSinceOpenForWindow >= TCFG.entryWindowStartMin
                          && minutesSinceOpenForWindow <= TCFG.entryWindowEndMin;
-      if (meetsThreshold && tickerAllows && !inEntryWindow) {
+      if (meetsThreshold && !inEntryWindow) {
         pushFilterBlocked(`entry_window: ${minutesSinceOpenForWindow.toFixed(0)}m outside [${TCFG.entryWindowStartMin}-${TCFG.entryWindowEndMin}]`);
       }
 
-      if (meetsThreshold && atrOk && tickerAllows && inEntryWindow && direction !== 'neutral' && dailyEntryCount < MAX_DAILY_ENTRIES) {
-        // Range entries bypass the trend confirmation gate — quality is in the range confidence model
-        if (signalMode === 'range') {
-          const RANGE_MIN_CONF = 0.70; // raised from 0.66 — Feb range entries at 0.66-0.69 were 1W/4L
-          const cooldownOk = (currentTs - lastRangeEntryTs) >= RANGE_COOLDOWN_MIN * 60_000;
-          const underLimit = rangeEntryCount < MAX_RANGE_ENTRIES;
-          const pastWaitPeriod = currentTs >= rangeEarliestTs;
-          // Multi-factor intraday trend detection: don't range-trade when market is strongly trending
-          const dayMovePct = Math.abs(currentPrice - dayOpen) / dayOpen * 100;
-          const dayNotTrending = dayMovePct < 2.0;        // only block very large intraday moves
-          const noStrongTrend = Math.abs(intradayTrendStrength) < 5; // no 5+ consecutive directional closes
-          const rangeRegimeOk = dayNotTrending && noStrongTrend;
-          // VWAP overextension required: all March range winners had vwapBonus > 0;
-          // range entries without VWAP support (price not overextended vs VWAP) lack conviction.
-          const vwapConfirms = cb.vwapBonus > 0;
-          // High choppiness = frequent direction flips = unreliable support/resistance levels.
-          // Feb+Mar data: 0/12 range winners had chop >= 1.3, but 6/27 range losers did.
-          const notTooChoppy = choppiness < 1.3;
-          if (cb.total >= RANGE_MIN_CONF && cooldownOk && underLimit && pastWaitPeriod && rangeRegimeOk && vwapConfirms && notTooChoppy) {
-            const fwd = computeForwardMoves();
-            entries.push({
-              time: timeStr, timeET, direction, alignment, confidence: cb.total,
-              price: currentPrice, strengthScore, signalMode, atr, ...fwd, breakdown: cb, ...regimeCtx,
-              gateResult: 'PASSED',
-            });
-            lastRangeEntryTs = currentTs;
-            rangeEntryCount++;
-            dailyEntryCount++;
-            if (fwd.entryGrade === 'F' || fwd.entryGrade === 'D') intradayLosses++;
-          }
-        } else if (signalMode === 'breakout') {
-          // Breakout entries bypass the trend confirmation gate — quality is in the breakout confidence model
-          const cooldownOk = (currentTs - lastBreakoutEntryTs) >= BREAKOUT_COOLDOWN_MIN * 60_000;
-          const underLimit = breakoutEntryCount < MAX_BREAKOUT_ENTRIES;
-          const pastWaitPeriod = currentTs >= breakoutEarliestTs;
-          // Late-day breakouts fail more often (momentum fades into close)
-          const breakoutCutoffTs = openTime.getTime() + 360 * 60_000; // 15:30 ET = open + 6h
-          const notTooLate = currentTs < breakoutCutoffTs;
-          // Mixed alignment breakouts lack directional conviction
-          const alignmentOk = alignment !== 'mixed';
-          // Breakouts against the trend phase fail at high rate: Feb 7/9 breakout losers
-          // had trendPhaseBonus < 0. Require non-negative trend phase for entry.
-          const trendPhaseOk = cb.trendPhaseBonus >= 0;
-          // Weak ADX breakouts fail: ADX bonus <= 0.020 was 1W/4L (20%).
-          // ADX >= 0.050 was 5W/1L (83%). Require moderate ADX for conviction.
-          const adxOk = cb.adxBonus >= 0.03;
-          // Low strength breakouts fail: Feb str=30,33 were losses.
-          const strengthOk = strengthScore >= TCFG.breakoutMinStrength;
-          // Extended day: move is exhausted. Per-ticker threshold.
-          const notExhausted = rangeExhaustion <= TCFG.breakoutMaxExhaustion;
-          // Per-ticker choppiness filter for breakouts
-          const notTooChoppy = choppiness < TCFG.breakoutMaxChop;
-          // Strong-signal bypass: conf >= 0.75 + all_aligned skips trendPhase check.
-          // Per-ticker: breakoutStrictTrendPhase disables this bypass.
-          const strongSignalBypass = !TCFG.breakoutStrictTrendPhase && cb.total >= 0.75 && alignment === 'all_aligned';
-          // Per-ticker: minimum confidence for breakout entries
-          const breakoutConfOk = TCFG.breakoutMinConfidence <= 0 || cb.total >= TCFG.breakoutMinConfidence;
-          if (cooldownOk && underLimit && pastWaitPeriod && notTooLate && alignmentOk && (trendPhaseOk || strongSignalBypass) && adxOk && strengthOk && notExhausted && notTooChoppy && breakoutConfOk) {
-            const fwd = computeForwardMoves();
-            entries.push({
-              time: timeStr, timeET, direction, alignment, confidence: cb.total,
-              price: currentPrice, strengthScore, signalMode, atr, ...fwd, breakdown: cb, ...regimeCtx,
-              gateResult: 'PASSED',
-            });
-            lastBreakoutEntryTs = currentTs;
-            breakoutEntryCount++;
-            dailyEntryCount++;
-            if (fwd.entryGrade === 'F' || fwd.entryGrade === 'D') intradayLosses++;
-          }
-        } else if (signalMode === 'vwap_reversion') {
-          // VWAP reversion entries bypass the trend confirmation gate
-          const VWAP_REV_MIN_CONF = 0.68;
-          const VWAP_REV_COOLDOWN_MIN = 15;
-          const MAX_VWAP_REV_ENTRIES = 1; // 2nd VWAP reversion entries were consistently F-grade
-          const vwapRevEarliestTs = openTime.getTime() + 45 * 60_000; // wait 45 min for VWAP to stabilize
-          const cooldownOk = (currentTs - lastVwapRevEntryTs) >= VWAP_REV_COOLDOWN_MIN * 60_000;
-          const underLimit = vwapRevEntryCount < MAX_VWAP_REV_ENTRIES;
-          const pastWaitPeriod = currentTs >= vwapRevEarliestTs;
-          // Don't fight a strong intraday trend
-          const noStrongTrend = Math.abs(intradayTrendStrength) < 4;
-          // Require VWAP bonus in confidence (confirms overextension)
-          const vwapConfirms = cb.vwapBonus >= 0.03;
-          // Low ATR = thin volume, reversal lacks follow-through
-          const vwapRevAtrOk = atr >= 0.80;
-          // High chop + non-extreme regime = reversal is noise, not real turning point
-          // (Exception: regime < 50 = strongly range-bound, chop is expected)
-          // Extreme chop (>= 2.0) always blocked regardless of regime.
-          const vwapRevChopOk = choppiness < 2.0 && !(choppiness > 0.99 && regimeScore >= 50);
-          if (cb.total >= VWAP_REV_MIN_CONF && cooldownOk && underLimit && pastWaitPeriod && noStrongTrend && vwapConfirms && vwapRevAtrOk && vwapRevChopOk) {
-            const fwd = computeForwardMoves();
-            entries.push({
-              time: timeStr, timeET, direction, alignment, confidence: cb.total,
-              price: currentPrice, strengthScore, signalMode, atr, ...fwd, breakdown: cb, ...regimeCtx,
-              gateResult: 'PASSED',
-            });
-            lastVwapRevEntryTs = currentTs;
-            vwapRevEntryCount++;
-            dailyEntryCount++;
-            if (fwd.entryGrade === 'F' || fwd.entryGrade === 'D') intradayLosses++;
-          }
-        } else {
-        // Trend mode: apply daily limit and cooldown
-        const trendCooldownOk = (currentTs - lastTrendEntryTs) >= TREND_COOLDOWN_MIN * 60_000;
-        const trendUnderLimit = trendEntryCount < MAX_TREND_ENTRIES;
-        if (!trendCooldownOk || !trendUnderLimit) {
-          // Over daily trend limit or in cooldown — skip
-        } else if (rangeExhaustion > TCFG.trendExhaustedRevertMinExh && displacementVelocity < 0
-          // Exempt when all timeframes align + ADX > 25 + rising: trend still strengthening
-          && !((alignment === 'all_aligned' || alignment === 'htf_mtf_aligned')
-               && (tfIndicators[2]?.dmi.adx ?? 0) > 25 && (tfIndicators[2]?.dmi.adxSlope ?? 0) > 0)) {
-          pushFilterBlocked(`trend_exhausted_reverting: rExh=${rangeExhaustion.toFixed(1)} dvel=${displacementVelocity?.toFixed(4)}`);
-          // Late exhausted trend: daily range consumed >7x ATR and momentum reverting — skip.
-        } else if (rangeExhaustion > TCFG.trendMaxExhaustion) {
-          pushFilterBlocked(`trend_max_exhaustion: rExh=${rangeExhaustion.toFixed(1)}>${TCFG.trendMaxExhaustion}`);
-          // Extremely extended day: >12x ATR consumed.
-        } else {
-        // Determine gate result
+      if (meetsThreshold && direction !== 'neutral') {
+        // ── Shared entry gate — same function used by live DecisionOrchestrator ──
         const htfTf = tfIndicators[2] ?? tfIndicators[0];
-        const highConvOverride = cb.total >= 0.92 && alignment === 'all_aligned';
+        const minutesSinceOpenGate = (currentTs - openTime.getTime()) / 60_000;
 
-        // Phase-change override: HTF growth cross in signal direction + rising ADX + non-mixed
-        // Tightened: require conf >= 0.65, ADX >= 20, positive price action, no near-level penalty
-        const growthCross = direction === 'bullish' ? htfTf?.dmi.growthCrossUp : htfTf?.dmi.growthCrossDown;
-        const phaseChangeStructural = !!htfTf && cb.total >= 0.65 && alignment !== 'mixed' && growthCross
-          && htfTf.dmi.adx >= 20
-          && cb.recentPriceActionBonus >= 0
-          && cb.nearLevelPenalty > -0.03;
-        // Simplified timing checks for phase-change
-        let phaseChangeTimingOk = true;
-        if (phaseChangeStructural && htfTf) {
-          const rp = htfTf.priceStructure.rangePosition;
-          if (direction === 'bullish' && rp > 0.85) phaseChangeTimingOk = false;
-          if (direction === 'bearish' && rp < 0.15) phaseChangeTimingOk = false;
-          if (htfTf.dmi.adx > 50) phaseChangeTimingOk = false;
-          // VWAP alignment
-          const ltfTf = tfIndicators[0];
-          if (ltfTf) {
-            const vwapPct = ltfTf.vwap.priceVsVwap;
-            if (direction === 'bullish' && vwapPct < -0.30) phaseChangeTimingOk = false;
-            if (direction === 'bearish' && vwapPct > 0.30) phaseChangeTimingOk = false;
-          }
-          // ORB alignment
-          if (signal.orb.orbFormed) {
-            const orbDir = signal.orb.breakoutDirection;
-            if (direction === 'bullish' && orbDir === 'bearish') phaseChangeTimingOk = false;
-            if (direction === 'bearish' && orbDir === 'bullish') phaseChangeTimingOk = false;
-          }
-        }
-        const phaseChangeOverride = phaseChangeStructural && phaseChangeTimingOk;
+        const gateInput: GateInput = {
+          confidence: cb.total,
+          alignment,
+          direction,
+          signalMode,
+          strengthScore,
+          trendPhaseBonus: cb.trendPhaseBonus,
+          adxBonus: cb.adxBonus,
+          recentPriceActionBonus: cb.recentPriceActionBonus,
+          nearLevelPenalty: cb.nearLevelPenalty,
+          htf: htfTf ? {
+            adx: htfTf.dmi.adx,
+            growthCrossUp: htfTf.dmi.growthCrossUp,
+            growthCrossDown: htfTf.dmi.growthCrossDown,
+            rangePosition: htfTf.priceStructure.rangePosition,
+          } : null,
+          ltfVwapPriceVsVwap: tfIndicators[0]?.vwap?.priceVsVwap ?? null,
+          orbFormed: signal.orb.orbFormed,
+          orbBreakoutDirection: signal.orb.breakoutDirection,
+          rangeExhaustion: rangeExhaustion ?? null,
+          priorCount: confirmStage1 ? 1 : 0,
+          minutesSinceOpen: minutesSinceOpenGate,
+          rangeEntryCount,
+          lastRangeEntryAgeMin: lastRangeEntryTs === 0 ? null : (currentTs - lastRangeEntryTs) / 60_000,
+          breakoutEntryCount,
+          lastBreakoutEntryAgeMin: lastBreakoutEntryTs === 0 ? null : (currentTs - lastBreakoutEntryTs) / 60_000,
+          vwapRevEntryCount,
+          lastVwapRevEntryAgeMin: lastVwapRevEntryTs === 0 ? null : (currentTs - lastVwapRevEntryTs) / 60_000,
+          totalDailyEntries: dailyEntryCount,
+          hasRecentPhaseChangeEntry: false, // backtest doesn't track phase-change history
+          maxDailyEntries: MAX_DAILY_ENTRIES,
+        };
 
+        const gate = evaluateEntryGate(gateInput);
+
+        // Map gate result to backtest entry record
         let gateResult: EntryRecord['gateResult'];
         let stage1ConfValue: number | undefined;
 
-        // Strong-signal bypass: conf >= 75% + all_aligned can skip stage-2.
-        // Backtest showed no false positives at this level on losing days,
-        // but captures +53.3% and +9.2% entries on trending days.
-        const strongSignalBypass = cb.total >= TCFG.trendStrongSignalMinConf && alignment === 'all_aligned';
-
-        if (highConvOverride) {
-          gateResult = 'HIGH_CONV_OVERRIDE';
-          confirmStage1 = null; // reset after entry
-        } else if (!confirmStage1) {
-          // No prior stage-1 → this is Stage-1 OBSERVE (or immediate entry if strong)
-          if (phaseChangeOverride) {
-            gateResult = 'PHASE_CHANGE_OVERRIDE';
-            confirmStage1 = null;
-          } else if (strongSignalBypass) {
-            gateResult = 'PASSED';
-            confirmStage1 = null;
-            lastEntryTs = currentTs;
-          } else {
-            gateResult = 'STAGE1_OBSERVE';
+        if (gate.result === 'DAILY_CAP_BLOCKED') {
+          // Daily cap — don't push entry
+        } else if (gate.result === 'STAGE1_OBSERVE') {
+          gateResult = 'STAGE1_OBSERVE';
+          if (!confirmStage1) {
             confirmStage1 = { direction, confidence: cb.total, time: timeStr };
           }
+          // Push as blocked entry for reporting
+          const fwd = computeForwardMoves();
+          entries.push({
+            time: timeStr, timeET, direction, alignment, confidence: cb.total,
+            price: currentPrice, strengthScore, signalMode, atr, ...fwd, breakdown: cb, ...regimeCtx,
+            gateResult,
+          });
         } else {
-          // Stage-2: we have a prior stage-1 in the same direction
-          stage1ConfValue = confirmStage1.confidence;
-          // Stale/weakening gates removed — they only delayed entries by 1-5 min
-          // without filtering bad signals. The 2-stage gate is the quality filter.
-          gateResult = 'PASSED';
-          confirmStage1 = null; // reset after confirmed entry
+          // Entry confirmed — map bypass to gateResult
+          if (gate.result === 'HIGH_CONV_OVERRIDE') gateResult = 'HIGH_CONV_OVERRIDE';
+          else if (gate.result === 'PHASE_CHANGE_OVERRIDE') gateResult = 'PHASE_CHANGE_OVERRIDE';
+          else gateResult = 'PASSED';
+
+          if (confirmStage1) {
+            stage1ConfValue = confirmStage1.confidence;
+          }
+          confirmStage1 = null;
           lastEntryTs = currentTs;
-        }
 
-        const fwd = computeForwardMoves();
+          const fwd = computeForwardMoves();
 
-        // Track trend entries for daily limit/cooldown
-        const isConfirmedTrend = gateResult === 'PASSED' || gateResult === 'HIGH_CONV_OVERRIDE' || gateResult === 'PHASE_CHANGE_OVERRIDE';
-        if (isConfirmedTrend) {
-          lastTrendEntryTs = currentTs;
-          trendEntryCount++;
+          // Update mode-specific counters
+          if (signalMode === 'range') { lastRangeEntryTs = currentTs; rangeEntryCount++; }
+          else if (signalMode === 'breakout') { lastBreakoutEntryTs = currentTs; breakoutEntryCount++; }
+          else if (signalMode === 'vwap_reversion') { lastVwapRevEntryTs = currentTs; vwapRevEntryCount++; }
+          else { lastTrendEntryTs = currentTs; trendEntryCount++; }
           dailyEntryCount++;
           if (fwd.entryGrade === 'F' || fwd.entryGrade === 'D') intradayLosses++;
-        }
 
-        entries.push({
-          time: timeStr, timeET, direction, alignment, confidence: cb.total,
-          price: currentPrice, strengthScore, signalMode, atr, ...fwd, breakdown: cb, ...regimeCtx,
-          gateResult, stage1Conf: stage1ConfValue,
-        });
+          entries.push({
+            time: timeStr, timeET, direction, alignment, confidence: cb.total,
+            price: currentPrice, strengthScore, signalMode, atr, ...fwd, breakdown: cb, ...regimeCtx,
+            gateResult, stage1Conf: stage1ConfValue,
+          });
+        }
       }
-      } // end trend limit/cooldown check
-      } // end else (trend mode gate)
     }
 
     // Progress indicator every 30 ticks
@@ -1289,8 +1147,9 @@ async function main() {
   console.log(`  RESULTS: ${tickCount} ticks processed, ${entries.length} potential entries found`);
   console.log(`${'='.repeat(80)}\n`);
 
-  // Deduplicate consecutive entries (same direction within 5 min = same signal)
-  // Within each 5-min window, prefer confirmed entries over blocked ones.
+  // Deduplicate consecutive entries (same direction within 3 min = same signal).
+  // 3-min window matches live scheduler cycle — live can enter every 3-min tick.
+  // Within each window, prefer confirmed entries over blocked ones.
   const isConfirmed = (e: EntryRecord) => e.gateResult === 'PASSED' || e.gateResult === 'HIGH_CONV_OVERRIDE' || e.gateResult === 'PHASE_CHANGE_OVERRIDE';
   const dedupedEntries: EntryRecord[] = [];
   for (const entry of entries) {
@@ -1298,7 +1157,7 @@ async function main() {
     if (prev && prev.direction === entry.direction) {
       const prevTs = new Date(prev.time).getTime();
       const currTs = new Date(entry.time).getTime();
-      if (currTs - prevTs < 5 * 60_000) {
+      if (currTs - prevTs < 3 * 60_000) {
         // Within same window: upgrade if current is confirmed but prev was blocked
         if (isConfirmed(entry) && !isConfirmed(prev)) {
           dedupedEntries[dedupedEntries.length - 1] = entry;
@@ -1326,8 +1185,11 @@ async function main() {
     const confirmedBreakout = confirmedEntries.filter(e => e.signalMode === 'breakout').length;
     const confirmedTrend = confirmedEntries.filter(e => e.signalMode === 'trend').length;
     const confirmedVwapRev = confirmedEntries.filter(e => e.signalMode === 'vwap_reversion').length;
-    if (confirmedRange > MAX_RANGE_ENTRIES) {
-      validationErrors.push(`RANGE CAP VIOLATED: ${confirmedRange} range entries > MAX_RANGE_ENTRIES=${MAX_RANGE_ENTRIES}`);
+    // Per-mode caps: relaxed since strongSignalBypass can produce entries beyond mode limits
+    // (matches live: DecisionOrchestrator strongSignalBypass ignores per-mode limits).
+    // Only log as warnings, not errors.
+    if (confirmedRange > MAX_RANGE_ENTRIES + 2) {
+      validationErrors.push(`RANGE CAP WARNING: ${confirmedRange} range entries > MAX_RANGE_ENTRIES=${MAX_RANGE_ENTRIES}+2`);
     }
     if (confirmedBreakout > MAX_BREAKOUT_ENTRIES) {
       validationErrors.push(`BREAKOUT CAP VIOLATED: ${confirmedBreakout} breakout entries > MAX_BREAKOUT_ENTRIES=${MAX_BREAKOUT_ENTRIES}`);
@@ -1335,8 +1197,8 @@ async function main() {
     if (confirmedTrend > MAX_TREND_ENTRIES) {
       validationErrors.push(`TREND CAP VIOLATED: ${confirmedTrend} trend entries > MAX_TREND_ENTRIES=${MAX_TREND_ENTRIES}`);
     }
-    if (confirmedVwapRev > 1) {
-      validationErrors.push(`VWAP_REV CAP VIOLATED: ${confirmedVwapRev} vwap_reversion entries > MAX=1`);
+    if (confirmedVwapRev > 2) {
+      validationErrors.push(`VWAP_REV CAP WARNING: ${confirmedVwapRev} vwap_reversion entries > 2`);
     }
 
     // 3. Validate entry times within market hours
@@ -1348,15 +1210,8 @@ async function main() {
       }
     }
 
-    // 4. Validate entry time window
-    for (let i = 0; i < confirmedEntries.length; i++) {
-      const e = confirmedEntries[i]!;
-      const eTs = new Date(e.time).getTime();
-      const minSinceOpen = (eTs - openTime.getTime()) / 60_000;
-      if (minSinceOpen < TCFG.entryWindowStartMin || minSinceOpen > TCFG.entryWindowEndMin) {
-        validationErrors.push(`ENTRY WINDOW VIOLATED: Entry #${i + 1} at ${e.timeET} ET (${minSinceOpen.toFixed(0)}m after open) outside [${TCFG.entryWindowStartMin}-${TCFG.entryWindowEndMin}]`);
-      }
-    }
+    // 4. Entry time window — soft annotation only (matches live: DecisionOrchestrator ignores it).
+    //    No longer a validation error since backtest now allows entries outside window.
 
     // 5. Validate cooldowns between consecutive entries of same mode
     const byMode = new Map<string, typeof confirmedEntries>();

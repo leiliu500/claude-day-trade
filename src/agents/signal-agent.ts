@@ -84,7 +84,7 @@ async function fetchBars(
   return fetchBarsRest(ticker, timeframe, limit);
 }
 
-function computeTimeframeIndicators(
+export function computeTimeframeIndicators(
   bars: OHLCVBar[],
   timeframe: Timeframe,
   direction: 'bullish' | 'bearish' | 'neutral' = 'neutral',
@@ -114,7 +114,7 @@ function computeTimeframeIndicators(
 }
 
 
-function classifyAlignment(tfs: TimeframeIndicators[], direction: SignalDirection): AlignmentType {
+export function classifyAlignment(tfs: TimeframeIndicators[], direction: SignalDirection): AlignmentType {
   // tfs order: [LTF, MTF, HTF]
   const [ltf, mtf, htf] = tfs;
   if (!ltf || !mtf || !htf) return 'mixed';
