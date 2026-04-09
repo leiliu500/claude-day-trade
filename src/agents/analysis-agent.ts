@@ -1870,10 +1870,11 @@ export class AnalysisAgent {
     }
 
     // ── Trend persistence bonus: reward consecutive same-direction aligned signals ──
-    // Instead of tuning individual penalties (day-specific whack-a-mole), this is a
-    // meta-signal: when the market keeps confirming the same direction across multiple
+    // Meta-signal: when the market keeps confirming the same direction across multiple
     // pipeline runs, the penalties for "chasing" (pos, mex) are less relevant because
-    // the trend is genuinely persisting.  +0.03 per consecutive aligned bar, capped +0.12.
+    // the trend is genuinely persisting.  +0.03 per consecutive aligned bar, capped +0.06.
+    // Cap reduced from +0.12 to +0.06 (Apr 2026): +12% caused persistence alone to push
+    // marginal signals over the 65% threshold, leading to 25 entries/day on AAPL.
     // Only counts signals with alignment >= htf_mtf_aligned to avoid noise.
     // Only for trend/breakout modes — range/vwap_reversion are mean-reversion, not trend continuation.
     // Require structure support (structureBonus > 0) — persistence can overcome additive penalties
@@ -1892,14 +1893,15 @@ export class AnalysisAgent {
           }
         }
         if (consecutiveCount >= 2) {
-          const persistenceBonus = Math.min(0.12, (consecutiveCount - 1) * 0.03);
+          const persistenceBonus = Math.min(0.06, (consecutiveCount - 1) * 0.03);
           let agingReduction = 0;
           // When persistence is strong (3+ consecutive aligned signals), halve negative
-          // maturity/phase/accel penalties.  Persistent all-timeframe alignment directly
-          // contradicts "trend is dying" — the trend keeps producing aligned signals.
-          // Without this, maturity + phase + accel triple-count the same "aging" story
-          // and block entries on genuinely persisting trends (QQQ/IWM/SPY 2026-03-30).
-          if (persistenceBonus >= 0.06) {
+          // maturity/phase/accel penalties — UNLESS the move is exhausted (mex <= -0.10).
+          // When mex says the move is exhausted, the aging signals are correct, not artifacts.
+          // Apr 2026 AAPL: persistence halved aging on exhausted moves, inflating confidence
+          // by an extra 5-8% on top of the persistence bonus itself.
+          const moveExhausted = cb.moveExhaustionPenalty <= -0.10;
+          if (persistenceBonus >= 0.06 && !moveExhausted) {
             const matRed = cb.adxMaturityPenalty < 0 ? -cb.adxMaturityPenalty * 0.5 : 0;
             const phRed = cb.trendPhaseBonus < 0 ? -cb.trendPhaseBonus * 0.5 : 0;
             const accRed = cb.momentumAccelBonus < 0 ? -cb.momentumAccelBonus * 0.5 : 0;
@@ -1914,7 +1916,7 @@ export class AnalysisAgent {
           entryCtx.confidence = cb.total;
           entryCtx.breakdown = cb;
           if (persistenceBonus > 0) {
-            console.log(`[AnalysisAgent] ${signal.ticker} trend persistence: ${consecutiveCount} consecutive ${signal.direction} aligned signals → +${(persistenceBonus * 100).toFixed(0)}% bonus${agingReduction > 0 ? ` (aging halved: +${(agingReduction * 100).toFixed(0)}%)` : ''}`);
+            console.log(`[AnalysisAgent] ${signal.ticker} trend persistence: ${consecutiveCount} consecutive ${signal.direction} aligned signals → +${(persistenceBonus * 100).toFixed(0)}% bonus${agingReduction > 0 ? ` (aging halved: +${(agingReduction * 100).toFixed(0)}%)` : ''}${moveExhausted ? ' (aging relief suppressed — move exhausted)' : ''}`);
           }
         }
       } catch {
@@ -1939,7 +1941,22 @@ export class AnalysisAgent {
     let meetsEntryThreshold = cb.total >= minConf;
     let entryBlockReason: string | undefined;
 
-    if (!meetsEntryThreshold) {
+    // Organic confidence floor: persistence bonus must not be the sole reason for
+    // crossing the threshold. Require confidence WITHOUT persistence to be within 5%
+    // of the threshold. This prevents a 53% organic signal + 6% persistence = 59%
+    // from clearing a 60% bar (with leading override). Apr 2026 AAPL: persistence
+    // inflated 24 of 25 entries, most with organic confidence far below threshold.
+    if (meetsEntryThreshold && cb.trendPersistenceBonus > 0) {
+      const organicConf = cb.total - cb.trendPersistenceBonus;
+      const organicFloor = minConf - 0.05;
+      if (organicConf < organicFloor) {
+        meetsEntryThreshold = false;
+        entryBlockReason = `organic confidence ${(organicConf * 100).toFixed(0)}% < ${(organicFloor * 100).toFixed(0)}% floor (persistence=${(cb.trendPersistenceBonus * 100).toFixed(0)}% cannot bridge >${((minConf - organicConf) * 100).toFixed(0)}% gap)`;
+        console.log(`[AnalysisAgent] ${signal.ticker} persistence-only entry blocked: organic=${(organicConf * 100).toFixed(1)}%, persistence=+${(cb.trendPersistenceBonus * 100).toFixed(0)}%, total=${(cb.total * 100).toFixed(1)}%, floor=${(organicFloor * 100).toFixed(0)}%`);
+      }
+    }
+
+    if (!meetsEntryThreshold && !entryBlockReason) {
       entryBlockReason = `confidence ${(cb.total * 100).toFixed(0)}% < ${(minConf * 100).toFixed(0)}% threshold`;
     }
 

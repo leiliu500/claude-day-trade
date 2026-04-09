@@ -725,7 +725,7 @@ async function main() {
     let cb = LIVE_TICKER_CFG.strategy.adjustConfidence(cbRaw, entryCtx);
 
     // ── Trend persistence bonus (mirrors live AnalysisAgent logic) ─────────────
-    // Count consecutive same-direction aligned signals from history, apply +0.03/bar (cap +0.12)
+    // Count consecutive same-direction aligned signals from history, apply +0.03/bar (cap +0.06)
     // Only for trend/breakout modes — range/vwap_reversion are mean-reversion, not trend continuation.
     // Require structure support (structureBonus > 0) — persistence can overcome additive penalties
     // (pos, mex) but shouldn't override hard structural gates (no prior-day level backing).
@@ -741,11 +741,13 @@ async function main() {
         }
       }
       if (consecutiveCount >= 2) {
-        const persistenceBonus = Math.min(0.12, (consecutiveCount - 1) * 0.03);
+        const persistenceBonus = Math.min(0.06, (consecutiveCount - 1) * 0.03);
         let agingReduction = 0;
         // When persistence is strong (3+ consecutive aligned signals), halve negative
         // maturity/phase/accel penalties — matches live analysis-agent.ts logic.
-        if (persistenceBonus >= 0.06) {
+        // Suppress aging relief when the move is exhausted (mex <= -0.10).
+        const moveExhausted = cb.moveExhaustionPenalty <= -0.10;
+        if (persistenceBonus >= 0.06 && !moveExhausted) {
           const matRed = cb.adxMaturityPenalty < 0 ? -cb.adxMaturityPenalty * 0.5 : 0;
           const phRed = cb.trendPhaseBonus < 0 ? -cb.trendPhaseBonus * 0.5 : 0;
           const accRed = cb.momentumAccelBonus < 0 ? -cb.momentumAccelBonus * 0.5 : 0;
@@ -774,6 +776,16 @@ async function main() {
       effectiveThreshold += LOSS_THRESHOLD_BUMP;
     }
     let meetsThreshold = cb.total >= effectiveThreshold;
+
+    // Organic confidence floor: persistence bonus must not be the sole reason for
+    // crossing the threshold — matches live analysis-agent.ts logic.
+    if (meetsThreshold && cb.trendPersistenceBonus > 0) {
+      const organicConf = cb.total - cb.trendPersistenceBonus;
+      const organicFloor = effectiveThreshold - 0.05;
+      if (organicConf < organicFloor) {
+        meetsThreshold = false;
+      }
+    }
 
     // Per-ticker: filter breakout entries with stale/insufficient data (abnormally low ATR%)
     // Only applied to breakout mode — trend entries with low ATR can still be valid
@@ -992,6 +1004,7 @@ async function main() {
           accountEquity: 100_000,
           accountBuyingPower: 100_000,
           dailyRealizedPnl: 0,
+          dailyEntryCount,
         };
 
         const decision: DecisionResult = await orchestrator.run({
@@ -1118,16 +1131,8 @@ async function main() {
           lastBreakoutEntryAgeMin: lastBreakoutEntryTs === 0 ? null : (currentTs - lastBreakoutEntryTs) / 60_000,
           vwapRevEntryCount,
           lastVwapRevEntryAgeMin: lastVwapRevEntryTs === 0 ? null : (currentTs - lastVwapRevEntryTs) / 60_000,
-          // Rolling daily cap — matches live context-builder.ts:
-          // Live queries last 10 decisions from last 30 min, counts NEW_ENTRY.
-          // Here we replicate: find the 10th-most-recent decision timestamp,
-          // then count confirmed entries at or after that timestamp.
-          totalDailyEntries: (() => {
-            const thirtyMinAgo = currentTs - 30 * 60_000;
-            const recentDecs = rollingDecisionTs.filter(t => t >= thirtyMinAgo);
-            const windowStart = recentDecs.length > 10 ? recentDecs[recentDecs.length - 10]! : thirtyMinAgo;
-            return rollingEntryTs.filter(t => t >= windowStart).length;
-          })(),
+          // Full-day entry count — matches live context-builder.ts dailyEntryCount query.
+          totalDailyEntries: dailyEntryCount,
           hasRecentPhaseChangeEntry: false, // backtest doesn't track phase-change history
           maxDailyEntries: MAX_DAILY_ENTRIES,
         };

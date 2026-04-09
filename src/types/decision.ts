@@ -55,6 +55,8 @@ export interface PositionContext {
   accountBuyingPower: number;
   accountEquity: number;
   dailyRealizedPnl: number;
+  /** Full-day entry count (not limited by recentDecisions 30-min window) */
+  dailyEntryCount: number;
 }
 
 export interface EntryStrategy {

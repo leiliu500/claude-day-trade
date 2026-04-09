@@ -425,7 +425,7 @@ export class DecisionOrchestrator {
         lastBreakoutEntryAgeMin: breakoutEntries[0] ? (nowMs - new Date(breakoutEntries[0].createdAt).getTime()) / 60_000 : null,
         vwapRevEntryCount: vwapRevEntries.length,
         lastVwapRevEntryAgeMin: vwapRevEntries[0] ? (nowMs - new Date(vwapRevEntries[0].createdAt).getTime()) / 60_000 : null,
-        totalDailyEntries: allEntries.length,
+        totalDailyEntries: context.dailyEntryCount,
         hasRecentPhaseChangeEntry: context.recentDecisions.some(d =>
           d.decisionType === 'NEW_ENTRY' && d.direction === signal.direction && d.reasoning?.includes('[PHASE-CHANGE')),
         maxDailyEntries: tickerCfg?.maxDailyEntries ?? 4,
@@ -441,8 +441,8 @@ export class DecisionOrchestrator {
           ? ` [Phase-change structural signal present but timing rejected: ${gate.phaseChangeTimingRejectReason}]`
           : '';
         if (gate.result === 'DAILY_CAP_BLOCKED') {
-          rawOutput.reasoning = `[DAILY CAP] Entry blocked — ${allEntries.length}/${gateInput.maxDailyEntries} entries today. ${rawOutput.reasoning}`;
-          console.log(`[DecisionOrchestrator] Daily entry cap reached (${allEntries.length}/${gateInput.maxDailyEntries}) — blocking all new entries`);
+          rawOutput.reasoning = `[DAILY CAP] Entry blocked — ${context.dailyEntryCount}/${gateInput.maxDailyEntries} entries today. ${rawOutput.reasoning}`;
+          console.log(`[DecisionOrchestrator] Daily entry cap reached (${context.dailyEntryCount}/${gateInput.maxDailyEntries}) — blocking all new entries`);
         } else {
           rawOutput.reasoning = `[STAGE-1 OBSERVE] [TRIGGER: AI recommended NEW_ENTRY but server gate blocked — priorCount=${priorCount}, needs ≥1 confirm]${timingNote} Building conviction (count will advance to 1). Override requires confidence>=0.92 + all_aligned, or confidence>=0.75 + all_aligned, or phase-change. ${rawOutput.reasoning}`;
           if (gate.phaseChangeTimingRejected) {

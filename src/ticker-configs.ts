@@ -97,7 +97,7 @@ const TICKER_OVERRIDES: Record<string, Partial<Omit<TickerConfig, 'ticker' | 'st
     minConfidence: 0.65,
     maxDailyEntries: 6,
     maxContracts: 5,       // smaller size — newer symbol, less data
-    enabled: true,
+    enabled: false,
     strategy: qqqStrategy,
   },
   IWM: {
@@ -105,7 +105,7 @@ const TICKER_OVERRIDES: Record<string, Partial<Omit<TickerConfig, 'ticker' | 'st
     minConfidence: 0.65,
     maxDailyEntries: 6,
     maxContracts: 5,
-    enabled: true,
+    enabled: false,
     strategy: iwmStrategy,
   },
   NVDA: {
@@ -113,15 +113,15 @@ const TICKER_OVERRIDES: Record<string, Partial<Omit<TickerConfig, 'ticker' | 'st
     minConfidence: 0.65,
     maxDailyEntries: 1,    // NVDA: 2nd entries were 0W/3L
     maxContracts: 5,
-    enabled: true,
+    enabled: false,
     strategy: nvdaStrategy,
   },
   AAPL: {
     // Initial config — no backtest tuning yet
     minConfidence: 0.65,
-    maxDailyEntries: 4,
+    maxDailyEntries: 6,
     maxContracts: 5,
-    enabled: true,
+    enabled: false,
     strategy: aaplStrategy,
   },
 };
