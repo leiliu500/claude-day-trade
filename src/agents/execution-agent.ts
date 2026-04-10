@@ -96,10 +96,11 @@ export class ExecutionAgent {
     accountEquity: number;
     accountBuyingPower: number;
     dailyRealizedPnl: number;
+    dailyPremiumDeployed: number;
     timeGateOk: boolean;
     tickerCfg?: TickerConfig;
   }): { sizing: SizeResult | null; passed: boolean; failedGates: string[] } {
-    const { decision, signal, option, analysis, accountEquity, accountBuyingPower, dailyRealizedPnl, timeGateOk, tickerCfg } = params;
+    const { decision, signal, option, analysis, accountEquity, accountBuyingPower, dailyRealizedPnl, dailyPremiumDeployed, timeGateOk, tickerCfg } = params;
     const candidate = option.winnerCandidate;
 
     if (!candidate) {
@@ -128,6 +129,7 @@ export class ExecutionAgent {
       accountBuyingPower,
       accountEquity,
       dailyRealizedPnl,
+      dailyPremiumDeployed,
       proposedQty:  sizing.qty,
       proposedCost: sizing.qty * candidate.entryPremium * 100,
       ltfAtrPct,

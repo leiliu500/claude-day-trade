@@ -21,12 +21,13 @@ export function checkSafetyGates(params: {
   accountBuyingPower: number;
   accountEquity: number;
   dailyRealizedPnl: number;
+  dailyPremiumDeployed: number;
   proposedQty: number;
   proposedCost: number;
   ltfAtrPct?: number;
   tickerCfg?: TickerConfig;
 }): GateCheckResult {
-  const { timeGateOk, analysis, option, decision, accountBuyingPower, accountEquity, dailyRealizedPnl, proposedQty, proposedCost, ltfAtrPct, tickerCfg } = params;
+  const { timeGateOk, analysis, option, decision, accountBuyingPower, accountEquity, dailyRealizedPnl, dailyPremiumDeployed, proposedQty, proposedCost, ltfAtrPct, tickerCfg } = params;
   // Per-symbol config with global fallback
   const minConfidence = tickerCfg?.minConfidence ?? config.MIN_CONFIDENCE;
   const maxSpreadPct = tickerCfg?.maxSpreadPct ?? config.MAX_SPREAD_PCT;
@@ -87,7 +88,19 @@ export function checkSafetyGates(params: {
     }
   }
 
-  // 10. Open-volatility gate — no new entries in first 30 min of session (9:30–10:00 AM ET)
+  // 10. Daily risk budget gate — halt new entries when today's deployed premium exceeds budget
+  {
+    const dailyRiskBudgetPct = tickerCfg?.dailyRiskBudgetPct ?? 0.05;
+    const budgetUsd = accountEquity * dailyRiskBudgetPct;
+    if (accountEquity > 0 && dailyPremiumDeployed + proposedCost > budgetUsd) {
+      failed.push(
+        `DAILY_RISK_BUDGET_GATE: deployed $${dailyPremiumDeployed.toFixed(0)} + proposed $${proposedCost.toFixed(0)} ` +
+        `exceeds ${(dailyRiskBudgetPct * 100).toFixed(1)}% budget ($${budgetUsd.toFixed(0)})`,
+      );
+    }
+  }
+
+  // 11. Open-volatility gate — no new entries in first 30 min of session (9:30–10:00 AM ET)
   {
     const now = new Date();
     // DST detection: 2nd Sunday March → 1st Sunday November (US Eastern)

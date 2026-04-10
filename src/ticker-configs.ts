@@ -29,8 +29,15 @@ export interface TickerConfig {
   // ── Confidence & Entry ─────────────────────────────────────────────────────
   /** Minimum confidence to consider entry (0-1) */
   minConfidence: number;
-  /** Max entries per day across all modes */
-  maxDailyEntries: number;
+  /**
+   * Max fraction of equity that can be deployed as option premium per day.
+   * Replaces the old hard entry-count cap with an institutional-style risk
+   * budget: many small scalps are fine, fewer large ones — the budget
+   * self-adjusts based on position sizing.
+   * Global across all tickers (same account).
+   * E.g. 0.05 = 5% of equity → $5,000/day on a $100K account.
+   */
+  dailyRiskBudgetPct: number;
 
   // ── Risk / Sizing ──────────────────────────────────────────────────────────
   /** Max fraction of equity risked per trade */
@@ -65,7 +72,7 @@ export const DEFAULT_TICKER_CONFIG: Omit<TickerConfig, 'ticker'> = {
   profile: 'S',
   enabled: true,
   minConfidence: 0.65,
-  maxDailyEntries: 4,
+  dailyRiskBudgetPct: 0.05,
   maxRiskPct: 0.005,
   maxContracts: 10,
   maxSpreadPct: 0.02,
@@ -86,7 +93,7 @@ const TICKER_OVERRIDES: Record<string, Partial<Omit<TickerConfig, 'ticker' | 'st
   SPY: {
     // Tuned Q4 2025 + Q1 2026: blocks breakout entries in mature trending regimes
     strategy: spyStrategy,
-    maxDailyEntries: 6,
+
     // Entry window: block first 30 min after open + last 30 min before close
     entryWindowStartMin: 30,
     entryWindowEndMin: 360,
@@ -95,7 +102,7 @@ const TICKER_OVERRIDES: Record<string, Partial<Omit<TickerConfig, 'ticker' | 'st
     // Tuned from Q1 2026 backtest: 6W/3L (67%), +63.5% P&L
     // (baseline was 8W/11L 42%, -63.8%)
     minConfidence: 0.65,
-    maxDailyEntries: 6,
+
     maxContracts: 5,       // smaller size — newer symbol, less data
     enabled: false,
     strategy: qqqStrategy,
@@ -103,7 +110,7 @@ const TICKER_OVERRIDES: Record<string, Partial<Omit<TickerConfig, 'ticker' | 'st
   IWM: {
     // Initial config — no backtest tuning yet
     minConfidence: 0.65,
-    maxDailyEntries: 6,
+
     maxContracts: 5,
     enabled: false,
     strategy: iwmStrategy,
@@ -111,7 +118,6 @@ const TICKER_OVERRIDES: Record<string, Partial<Omit<TickerConfig, 'ticker' | 'st
   NVDA: {
     // Tuned Q4 2025 + Q1 2026: 6B/1C/2F (67% good)
     minConfidence: 0.65,
-    maxDailyEntries: 4,
     maxContracts: 5,
     enabled: false,
     strategy: nvdaStrategy,
@@ -119,7 +125,7 @@ const TICKER_OVERRIDES: Record<string, Partial<Omit<TickerConfig, 'ticker' | 'st
   AAPL: {
     // Initial config — no backtest tuning yet
     minConfidence: 0.65,
-    maxDailyEntries: 6,
+
     maxContracts: 5,
     enabled: false,
     strategy: aaplStrategy,

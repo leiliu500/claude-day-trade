@@ -16,8 +16,7 @@ export type GateResult =
   | 'PASSED'
   | 'STAGE1_OBSERVE'
   | 'HIGH_CONV_OVERRIDE'
-  | 'PHASE_CHANGE_OVERRIDE'
-  | 'DAILY_CAP_BLOCKED';
+  | 'PHASE_CHANGE_OVERRIDE';
 
 export type GateBypassType =
   | 'high_conviction'
@@ -81,11 +80,7 @@ export interface GateInput {
   lastBreakoutEntryAgeMin: number | null;
   vwapRevEntryCount: number;
   lastVwapRevEntryAgeMin: number | null;
-  totalDailyEntries: number;
   hasRecentPhaseChangeEntry: boolean;
-
-  // Config
-  maxDailyEntries: number;
 }
 
 // ── Gate evaluation ─────────────────────────────────────────────────────────
@@ -99,8 +94,7 @@ export function evaluateEntryGate(input: GateInput): GateDecision {
     rangeEntryCount, lastRangeEntryAgeMin,
     breakoutEntryCount, lastBreakoutEntryAgeMin,
     vwapRevEntryCount, lastVwapRevEntryAgeMin,
-    totalDailyEntries, hasRecentPhaseChangeEntry,
-    maxDailyEntries,
+    hasRecentPhaseChangeEntry,
   } = input;
 
   // ── High-conviction override ──
@@ -208,21 +202,11 @@ export function evaluateEntryGate(input: GateInput): GateDecision {
     vwapRevBypass = meetsThreshold && pastWaitPeriod && underLimit && cooldownOk;
   }
 
-  // ── Daily entry cap ──
-  const dailyCapOk = totalDailyEntries < maxDailyEntries;
-  if (!dailyCapOk) {
-    rangeBypass = false;
-    breakoutBypass = false;
-    vwapRevBypass = false;
-  }
-
   // ── Final decision ──
+  // Daily risk budget is enforced downstream in safety-gates (DAILY_RISK_BUDGET_GATE)
+  // where the proposed cost is known, instead of a hard entry-count cap here.
   const anyBypass = highConvOverride || phaseChangeOk || strongSignalBypass ||
     rangeBypass || breakoutBypass || vwapRevBypass;
-
-  if (!dailyCapOk) {
-    return { result: 'DAILY_CAP_BLOCKED', bypass: null, phaseChangeTimingRejected, phaseChangeTimingRejectReason };
-  }
 
   if (!anyBypass && priorCount < 1) {
     return { result: 'STAGE1_OBSERVE', bypass: null, phaseChangeTimingRejected, phaseChangeTimingRejectReason };

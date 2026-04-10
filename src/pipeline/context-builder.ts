@@ -80,7 +80,7 @@ export async function buildContext(ticker: string): Promise<PositionContext> {
     fetchAndSyncBrokerState(ticker),
   ]);
 
-  const [activePos, recentDecisions, streaks, recentEvals, dailyPnl, dailyEntryCountResult] = await Promise.all([
+  const [activePos, recentDecisions, streaks, recentEvals, dailyPnl, dailyPremiumResult] = await Promise.all([
     pool.query(
       `SELECT id, option_symbol, option_right, qty, entry_price, current_stop, current_tp,
               opened_at, confirmation_count
@@ -114,13 +114,13 @@ export async function buildContext(ticker: string): Promise<PositionContext> {
          FROM trading.position_journal
         WHERE trade_date = CURRENT_DATE AND status = 'CLOSED' AND realized_pnl IS NOT NULL`
     ),
-    // Full-day entry count — NOT limited by the 30-min window of recentDecisions.
-    // This ensures maxDailyEntries is enforced across the entire trading day.
-    pool.query<{ cnt: string }>(
-      `SELECT COUNT(*)::text AS cnt
-         FROM trading.trading_decisions
-        WHERE ticker = $1 AND trade_date = CURRENT_DATE AND decision_type = 'NEW_ENTRY'`,
-      [ticker]
+    // Daily premium deployed — total option premium bought today across ALL tickers.
+    // Used by the risk-budget gate (replaces the old hard entry-count cap).
+    // Global (not per-ticker) because all tickers share the same account equity.
+    pool.query<{ total: string }>(
+      `SELECT COALESCE(SUM(entry_price * qty * 100), 0)::text AS total
+         FROM trading.position_journal
+        WHERE trade_date = CURRENT_DATE`
     ),
   ]);
 
@@ -182,6 +182,6 @@ export async function buildContext(ticker: string): Promise<PositionContext> {
     accountBuyingPower: account.buyingPower,
     accountEquity: account.equity,
     dailyRealizedPnl: parseFloat(dailyPnl.rows[0]?.total ?? '0'),
-    dailyEntryCount: parseInt(dailyEntryCountResult.rows[0]?.cnt ?? '0', 10),
+    dailyPremiumDeployed: parseFloat(dailyPremiumResult.rows[0]?.total ?? '0'),
   };
 }

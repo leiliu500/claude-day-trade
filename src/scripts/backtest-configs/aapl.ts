@@ -35,7 +35,7 @@ function aaplAdjustConfidence(cb: ConfidenceBreakdown, _ctx: EntryContext): Conf
 export const AAPL_CONFIG: Partial<TickerBacktestConfig> = {
   minConfidence: 0.65,
   minAtrPct: 0.06,
-  maxDailyEntries: 4,
+  dailyRiskBudgetPct: 0.05,
   breakoutMaxExhaustion: 10.0,
   breakoutMaxChop: 1.15,
   breakoutMinStrength: 35,

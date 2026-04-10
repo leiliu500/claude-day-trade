@@ -4,7 +4,7 @@
  * Tuned from Q4 2025 + Q1 2026 backtest (Oct 2025 – Mar 2026):
  *   Baseline: 3A/5B/2C/10F (40% good, 50% bad)
  *   Tuned: 0B/6B/1C/2F (67% good, 22% bad)
- *   Filters: conf >= 80% in shouldAllowEntry, maxDailyEntries=1, breakoutMaxExh=6.0,
+ *   Filters: conf >= 80% in shouldAllowEntry, dailyRiskBudgetPct=0.05, breakoutMaxExh=6.0,
  *   trendMaxExh=9.0, block negative dvel, block RangeExh < 1.0
  */
 
@@ -65,7 +65,7 @@ export const NVDA_CONFIG: Partial<TickerBacktestConfig> = {
   minConfidence: 0.65,
   minAtrPct: 0.08,
   // NVDA: max 1 entry per day — 2nd entries were 0W/3L (Feb 12#2, Feb 20#2, Feb 24#2 all F).
-  maxDailyEntries: 4,
+  dailyRiskBudgetPct: 0.05,
   // NVDA: lower breakout exhaustion from 10.0 → 6.0.
   // F-grade breakouts all had Exh >= 8.3. Good breakouts had Exh <= 5.3.
   breakoutMaxExhaustion: 6.0,

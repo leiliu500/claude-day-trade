@@ -425,31 +425,24 @@ export class DecisionOrchestrator {
         lastBreakoutEntryAgeMin: breakoutEntries[0] ? (nowMs - new Date(breakoutEntries[0].createdAt).getTime()) / 60_000 : null,
         vwapRevEntryCount: vwapRevEntries.length,
         lastVwapRevEntryAgeMin: vwapRevEntries[0] ? (nowMs - new Date(vwapRevEntries[0].createdAt).getTime()) / 60_000 : null,
-        totalDailyEntries: context.dailyEntryCount,
         hasRecentPhaseChangeEntry: context.recentDecisions.some(d =>
           d.decisionType === 'NEW_ENTRY' && d.direction === signal.direction && d.reasoning?.includes('[PHASE-CHANGE')),
-        maxDailyEntries: tickerCfg?.maxDailyEntries ?? 4,
       };
 
       const gate = evaluateEntryGate(gateInput);
       const side = signal.direction === 'bullish' ? 'CALL' : 'PUT';
 
-      if (gate.result === 'STAGE1_OBSERVE' || gate.result === 'DAILY_CAP_BLOCKED') {
+      if (gate.result === 'STAGE1_OBSERVE') {
         rawOutput.decision_type = 'WAIT';
         rawOutput.should_execute = false;
         const timingNote = gate.phaseChangeTimingRejected
           ? ` [Phase-change structural signal present but timing rejected: ${gate.phaseChangeTimingRejectReason}]`
           : '';
-        if (gate.result === 'DAILY_CAP_BLOCKED') {
-          rawOutput.reasoning = `[DAILY CAP] Entry blocked — ${context.dailyEntryCount}/${gateInput.maxDailyEntries} entries today. ${rawOutput.reasoning}`;
-          console.log(`[DecisionOrchestrator] Daily entry cap reached (${context.dailyEntryCount}/${gateInput.maxDailyEntries}) — blocking all new entries`);
-        } else {
-          rawOutput.reasoning = `[STAGE-1 OBSERVE] [TRIGGER: AI recommended NEW_ENTRY but server gate blocked — priorCount=${priorCount}, needs ≥1 confirm]${timingNote} Building conviction (count will advance to 1). Override requires confidence>=0.92 + all_aligned, or confidence>=0.75 + all_aligned, or phase-change. ${rawOutput.reasoning}`;
-          if (gate.phaseChangeTimingRejected) {
-            console.log(`[DecisionOrchestrator] Phase-change override blocked by timing filter: ${gate.phaseChangeTimingRejectReason} (priorCount=${priorCount}, confidence=${analysis.confidence.toFixed(2)})`);
-          }
-          console.log(`[DecisionOrchestrator] NEW_ENTRY blocked by confirmation gate (Stage-1 OBSERVE, priorCount=${priorCount}, confidence=${analysis.confidence.toFixed(2)}, alignment=${signal.alignment})`);
+        rawOutput.reasoning = `[STAGE-1 OBSERVE] [TRIGGER: AI recommended NEW_ENTRY but server gate blocked — priorCount=${priorCount}, needs ≥1 confirm]${timingNote} Building conviction (count will advance to 1). Override requires confidence>=0.92 + all_aligned, or confidence>=0.75 + all_aligned, or phase-change. ${rawOutput.reasoning}`;
+        if (gate.phaseChangeTimingRejected) {
+          console.log(`[DecisionOrchestrator] Phase-change override blocked by timing filter: ${gate.phaseChangeTimingRejectReason} (priorCount=${priorCount}, confidence=${analysis.confidence.toFixed(2)})`);
         }
+        console.log(`[DecisionOrchestrator] NEW_ENTRY blocked by confirmation gate (Stage-1 OBSERVE, priorCount=${priorCount}, confidence=${analysis.confidence.toFixed(2)}, alignment=${signal.alignment})`);
         isStage1ObserveWait = true;
       } else if (gate.bypass === 'range') {
         rawOutput.reasoning = `[RANGE BYPASS] Mean-reversion ${side} at range ${signal.direction === 'bullish' ? 'support' : 'resistance'} (conf=${(analysis.confidence * 100).toFixed(1)}%, ADX=${htfTf?.dmi.adx.toFixed(1)}). ${rawOutput.reasoning}`;

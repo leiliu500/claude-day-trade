@@ -305,7 +305,7 @@ export async function runPipeline(
         const { sizing: newSizing, passed: newPassed, failedGates: newFailed } = executionAgent.prepareEntry({
           decision, signal, option: optionEval, analysis,
           accountEquity: context.accountEquity, accountBuyingPower: context.accountBuyingPower,
-          dailyRealizedPnl: context.dailyRealizedPnl, timeGateOk, tickerCfg,
+          dailyRealizedPnl: context.dailyRealizedPnl, dailyPremiumDeployed: context.dailyPremiumDeployed, timeGateOk, tickerCfg,
         });
         if (!newPassed || !newSizing || !optionEval.winnerCandidate) {
           result.failedGates = newFailed; break;
@@ -338,7 +338,7 @@ export async function runPipeline(
         const { sizing: addSizing, passed: addPassed, failedGates: addFailed } = executionAgent.prepareEntry({
           decision, signal, option: optionEval, analysis,
           accountEquity: context.accountEquity, accountBuyingPower: context.accountBuyingPower,
-          dailyRealizedPnl: context.dailyRealizedPnl, timeGateOk, tickerCfg,
+          dailyRealizedPnl: context.dailyRealizedPnl, dailyPremiumDeployed: context.dailyPremiumDeployed, timeGateOk, tickerCfg,
         });
         if (!addPassed || !addSizing || !optionEval.winnerCandidate) {
           result.failedGates = addFailed; break;
@@ -457,7 +457,7 @@ export async function runPipeline(
         const { sizing: revSizing, passed: revPassed, failedGates: revFailed } = executionAgent.prepareEntry({
           decision, signal, option: optionEval, analysis,
           accountEquity: context.accountEquity, accountBuyingPower: context.accountBuyingPower,
-          dailyRealizedPnl: context.dailyRealizedPnl, timeGateOk, tickerCfg,
+          dailyRealizedPnl: context.dailyRealizedPnl, dailyPremiumDeployed: context.dailyPremiumDeployed, timeGateOk, tickerCfg,
         });
         if (!revPassed || !revSizing || !optionEval.winnerCandidate) {
           result.failedGates = revFailed; break;

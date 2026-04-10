@@ -24,7 +24,7 @@ import { normalizeAlpacaBars } from '../types/market.js';
 import { v4 as uuidv4 } from 'uuid';
 import { DecisionOrchestrator } from '../agents/decision-orchestrator.js';
 import { evaluateEntryGate, type GateInput } from '../lib/entry-gate.js';
-import type { SimResult } from '../lib/order-agent-sim.js';
+import { type SimResult, estimateEntryPremium } from '../lib/order-agent-sim.js';
 import { evaluateTrend, evaluateRange, evaluateBreakout, evaluateVwapReversion, resolveMode } from '../strategies/default.js';
 import { computeTrendConfidenceFn, computeRangeConfidenceFn, computeBreakoutConfidenceFn } from '../agents/analysis-agent.js';
 import { computeTimeframeIndicators, classifyAlignment } from '../agents/signal-agent.js';
@@ -377,14 +377,11 @@ async function main() {
   let rangeEntryCount = 0;
   const RANGE_COOLDOWN_MIN = 20;   // min minutes between range entries
   const MAX_RANGE_ENTRIES = 1;      // max 1 range entry per day — 2nd range entries were 3W/7L across Feb+Mar
-  const MAX_DAILY_ENTRIES = TCFG.maxDailyEntries; // per-ticker daily cap
   let dailyEntryCount = 0;  // total for reporting only
+  let dailyPremiumDeployed = 0; // running total of entry_price * qty * 100 for risk budget gate
+  const DAILY_RISK_BUDGET_PCT = TCFG.dailyRiskBudgetPct; // e.g. 0.05 = 5% of equity
 
-  // ── Rolling daily cap (matches live context-builder.ts) ────────────────────
-  // Live system queries: last 10 decisions from last 30 min, counts NEW_ENTRY.
-  // Older entries fall off the window, so the cap resets over time.
-  // Track all decision timestamps (every processed tick = one decision) and
-  // confirmed entry timestamps separately to replicate this behavior.
+  // ── Rolling state ─────────────────────────────────────────────────────────
   const rollingDecisionTs: number[] = [];   // every tick = one decision (WAIT or ENTRY)
   const rollingEntryTs: number[] = [];      // only confirmed entries
   const RANGE_WAIT_MIN = 45;       // don't range trade in first 45 min (let day establish)
@@ -404,7 +401,7 @@ async function main() {
   let lastTrendEntryTs = 0;
   let trendEntryCount = 0;
   const TREND_COOLDOWN_MIN = TCFG.trendCooldownMin;  // per-ticker (0 = no cooldown, matches live)
-  const MAX_TREND_ENTRIES = 6;       // max trend entries per day
+  // No hard trend cap — risk budget is the sole limiter for trend entries.
 
   // ── Regime score (display only — live strategy computes its own via detectMode) ──
   let regimeScore = 50;
@@ -1004,7 +1001,7 @@ async function main() {
           accountEquity: 100_000,
           accountBuyingPower: 100_000,
           dailyRealizedPnl: 0,
-          dailyEntryCount,
+          dailyPremiumDeployed,
         };
 
         const decision: DecisionResult = await orchestrator.run({
@@ -1036,7 +1033,11 @@ async function main() {
           }
           lastEntryTs = currentTs;
           dailyEntryCount++;
-          rollingEntryTs.push(currentTs);  // rolling cap tracking
+          rollingEntryTs.push(currentTs);
+          // Track premium deployed for risk budget
+          const aiPremium = estimateEntryPremium(atr, 0.50, ltfBars).entryPremium;
+          const aiQty = Math.max(1, Math.min(LIVE_TICKER_CFG.maxContracts, Math.floor(100_000 * LIVE_TICKER_CFG.maxRiskPct / (aiPremium * 100))));
+          dailyPremiumDeployed += aiPremium * aiQty * 100;
         } else if (decision.reasoning.includes('[STAGE-1 OBSERVE]')) {
           gateResult = 'STAGE1_OBSERVE';
         } else if (decision.reasoning.includes('[WEAKENING-SIGNAL BLOCK]')) {
@@ -1131,10 +1132,8 @@ async function main() {
           lastBreakoutEntryAgeMin: lastBreakoutEntryTs === 0 ? null : (currentTs - lastBreakoutEntryTs) / 60_000,
           vwapRevEntryCount,
           lastVwapRevEntryAgeMin: lastVwapRevEntryTs === 0 ? null : (currentTs - lastVwapRevEntryTs) / 60_000,
-          // Full-day entry count — matches live context-builder.ts dailyEntryCount query.
-          totalDailyEntries: dailyEntryCount,
+          // Risk budget checked outside the gate (below), matching live safety-gates approach.
           hasRecentPhaseChangeEntry: false, // backtest doesn't track phase-change history
-          maxDailyEntries: MAX_DAILY_ENTRIES,
         };
 
         const gate = evaluateEntryGate(gateInput);
@@ -1143,8 +1142,14 @@ async function main() {
         let gateResult: EntryRecord['gateResult'];
         let stage1ConfValue: number | undefined;
 
-        if (gate.result === 'DAILY_CAP_BLOCKED') {
-          // Daily cap — don't push entry
+        // Risk budget check (replaces old hard entry-count cap)
+        const estPremium = estimateEntryPremium(atr, 0.50, ltfBars).entryPremium;
+        const estQty = Math.max(1, Math.min(LIVE_TICKER_CFG.maxContracts, Math.floor(100_000 * LIVE_TICKER_CFG.maxRiskPct / (estPremium * 100))));
+        const estCost = estPremium * estQty * 100;
+        const budgetExceeded = dailyPremiumDeployed + estCost > 100_000 * DAILY_RISK_BUDGET_PCT;
+
+        if (budgetExceeded) {
+          // Risk budget exhausted — don't push entry
         } else if (gate.result === 'STAGE1_OBSERVE') {
           gateResult = 'STAGE1_OBSERVE';
           if (!confirmStage1) {
@@ -1177,7 +1182,8 @@ async function main() {
           else if (signalMode === 'vwap_reversion') { lastVwapRevEntryTs = currentTs; vwapRevEntryCount++; }
           else { lastTrendEntryTs = currentTs; trendEntryCount++; }
           dailyEntryCount++;
-          rollingEntryTs.push(currentTs);  // rolling cap tracking
+          dailyPremiumDeployed += estCost;
+          rollingEntryTs.push(currentTs);
           if (fwd.entryGrade === 'F' || fwd.entryGrade === 'D') intradayLosses++;
 
           entries.push({
@@ -1232,9 +1238,11 @@ async function main() {
   // ── Entry Validation (proof of correctness) ──────────────────────────────────
   const validationErrors: string[] = [];
   {
-    // 1. Validate total daily entry count
-    if (confirmedEntries.length > MAX_DAILY_ENTRIES) {
-      validationErrors.push(`DAILY CAP VIOLATED: ${confirmedEntries.length} confirmed entries > MAX_DAILY_ENTRIES=${MAX_DAILY_ENTRIES}`);
+    // 1. Validate daily risk budget wasn't exceeded
+    // (approximate — actual budget is checked during entry, this is a sanity check)
+    const budgetUsd = 100_000 * DAILY_RISK_BUDGET_PCT;
+    if (dailyPremiumDeployed > budgetUsd * 1.1) { // 10% tolerance for estimation drift
+      validationErrors.push(`RISK BUDGET WARNING: deployed $${dailyPremiumDeployed.toFixed(0)} > budget $${budgetUsd.toFixed(0)} (${(DAILY_RISK_BUDGET_PCT * 100).toFixed(1)}%)`);
     }
 
     // 2. Validate per-mode entry counts
@@ -1251,9 +1259,7 @@ async function main() {
     if (confirmedBreakout > MAX_BREAKOUT_ENTRIES) {
       validationErrors.push(`BREAKOUT CAP VIOLATED: ${confirmedBreakout} breakout entries > MAX_BREAKOUT_ENTRIES=${MAX_BREAKOUT_ENTRIES}`);
     }
-    if (confirmedTrend > MAX_TREND_ENTRIES) {
-      validationErrors.push(`TREND CAP VIOLATED: ${confirmedTrend} trend entries > MAX_TREND_ENTRIES=${MAX_TREND_ENTRIES}`);
-    }
+    // Trend has no hard cap — risk budget is the limiter.
     if (confirmedVwapRev > 2) {
       validationErrors.push(`VWAP_REV CAP WARNING: ${confirmedVwapRev} vwap_reversion entries > 2`);
     }
@@ -1307,7 +1313,7 @@ async function main() {
 
     // Print validation results
     console.log(`  ── Entry Validation ──`);
-    console.log(`  Entry counts: ${confirmedEntries.length} total (${MAX_DAILY_ENTRIES}/30min rolling cap) | Range: ${confirmedRange}/${MAX_RANGE_ENTRIES} | Breakout: ${confirmedBreakout}/${MAX_BREAKOUT_ENTRIES} | Trend: ${confirmedTrend}/${MAX_TREND_ENTRIES} | VWAP Rev: ${confirmedVwapRev}/1`);
+    console.log(`  Entry counts: ${confirmedEntries.length} total | Risk budget: $${dailyPremiumDeployed.toFixed(0)}/$${budgetUsd.toFixed(0)} (${(DAILY_RISK_BUDGET_PCT * 100).toFixed(1)}%) | Range: ${confirmedRange}/${MAX_RANGE_ENTRIES} | Breakout: ${confirmedBreakout}/${MAX_BREAKOUT_ENTRIES} | Trend: ${confirmedTrend} | VWAP Rev: ${confirmedVwapRev}/1`);
 
     if (confirmedEntries.length > 0) {
       const firstEntry = confirmedEntries[0]!;

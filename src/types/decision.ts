@@ -55,8 +55,8 @@ export interface PositionContext {
   accountBuyingPower: number;
   accountEquity: number;
   dailyRealizedPnl: number;
-  /** Full-day entry count (not limited by recentDecisions 30-min window) */
-  dailyEntryCount: number;
+  /** Total option premium (entry_price × qty × 100) deployed today across all tickers. */
+  dailyPremiumDeployed: number;
 }
 
 export interface EntryStrategy {

@@ -29,6 +29,7 @@ export interface EntryContext {
   intradayTrendStrength: number;
   regimeScore: number;
   dailyEntryCount: number;
+  dailyPremiumDeployed: number;
   /** Minutes since market open */
   minutesSinceOpen: number;
   /** LTF bars for per-ticker regime computation — matches live strategy access */
@@ -44,8 +45,8 @@ export interface TickerBacktestConfig {
   minConfidence: number;
   /** Minimum ATR% to accept breakout entry — filters stale/pre-market data */
   minAtrPct: number;
-  /** Max entries per day across all modes */
-  maxDailyEntries: number;
+  /** Max fraction of equity deployable as option premium per day (risk budget) */
+  dailyRiskBudgetPct: number;
   /** Breakout: max rangeExhaustion to accept */
   breakoutMaxExhaustion: number;
   /** Breakout: max choppiness to accept */
@@ -111,7 +112,7 @@ export interface TickerBacktestConfig {
 export const DEFAULT_BT_CONFIG: TickerBacktestConfig = {
   minConfidence: 0.65,
   minAtrPct: 0,
-  maxDailyEntries: 2,
+  dailyRiskBudgetPct: 0.05,
   breakoutMaxExhaustion: 10.0,
   breakoutMaxChop: 999,
   breakoutMinStrength: 35,
