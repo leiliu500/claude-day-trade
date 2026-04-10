@@ -2,6 +2,7 @@ import OpenAI from 'openai';
 import { v4 as uuidv4 } from 'uuid';
 import { config } from '../config.js';
 import { loadSkill } from '../utils/skill-loader.js';
+import { getPool } from '../db/client.js';
 import type { EvaluationRecord, TradeLetter } from '../types/trade.js';
 
 const openai = new OpenAI({ apiKey: config.OPENAI_API_KEY });
@@ -24,6 +25,10 @@ interface TradeData {
   entryReasoning: string;
   decisionId?: string;
   positionId?: string;
+  /** Risk-reward ratio at entry (tp-entry)/(entry-stop) */
+  riskReward?: number;
+  stopPremium?: number;
+  tpPremium?: number;
 }
 
 const EVALUATOR_SYSTEM = loadSkill('evaluation-agent');
@@ -39,6 +44,43 @@ export class EvaluationAgent {
     const openedMs = new Date(trade.openedAt).getTime();
     const closedMs = new Date(trade.closedAt).getTime();
     const holdDurationMin = Math.round((closedMs - openedMs) / 60_000);
+
+    // Fetch session premium context from earlier signal snapshots
+    let sessionContext: {
+      session_low: number | null;
+      session_high: number | null;
+      session_avg: number | null;
+      signal_count: number;
+      entry_percentile: number | null;
+    } = { session_low: null, session_high: null, session_avg: null, signal_count: 0, entry_percentile: null };
+    try {
+      const pool = getPool();
+      const { rows } = await pool.query<{
+        low: string | null; high: string | null; avg: string | null; cnt: string;
+      }>(
+        `SELECT MIN(entry_premium) AS low, MAX(entry_premium) AS high,
+                ROUND(AVG(entry_premium)::numeric, 4) AS avg, COUNT(*)::int AS cnt
+         FROM trading.signal_snapshots
+         WHERE ticker = $1
+           AND trade_date = (CURRENT_TIMESTAMP AT TIME ZONE 'America/New_York')::date
+           AND direction = $2
+           AND entry_premium IS NOT NULL
+           AND created_at < $3`,
+        [trade.ticker, trade.entryDirection, trade.openedAt],
+      );
+      const r = rows[0];
+      if (r && Number(r.cnt) > 0) {
+        const low = Number(r.low);
+        const high = Number(r.high);
+        const avg = Number(r.avg);
+        const cnt = Number(r.cnt);
+        const range = high - low;
+        const pctile = range > 0 ? Math.round(((trade.entryPrice - low) / range) * 100) : 50;
+        sessionContext = { session_low: low, session_high: high, session_avg: avg, signal_count: cnt, entry_percentile: pctile };
+      }
+    } catch (err) {
+      console.warn('[EvaluationAgent] Session context query failed:', (err as Error).message);
+    }
 
     const payload = {
       ticker: trade.ticker,
@@ -58,6 +100,11 @@ export class EvaluationAgent {
       entry_alignment: trade.entryAlignment,
       entry_direction: trade.entryDirection,
       entry_reasoning: trade.entryReasoning,
+      // Enriched context for timing evaluation
+      risk_reward_at_entry: trade.riskReward ?? null,
+      stop_premium: trade.stopPremium ?? null,
+      tp_premium: trade.tpPremium ?? null,
+      session_premium_context: sessionContext,
     };
 
     let grade: TradeLetter = 'C';

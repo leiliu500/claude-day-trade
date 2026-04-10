@@ -2365,6 +2365,9 @@ export class OrderAgent {
         entryReasoning: decision.reasoning,
         positionId:     this.positionId,
         decisionId:     decision.id,
+        riskReward:     candidate.rrRatio,
+        stopPremium:    candidate.stopPremium,
+        tpPremium:      candidate.tpPremium,
       });
 
       await insertEvaluation(evaluation);

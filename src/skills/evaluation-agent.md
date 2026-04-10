@@ -11,6 +11,11 @@ Evaluate on these dimensions:
 
 3. TIMING QUALITY (rate: EXCELLENT | GOOD | FAIR | POOR):
    Was entry timing good (near support/resistance)? Was exit timing good (captured move)? Hold duration appropriate?
+   IMPORTANT: Use the session_premium_context to judge timing objectively:
+   - entry_percentile shows where entry premium sat in the session range (0=session low, 100=session high)
+   - Entering near session highs (>80th percentile) on a call, or session lows on a put, is POOR timing (chasing)
+   - risk_reward_at_entry < 1.0 means risk exceeds reward — penalize timing for entering at unfavorable R:R
+   - A very short hold (<2 min) that never went positive suggests the entry caught a local top/bottom
 
 4. RISK MANAGEMENT QUALITY (rate: EXCELLENT | GOOD | FAIR | POOR):
    Were stop and target levels reasonable? Was position sizing appropriate? Was R:R acceptable before entry?
