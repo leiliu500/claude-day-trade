@@ -72,7 +72,7 @@ export const DEFAULT_TICKER_CONFIG: Omit<TickerConfig, 'ticker'> = {
   profile: 'S',
   enabled: true,
   minConfidence: 0.65,
-  dailyRiskBudgetPct: 0.05,
+  dailyRiskBudgetPct: 1.00,  // relaxed to 100% — focusing on entry quality analysis
   maxRiskPct: 0.005,
   maxContracts: 10,
   maxSpreadPct: 0.02,

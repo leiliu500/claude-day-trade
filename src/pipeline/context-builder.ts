@@ -120,7 +120,8 @@ export async function buildContext(ticker: string): Promise<PositionContext> {
     pool.query<{ total: string }>(
       `SELECT COALESCE(SUM(entry_price * qty * 100), 0)::text AS total
          FROM trading.position_journal
-        WHERE trade_date = CURRENT_DATE`
+        WHERE trade_date = CURRENT_DATE
+          AND status = 'OPEN'`
     ),
   ]);
 
