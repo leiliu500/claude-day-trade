@@ -281,16 +281,21 @@ function computeConfidence(signal: SignalPayload, option: OptionEvaluation): Con
     }
   }
 
-  // Halve maturity when MTF or LTF recently crossed in the signal direction.
+  // Reset/halve maturity when MTF or LTF recently crossed in the signal direction.
   // A fresh cross on a faster timeframe means direction recently reversed — the high
   // adxBarsAbove25 on HTF is inherited from the OLD trend, not the current direction.
   // Apr 1 SPY: bearish reversal after strong bullish morning had adxBarsAbove25=20+ from
   // the prior bullish run. MTF crossed bearish at ~14:05 ET but maturity stayed at -0.15.
+  // Apr 10 SPY: halving alone still left -0.075, triggering the adxMat≥0.07 hard gate
+  // and capping at 0.64 — preventing any entry on a clean bearish day.
+  // Full reset when BOTH faster TFs crossed (strong reversal); halve for single-TF cross.
   if (adxMaturityPenalty < 0) {
     const mtfFreshCross = signal.direction === 'bullish' ? mtf.dmi.recentCrossUp : mtf.dmi.recentCrossDown;
     const ltfFreshCross = ltf && (signal.direction === 'bullish' ? ltf.dmi.recentCrossUp : ltf.dmi.recentCrossDown);
-    if (mtfFreshCross || ltfFreshCross) {
-      adxMaturityPenalty *= 0.5;
+    if (mtfFreshCross && ltfFreshCross) {
+      adxMaturityPenalty = 0;  // both TFs confirm reversal — maturity is entirely from old trend
+    } else if (mtfFreshCross || ltfFreshCross) {
+      adxMaturityPenalty *= 0.25;  // single TF cross — strong reduction but not full reset
     }
   }
 
@@ -1026,6 +1031,40 @@ function computeConfidence(signal: SignalPayload, option: OptionEvaluation): Con
     alignmentBonus = Math.max(alignmentBonus, 0.04);                  // MTF+LTF both confirm = stronger than 0.02
   }
 
+  // Fresh DI cross relief: when a DI cross recently fired in the signal direction on
+  // MTF or LTF, several penalties are artifacts of the OLD trend, not the new signal.
+  // This is less aggressive than reversalOverride (which requires range extreme + HTF fading)
+  // or mtf_ltf_aligned relief (which requires 2-of-3 TFs aligned).
+  //
+  // Apr 10 SPY: bearish reversal after strong bullish morning had adxBarsAbove25=25+,
+  // trendPhase=-0.08, momentumAccel=-0.06, structure≤0 — all from the prior bullish trend.
+  // DI crossed bearish at 11:42 ET but penalties kept conf at 0.44 vs 0.65 threshold.
+  // The cross proves new directional momentum; these old-trend penalties should be halved.
+  if (!signal.reversalOverride && signal.alignment !== 'mtf_ltf_aligned') {
+    const anyFreshCross = signal.direction === 'bullish'
+      ? (mtf.dmi.recentCrossUp || (ltf && ltf.dmi.recentCrossUp) || htf.dmi.recentCrossUp)
+      : (mtf.dmi.recentCrossDown || (ltf && ltf.dmi.recentCrossDown) || htf.dmi.recentCrossDown);
+    if (anyFreshCross && diCrossBonus > 0) {
+      // Full relief only when all timeframes confirm the new direction — prevents false
+      // reversals (brief dips in a trending day) from getting inflated confidence.
+      // Mar 31 SPY: bearish DI cross at 10:55 with mixed alignment was a false reversal
+      // in a bullish day — full zeroing boosted conf from 60% to 68%, producing an F-grade entry.
+      // Fading ADX = old trend ending, not new trend weakness.
+      // Halve only — zeroing was too aggressive, let false reversals with brief DI crosses
+      // (Mar 31 SPY: bearish all_aligned at 10:58 in a bullish day) stay below threshold.
+      if (trendPhaseBonus < 0) trendPhaseBonus *= 0.5;
+      // Narrowing DI spread = old trend fading — halve only (not zero) to preserve
+      // caution on false reversals where DI cross fires briefly in a counter-dip.
+      if (momentumAccelBonus < 0) momentumAccelBonus *= 0.5;
+      // Structure below prior-day levels = expected for reversals away from old trend
+      if (structureBonus < 0) structureBonus = 0;
+      // Near-level penalty reflects proximity to old trend's levels
+      if (nearLevelPenalty < 0) nearLevelPenalty *= 0.5;
+      // Price position at range extreme = the new direction is working, not extended
+      if (pricePositionAdjustment < 0) pricePositionAdjustment *= 0.5;
+    }
+  }
+
   // DI Spread cap for aged trends: in a mature trend the DI spread reflects sustained
   // momentum, not fresh signal. Cap to prevent inflated confidence on stale setups.
   if (adxMaturityPenalty <= -0.04) diSpreadBonus = Math.min(diSpreadBonus, 0.06);
@@ -1167,8 +1206,16 @@ function computeConfidence(signal: SignalPayload, option: OptionEvaluation): Con
       // Exempt all_aligned with rising ADX: the trend is still strengthening despite the
       // wide day range. Apr 1 SPY: 12.7x ATR at 14:25 capped conf to 0.55 while ADX was
       // rising (+2.1) and all timeframes aligned bearish.
+      // Also exempt fresh DI cross in signal direction: the large range is from the OLD
+      // trend — the new direction just started. ADX falls during reversals (old trend decaying)
+      // so adxSlope > 0 won't be true, but the cross proves fresh directional momentum.
+      // Apr 10 SPY: bearish entries capped at 0.55 by rExh>7 + neg dispVel while DI had
+      // just crossed bearish — the range was FROM the prior bullish move, not bearish exhaustion.
+      const freshDiCross = signal.direction === 'bullish'
+        ? (mtf.dmi.recentCrossUp || (ltf && ltf.dmi.recentCrossUp) || htf.dmi.recentCrossUp)
+        : (mtf.dmi.recentCrossDown || (ltf && ltf.dmi.recentCrossDown) || htf.dmi.recentCrossDown);
       const trendStillStrengthening = (signal.alignment === 'all_aligned' || signal.alignment === 'htf_mtf_aligned')
-        && htf.dmi.adx > 25 && htf.dmi.adxSlope > 0;
+        && htf.dmi.adx > 25 && (htf.dmi.adxSlope > 0 || freshDiCross);
       if (rangeExhaustion > 12.0 && !trendStillStrengthening) {
         total = Math.min(total, 0.55);
       } else if (rangeExhaustion > 7.0 && !trendStillStrengthening && ltfBars.length >= 10) {
