@@ -30,7 +30,7 @@ const ALPACA_TIMEFRAME: Record<Timeframe, string> = {
 };
 
 /** Fetch bars via Alpaca REST API. Always returns real-time data. */
-async function fetchBarsRest(
+export async function fetchBarsRest(
   ticker: string,
   timeframe: Timeframe,
   limit = BARS_LIMIT
