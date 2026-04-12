@@ -66,16 +66,28 @@ function spyShouldAllowEntry(ctx: EntryContext): true | string {
  * Suppress PA bonus for bullish trend entries at high regime (>= 75).
  */
 function spyAdjustConfidence(breakdown: ConfidenceBreakdown, ctx: EntryContext): ConfidenceBreakdown {
+  let bd = breakdown;
   const regime = ctx.regimeScore;
-  if (ctx.signalMode === 'trend' && ctx.direction === 'bullish'
-      && regime >= 75 && breakdown.recentPriceActionBonus > 0) {
-    const adjusted = { ...breakdown };
-    adjusted.total -= adjusted.recentPriceActionBonus;
-    adjusted.recentPriceActionBonus = 0;
-    adjusted.total = Math.max(0, Math.min(1, adjusted.total));
-    return adjusted;
+
+  // Reversal trap penalty: trendPhase flat/declining + strong PA = stale signal.
+  if (ctx.signalMode === 'trend'
+      && bd.trendPhaseBonus <= 0
+      && bd.recentPriceActionBonus >= 0.06) {
+    bd = { ...bd };
+    const penalty = 0.06;
+    bd.recentPriceActionBonus -= Math.min(bd.recentPriceActionBonus, penalty);
+    bd.total -= penalty;
+    bd.total = Math.max(0, Math.min(1, bd.total));
   }
-  return breakdown;
+
+  if (ctx.signalMode === 'trend' && ctx.direction === 'bullish'
+      && regime >= 75 && bd.recentPriceActionBonus > 0) {
+    bd = bd === breakdown ? { ...bd } : bd;
+    bd.total -= bd.recentPriceActionBonus;
+    bd.recentPriceActionBonus = 0;
+    bd.total = Math.max(0, Math.min(1, bd.total));
+  }
+  return bd;
 }
 
 export const SPY_CONFIG: Partial<TickerBacktestConfig> = {

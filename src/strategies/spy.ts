@@ -159,6 +159,32 @@ function spyAdjustConfidence(breakdown: ConfidenceBreakdown, ctx: EntryContext):
     bd.total = Math.max(0, Math.min(1, bd.total));
   }
 
+  // Reversal trap penalty: when ADX is flat/declining (trendPhase <= 0) but recent
+  // price action confirms the signal (PA >= 0.04), lagging indicators are chasing a
+  // move that's already over. This pattern is 100% F-grade in the backtest data.
+  //
+  // Applied as a confidence PENALTY rather than a hard shouldAllowEntry block because
+  // hard blocks cascade through the confirmation gate — blocking one entry changes
+  // priorCount for downstream entries, causing unrelated A/B-grade entries to lose
+  // confirmation and fail (e.g., Mar 31 14:41 A lost when 14:48 B was blocked).
+  //
+  // -0.06 penalty at PA >= 0.06: drops marginal entries below threshold.
+  // PA >= 0.04 was tested but caught Mar 27 12:09 A (PA=0.04, conf 0.66→0.60,
+  // below threshold). At PA >= 0.06, that A entry (PA=0.04) is unaffected.
+  //
+  // Catches: Apr 2 13:16 F (tPh=-0.04, PA=0.08, 0.68→0.62 blocked).
+  // Reduces: Mar 24 11:51/52 F, Mar 27 12:38/39 F, Apr 8 12:02 F — still pass
+  // but at lower conviction, making strong-signal bypass less likely.
+  if (ctx.signalMode === 'trend'
+      && bd.trendPhaseBonus <= 0
+      && bd.recentPriceActionBonus >= 0.06) {
+    bd = bd === breakdown ? { ...bd } : bd;
+    const penalty = 0.06;
+    bd.recentPriceActionBonus -= Math.min(bd.recentPriceActionBonus, penalty);
+    bd.total -= penalty;
+    bd.total = Math.max(0, Math.min(1, bd.total));
+  }
+
   // Strong trend continuation relief: when all timeframes align + ADX strong & rising,
   // the adxMaturity and moveExhaustion penalties over-penalize genuine continuation.
   //
