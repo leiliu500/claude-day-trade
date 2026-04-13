@@ -1,8 +1,9 @@
 /**
- * Default ticker strategy — the current SPY-tuned logic.
+ * Default ticker strategy — price-action based mode detection.
  *
  * Confidence models are imported from analysis-agent.ts (the canonical source).
- * Mode detection and strength scoring are defined here (ported from signal-agent.ts).
+ * Mode detection uses non-lagging indicators: VWAP, price velocity, volume surge,
+ * and price structure instead of DMI/ADX.
  *
  * Range and breakout are evaluated independently in parallel, then resolved
  * by confidence score when both qualify. This prevents widening one mode's
@@ -28,28 +29,29 @@ export interface ModeCandidate {
 
 /**
  * Evaluate range mode independently. Returns candidate or null.
- * Parameters are configurable so per-ticker strategies can widen thresholds.
+ * Uses price-action: low velocity + near VWAP + at swing edge.
  */
 export function evaluateRange(
   htfTf: TimeframeIndicators,
   currentPrice: number,
   opts: { maxAdx?: number; minEdge?: number; maxEdge?: number; minSwingRangePct?: number } = {},
 ): ModeCandidate | null {
-  const maxAdx = opts.maxAdx ?? 22;
   const minEdge = opts.minEdge ?? 0.30;
   const maxEdge = opts.maxEdge ?? 0.70;
   const minSwingRangePct = opts.minSwingRangePct ?? 0.20;
 
-  const htfAdx = htfTf.dmi.adx;
-  const htfHasFreshCross = htfTf.dmi.crossedUp || htfTf.dmi.crossedDown;
   const htfRangePos = htfTf.priceStructure.rangePosition;
   const htfSwingHigh = htfTf.priceStructure.swingHigh;
   const htfSwingLow = htfTf.priceStructure.swingLow;
   const htfSwingRange = htfSwingHigh - htfSwingLow;
   const htfSwingRangePct = htfSwingRange / currentPrice * 100;
 
-  if (htfAdx >= maxAdx || htfHasFreshCross
-      || htfRangePos < 0.05 || htfRangePos > 0.95
+  // Price-action gates: low velocity + near VWAP
+  const absVel = Math.abs(htfTf.priceVelocity.directionalVelocity);
+  if (absVel > 0.05) return null; // strong velocity = trending, not ranging
+  if (Math.abs(htfTf.vwap.priceVsVwap) > 0.40) return null; // too far from VWAP
+
+  if (htfRangePos < 0.05 || htfRangePos > 0.95
       || htfSwingRangePct < minSwingRangePct) {
     return null;
   }
@@ -58,13 +60,13 @@ export function evaluateRange(
   const atSupport = htfRangePos <= minEdge;
   if (!atResistance && !atSupport) return null;
 
-  // Score: deeper into edge zone + lower ADX = stronger range signal
+  // Score: deeper into edge zone + lower velocity = stronger range signal
   const edgeDepth = atResistance
     ? (htfRangePos - maxEdge) / (1.0 - maxEdge)
     : (minEdge - htfRangePos) / minEdge;
-  const adxScore = (maxAdx - htfAdx) / maxAdx;
+  const velScore = Math.max(0, 1 - absVel / 0.05);
   const rangeWidthScore = Math.min(1, htfSwingRangePct / 0.50);
-  const score = 0.40 + 0.25 * edgeDepth + 0.20 * adxScore + 0.15 * rangeWidthScore;
+  const score = 0.40 + 0.25 * edgeDepth + 0.20 * velScore + 0.15 * rangeWidthScore;
 
   return {
     result: {
@@ -79,15 +81,13 @@ export function evaluateRange(
 
 /**
  * Evaluate breakout mode independently. Returns candidate or null.
+ * Uses price-action: level break + volume surge + velocity accelerating.
  */
 export function evaluateBreakout(
   htfTf: TimeframeIndicators,
   tfIndicators: TimeframeIndicators[],
   currentPrice: number,
 ): ModeCandidate | null {
-  const htfAdx = htfTf.dmi.adx;
-  if (htfAdx >= 25 || htfTf.dmi.adxSlope <= 0) return null;
-
   const htfBarsForBO = htfTf.bars.slice(-20, -3);
   let boSwingHigh = -Infinity, boSwingLow = Infinity;
   for (const b of htfBarsForBO) {
@@ -104,18 +104,20 @@ export function evaluateBreakout(
     : ((boSwingLow - currentPrice) / currentPrice) * 100;
   if (beyondPct <= 0.02 || beyondPct >= 0.40) return null;
 
-  const htfObv = tfIndicators[2]!.obv;
-  const obvConfirms = brokeHigh ? htfObv.trend === 'bullish' : htfObv.trend === 'bearish';
-  const htfDiCross = brokeHigh ? htfTf.dmi.crossedUp : htfTf.dmi.crossedDown;
-  const diSpreadConfirms = htfTf.dmi.diSpreadSlope > 1;
-  if (!obvConfirms && !htfDiCross && !diSpreadConfirms) return null;
+  // Require volume surge or velocity acceleration (not DMI)
+  const ltf = tfIndicators[0];
+  const volumeConfirms = ltf ? ltf.volumeSurge.recentVolumeRatio > 1.3 : false;
+  const velocityAccelerating = ltf ? ltf.priceVelocity.acceleration > 0.01 : false;
+  const obvConfirms = brokeHigh
+    ? htfTf.obv.trend === 'bullish'
+    : htfTf.obv.trend === 'bearish';
+  if (!volumeConfirms && !velocityAccelerating && !obvConfirms) return null;
 
-  // Score: further beyond + steeper ADX slope + more confirmations = stronger breakout
   const beyondScore = Math.min(1, beyondPct / 0.20);
-  const slopeScore = Math.min(1, htfTf.dmi.adxSlope / 3);
-  const confirmCount = (obvConfirms ? 1 : 0) + (htfDiCross ? 1 : 0) + (diSpreadConfirms ? 1 : 0);
+  const confirmCount = (volumeConfirms ? 1 : 0) + (velocityAccelerating ? 1 : 0) + (obvConfirms ? 1 : 0);
   const confirmScore = confirmCount / 3;
-  const score = 0.40 + 0.20 * beyondScore + 0.20 * slopeScore + 0.20 * confirmScore;
+  const velScore = ltf ? Math.min(1, Math.abs(ltf.priceVelocity.directionalVelocity) / 0.08) : 0;
+  const score = 0.40 + 0.20 * beyondScore + 0.20 * velScore + 0.20 * confirmScore;
 
   return {
     result: {
@@ -130,37 +132,33 @@ export function evaluateBreakout(
 
 /**
  * Evaluate trend mode independently. Returns candidate or null.
- * Qualifies when ADX shows established directional movement with positive slope.
- * Without this, trend is a catch-all for choppy/ambiguous markets that shouldn't be traded.
+ * Uses price-action: sustained directional velocity + VWAP confirms + swing structure trending.
  */
 export function evaluateTrend(
   htfTf: TimeframeIndicators,
 ): ModeCandidate | null {
-  const htfAdx = htfTf.dmi.adx;
-  const adxSlope = htfTf.dmi.adxSlope;
-  const diSpread = Math.abs(htfTf.dmi.plusDI - htfTf.dmi.minusDI);
+  const absVel = Math.abs(htfTf.priceVelocity.directionalVelocity);
+  const vwapPct = htfTf.vwap.priceVsVwap;
 
-  // Trend requires established directional movement
-  if (htfAdx < 18) return null;           // ADX below 18 = no trend
-  if (diSpread < 5) return null;           // no clear directional dominance
-  // Mature trend: ADX still elevated with clear DI spread qualifies even with declining ADX.
-  // This prevents a dead zone after spikes where ADX stays elevated but slope turns negative,
-  // simultaneously blocking range/breakout/vwap (ADX too high) and trend (slope <= 0).
-  // ADX threshold 23 (not 25): when ADX declines from a spike it hovers 23-25 with strongly
-  // diverging DI lines — the trend decelerates but directional flow persists. March 27 SPY
-  // 13:25 had ADX=24.6 diSpread=9.4, price dropped $2 with no entry at threshold 25.
-  // DI spread threshold 8 (not 10): March 27 SPY 11:25 had ADX=44.5 diSpread=9.4.
-  const matureTrend = htfAdx >= 23 && diSpread >= 8;
-  if (adxSlope <= 0 && !matureTrend) return null; // fading ADX without strong directional dominance
+  // Trend requires sustained directional movement
+  if (absVel < 0.02) return null;
 
-  // Direction from DI dominance
-  const direction: SignalDirection = htfTf.dmi.plusDI > htfTf.dmi.minusDI ? 'bullish' : 'bearish';
+  // VWAP must confirm: price on correct side of VWAP
+  const velBullish = htfTf.priceVelocity.directionalVelocity > 0;
+  const vwapConfirms = velBullish ? vwapPct > 0 : vwapPct < 0;
+  if (!vwapConfirms && absVel < 0.05) return null; // weak velocity + no VWAP confirm = not trend
 
-  // Score: same 0.40 base + bonuses scale as other modes (0.40–0.80)
-  const adxStrength = Math.min(1, (htfAdx - 18) / 20);      // ADX 18→0, 38→1
-  const diSpreadScore = Math.min(1, diSpread / 20);           // spread 0→0, 20→1
-  const slopeScore = Math.min(1, adxSlope / 3);               // slope 0→0, 3→1
-  const score = 0.40 + 0.15 * adxStrength + 0.15 * diSpreadScore + 0.10 * slopeScore;
+  // Volume not declining
+  const volOk = htfTf.volumeSurge.recentVolumeRatio >= 0.6;
+  if (!volOk && absVel < 0.04) return null;
+
+  const direction: SignalDirection = velBullish ? 'bullish' : 'bearish';
+
+  // Score: velocity magnitude + VWAP distance + volume
+  const velStrength = Math.min(1, absVel / 0.10);
+  const vwapStrength = Math.min(1, Math.abs(vwapPct) / 0.30);
+  const volStrength = Math.min(1, htfTf.volumeSurge.recentVolumeRatio / 2.0);
+  const score = 0.40 + 0.25 * velStrength + 0.20 * vwapStrength + 0.15 * volStrength;
 
   return {
     result: { signalMode: 'trend', direction },
@@ -170,27 +168,23 @@ export function evaluateTrend(
 
 /**
  * Evaluate VWAP mean reversion mode independently. Returns candidate or null.
- * Fires when price is overextended from VWAP on a low-ADX day and a reversal candle appears.
+ * Fires when price is overextended from VWAP and a reversal candle appears.
  */
 export function evaluateVwapReversion(
   ltfTf: TimeframeIndicators,
   htfTf: TimeframeIndicators,
   currentPrice: number,
 ): ModeCandidate | null {
-  const htfAdx = htfTf.dmi.adx;
-  const vwapPct = ltfTf.vwap?.priceVsVwap ?? 0; // % distance from VWAP (positive = above)
+  const vwapPct = ltfTf.vwap?.priceVsVwap ?? 0;
   const absVwapPct = Math.abs(vwapPct);
   const vwapPrice = ltfTf.vwap?.vwap ?? 0;
 
   // Must be overextended from VWAP (>= 0.30%)
   if (absVwapPct < 0.30 || vwapPrice <= 0) return null;
 
-  // Must be low/declining ADX (< 25) — not a strong trend
-  if (htfAdx >= 25) return null;
-
-  // No fresh DI cross in extension direction (would indicate trend continuation)
-  if (vwapPct > 0 && htfTf.dmi.crossedUp) return null;
-  if (vwapPct < 0 && htfTf.dmi.crossedDown) return null;
+  // Velocity should be decelerating (move losing steam)
+  const acceleration = ltfTf.priceVelocity.acceleration;
+  // Don't require deceleration but bonus for it
 
   // Reversal candle: last LTF bar turns back toward VWAP, with 2+ prior opposing bars
   const bars = ltfTf.bars;
@@ -200,25 +194,18 @@ export function evaluateVwapReversion(
   const isBullishRev = vwapPct < 0 && lastBar.close > lastBar.open;
   const isBearishRev = vwapPct > 0 && lastBar.close < lastBar.open;
   if (!isBullishRev && !isBearishRev) return null;
-  // Require 2+ prior bars in the extension direction (confirming overextension, not just noise)
   const priorInExtDir = priorBars.filter(b =>
     isBullishRev ? b.close < b.open : b.close > b.open
   ).length;
   if (priorInExtDir < 2) return null;
 
-  // Direction: opposite to overextension
   const direction = vwapPct > 0 ? 'bearish' : 'bullish';
 
   // Score
   const vwapDistScore = Math.min(1, absVwapPct / 0.60) * 0.25;
-  const adxScore = ((25 - htfAdx) / 25) * 0.15;
-  // Reversal quality: 2+ opposing prior bars = stronger signal
-  const priorOpposing = bars.slice(-3, -1).filter(b =>
-    isBullishRev ? b.close < b.open : b.close > b.open
-  ).length;
-  const reversalScore = (priorOpposing >= 2 ? 0.10 : 0.05);
-  const slopeScore = htfTf.dmi.adxSlope <= 0 ? 0.05 : 0;
-  const score = 0.40 + vwapDistScore + adxScore + reversalScore + slopeScore;
+  const reversalScore = (priorInExtDir >= 2 ? 0.10 : 0.05);
+  const decelScore = acceleration < 0 ? 0.10 : 0;
+  const score = 0.40 + vwapDistScore + reversalScore + decelScore;
 
   return {
     result: {
@@ -247,7 +234,6 @@ export function resolveMode(
   );
   if (candidates.length === 0) return { signalMode: 'none' };
   if (candidates.length === 1) return candidates[0]!.result;
-  // Multiple qualify — pick highest score
   candidates.sort((a, b) => b.score - a.score);
   return candidates[0]!.result;
 }
@@ -269,8 +255,9 @@ function defaultDetectMode(
 }
 
 function defaultComputeStrength(tfIndicators: TimeframeIndicators[]): number {
-  const htfAdx = tfIndicators[2]?.dmi.adx ?? tfIndicators[1]?.dmi.adx ?? 0;
-  return Math.min(100, Math.round(htfAdx * 2));
+  const vel = Math.abs(tfIndicators[0]?.priceVelocity?.directionalVelocity ?? 0);
+  const vwapDist = Math.abs(tfIndicators[2]?.vwap?.priceVsVwap ?? 0);
+  return Math.min(100, Math.round(vel * 500 + vwapDist * 50));
 }
 
 export const defaultStrategy: TickerStrategy = {

@@ -1,4 +1,4 @@
-import { SignalAgent, fetchBarsRest, computeTimeframeIndicators } from '../agents/signal-agent.js';
+import { SignalAgent } from '../agents/signal-agent.js';
 import { OptionAgent } from '../agents/option-agent.js';
 import { AnalysisAgent } from '../agents/analysis-agent.js';
 import { DecisionOrchestrator } from '../agents/decision-orchestrator.js';
@@ -14,7 +14,7 @@ import { v4 as uuidv4 } from 'uuid';
 import { config } from '../config.js';
 import { getTickerConfig, type TickerConfig } from '../ticker-configs.js';
 import { fetchOptionMid } from '../lib/alpaca-api.js';
-import { PROFILE_TIMEFRAMES } from '../types/market.js';
+
 import type { TradingProfile } from '../types/market.js';
 import type { DecisionType, DecisionResult, PositionContext } from '../types/decision.js';
 import type { SignalPayload } from '../types/signal.js';
@@ -209,50 +209,6 @@ export async function runPipeline(
     if (analysis.confidenceBreakdown) {
       const cb = analysis.confidenceBreakdown;
       console.log(`[Pipeline] ConfBreakdown[${ticker}]: base=${cb.base.toFixed(2)} di=${cb.diSpreadBonus.toFixed(3)} adx=${cb.adxBonus.toFixed(2)} cross=${cb.diCrossBonus.toFixed(3)} align=${cb.alignmentBonus.toFixed(2)} td=${cb.tdAdjustment.toFixed(3)} obv=${cb.obvBonus.toFixed(3)} vwap=${cb.vwapBonus.toFixed(3)} oiVol=${cb.oiVolumeBonus.toFixed(3)} pos=${cb.pricePositionAdjustment.toFixed(3)} maturity=${cb.adxMaturityPenalty.toFixed(3)} phase=${cb.trendPhaseBonus.toFixed(3)} accel=${cb.momentumAccelBonus.toFixed(3)} struct=${cb.structureBonus.toFixed(3)} orb=${cb.orbBonus.toFixed(3)} rpa=${cb.recentPriceActionBonus.toFixed(3)} trc=${cb.trContractionPenalty.toFixed(3)} lvp=${cb.lowVolPenalty.toFixed(3)} mex=${cb.moveExhaustionPenalty.toFixed(3)} con=${cb.consolidationPenalty.toFixed(3)} nlv=${cb.nearLevelPenalty.toFixed(3)} thd=${cb.thetaDecayPenalty.toFixed(3)} per=${cb.trendPersistenceBonus.toFixed(3)}`);
-    }
-
-    // ── Phase 5b: REST cross-validation (stream vs REST indicator divergence check) ──
-    // When stream-based confidence meets entry threshold, fetch HTF bars from REST
-    // and compare key indicators. If ADX slope sign disagrees (e.g., stream says rising
-    // but REST says falling), the stream cache is stale/diverged — block the entry.
-    //
-    // Apr 10 SPY: stream cache produced adxSlope=+5.0 (rising → trendPhase=+0.06)
-    // while REST/backtest showed adxSlope=-5.8 (falling → trendPhase=-0.08).
-    // This 0.14 swing inflated confidence from ~15% to ~73%, causing 3 losing entries.
-    if (analysis.meetsEntryThreshold) {
-      try {
-        const [, , htf] = PROFILE_TIMEFRAMES[profile];
-        const restHtfBars = await fetchBarsRest(ticker, htf, 500);
-        if (restHtfBars.length >= 14) {
-          const restHtf = computeTimeframeIndicators(restHtfBars, htf, signal.direction ?? 'neutral', false);
-          const streamHtf = signal.timeframes[2] ?? signal.timeframes[0]!;
-          const streamSlope = streamHtf.dmi.adxSlope;
-          const restSlope = restHtf.dmi.adxSlope;
-          const slopeSignDiverged = (streamSlope > 1 && restSlope < -1) || (streamSlope < -1 && restSlope > 1);
-          const slopeDelta = Math.abs(streamSlope - restSlope);
-
-          // Also check DI spread direction — confirms whether trend direction is genuine
-          const streamDirSpread = signal.direction === 'bullish'
-            ? streamHtf.dmi.plusDI - streamHtf.dmi.minusDI
-            : streamHtf.dmi.minusDI - streamHtf.dmi.plusDI;
-          const restDirSpread = signal.direction === 'bullish'
-            ? restHtf.dmi.plusDI - restHtf.dmi.minusDI
-            : restHtf.dmi.minusDI - restHtf.dmi.plusDI;
-          const spreadSignDiverged = (streamDirSpread > 2 && restDirSpread < -2) || (streamDirSpread < -2 && restDirSpread > 2);
-
-          console.log(`[Pipeline] REST cross-check[${ticker}]: streamADXSlope=${streamSlope.toFixed(1)} restADXSlope=${restSlope.toFixed(1)} delta=${slopeDelta.toFixed(1)} | streamDISpread=${streamDirSpread.toFixed(1)} restDISpread=${restDirSpread.toFixed(1)} | diverged=${slopeSignDiverged || spreadSignDiverged}`);
-
-          if (slopeSignDiverged || spreadSignDiverged) {
-            const divergeType = slopeSignDiverged ? `ADX slope sign (stream=${streamSlope.toFixed(1)} vs REST=${restSlope.toFixed(1)})` : `DI spread sign (stream=${streamDirSpread.toFixed(1)} vs REST=${restDirSpread.toFixed(1)})`;
-            console.warn(`[Pipeline] STREAM/REST DIVERGENCE — blocking entry: ${divergeType}`);
-            analysis.meetsEntryThreshold = false;
-            analysis.entryBlockReason = `STREAM_REST_DIVERGENCE: ${divergeType}`;
-          }
-        }
-      } catch (err) {
-        // REST cross-check is best-effort — don't block pipeline on REST failure
-        console.warn(`[Pipeline] REST cross-check failed (non-blocking):`, err);
-      }
     }
 
     // ── Phase 6: Persist Signal Snapshot + Build Context (parallel) ───────

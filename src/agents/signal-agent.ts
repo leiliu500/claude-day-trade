@@ -92,9 +92,6 @@ export function computeTimeframeIndicators(
 ): TimeframeIndicators {
   const skipGaps = timeframe !== '1d';
   // Use shorter DMI period (8) on LTF for faster direction detection.
-  // LTF bars (1m, 2m) with 14-period Wilder's smoothing create ~30-bar lag
-  // which misses the first 30+ minutes of a move. Period 8 halves this lag
-  // while still filtering noise. HTF/MTF keep 14 for stability.
   const dmiPeriod = isLTF ? 8 : 14;
   return {
     timeframe,
@@ -114,15 +111,26 @@ export function computeTimeframeIndicators(
 }
 
 
+/**
+ * Price-action based alignment: check if each TF's price action confirms
+ * the detected direction using rangePosition + directional velocity.
+ */
 export function classifyAlignment(tfs: TimeframeIndicators[], direction: SignalDirection): AlignmentType {
-  // tfs order: [LTF, MTF, HTF]
   const [ltf, mtf, htf] = tfs;
   if (!ltf || !mtf || !htf) return 'mixed';
+  if (direction === 'neutral') return 'mixed';
 
-  const d = direction === 'neutral' ? 'neutral' : direction;
-  const ltfMatch = ltf.dmi.trend === d;
-  const mtfMatch = mtf.dmi.trend === d;
-  const htfMatch = htf.dmi.trend === d;
+  function tfConfirms(tf: TimeframeIndicators): boolean {
+    if (direction === 'bullish') {
+      return tf.priceStructure.rangePosition > 0.4 && tf.priceVelocity.directionalVelocity > -0.01;
+    } else {
+      return tf.priceStructure.rangePosition < 0.6 && tf.priceVelocity.directionalVelocity < 0.01;
+    }
+  }
+
+  const ltfMatch = tfConfirms(ltf);
+  const mtfMatch = tfConfirms(mtf);
+  const htfMatch = tfConfirms(htf);
 
   if (ltfMatch && mtfMatch && htfMatch) return 'all_aligned';
   if (htfMatch && mtfMatch) return 'htf_mtf_aligned';
@@ -130,7 +138,7 @@ export function classifyAlignment(tfs: TimeframeIndicators[], direction: SignalD
   return 'mixed';
 }
 
-// ── Leading override momentum persistence (per-ticker) ──────────────────────
+// ── Leading override momentum persistence (per-ticker) — legacy, kept for compat ──
 const _persistence = new Map<string, PersistenceState>();
 
 export class SignalAgent {
@@ -144,8 +152,6 @@ export class SignalAgent {
     const [ltf, mtf, htf] = PROFILE_TIMEFRAMES[profile];
 
     // Fetch all 3 timeframes + daily bars (for PDH/PDL) in parallel.
-    // Daily bars are always fetched separately — even when HTF is '1d' — to
-    // guarantee at least 3 complete daily sessions regardless of profile.
     const [ltfBars, mtfBars, htfBars, dailyBars] = await Promise.all([
       fetchBars(ticker, ltf),
       fetchBars(ticker, mtf),
@@ -153,19 +159,32 @@ export class SignalAgent {
       fetchBarsRest(ticker, '1d', 3),
     ]);
 
-    // ── Direction detection (shared with backtest) ─────────────────────────────
+    // ── First pass: compute TF indicators with neutral direction ──────────────
+    // We need VWAP, priceVelocity, and priceStructure BEFORE direction detection
+    // so the price-action based direction detector can use them.
+    const tfIndicatorsNeutral: TimeframeIndicators[] = [
+      computeTimeframeIndicators(ltfBars, ltf, 'neutral', true),
+      computeTimeframeIndicators(mtfBars, mtf, 'neutral', false),
+      computeTimeframeIndicators(htfBars, htf, 'neutral', false),
+    ];
+
+    // ── Direction detection (price-action based) ──────────────────────────────
     if (!_persistence.has(ticker)) _persistence.set(ticker, { dir: null, ts: 0 });
     const persistence = _persistence.get(ticker)!;
-    const { direction: detectedDir, reversalOverride, leadingSignalOverride } =
-      detectDirection(ltfBars, mtfBars, htfBars, ltf !== '1d', persistence, Date.now());
+    const { direction: detectedDir } =
+      detectDirection(tfIndicatorsNeutral, ltf !== '1d', persistence, Date.now());
     let direction = detectedDir;
 
-    // Second pass: build full TF indicators with direction for accurate price levels
-    const tfIndicators: TimeframeIndicators[] = [
-      computeTimeframeIndicators(ltfBars, ltf, direction, true),   // LTF: shorter DMI period (8) for faster detection
-      computeTimeframeIndicators(mtfBars, mtf, direction, false),
-      computeTimeframeIndicators(htfBars, htf, direction, false),
-    ];
+    // ── Second pass: recompute priceStructure with detected direction ─────────
+    // Only priceStructure is direction-dependent (for trigger/invalidation/target levels).
+    // All other indicators are direction-independent.
+    const tfIndicators: TimeframeIndicators[] = tfIndicatorsNeutral.map((tf, i) => ({
+      ...tf,
+      priceStructure: computePriceStructure(
+        tf.bars, 20, direction,
+      ),
+    }));
+
     const alignment = classifyAlignment(tfIndicators, direction);
     const currentPrice = tfIndicators[0]?.currentPrice ?? 0;
     const atr = tfIndicators[2]?.atr.atr ?? tfIndicators[0]?.atr.atr ?? 0; // use HTF ATR
@@ -182,12 +201,9 @@ export class SignalAgent {
 
     const strategy = tickerCfg?.strategy;
     if (strategy) {
-      // Use per-symbol strategy for mode detection
       const modeResult = strategy.detectMode(tfIndicators, direction, currentPrice);
       signalMode = modeResult.signalMode;
-      // Only apply mode evaluator's direction when leading override hasn't already set a faster direction.
-      // Leading indicators (velocity + LTF DMI) detect direction changes 5-15 bars before HTF DI catches up.
-      if (modeResult.direction && !leadingSignalOverride) direction = modeResult.direction;
+      if (modeResult.direction) direction = modeResult.direction;
       rangeSupport = modeResult.rangeSupport;
       rangeResistance = modeResult.rangeResistance;
       breakoutLevel = modeResult.breakoutLevel;
@@ -195,7 +211,6 @@ export class SignalAgent {
       vwapReversionTarget = modeResult.vwapReversionTarget;
       vwapDistance = modeResult.vwapDistance;
     } else {
-      // Inline fallback — uses shared parallel evaluation from default strategy
       const { evaluateTrend, evaluateRange, evaluateBreakout, evaluateVwapReversion, resolveMode } = await import('../strategies/default.js');
       const htfTf = tfIndicators[2]!;
       const ltfTf = tfIndicators[0]!;
@@ -206,7 +221,7 @@ export class SignalAgent {
         evaluateVwapReversion(ltfTf, htfTf, currentPrice),
       );
       signalMode = modeResult.signalMode;
-      if (modeResult.direction && !leadingSignalOverride) direction = modeResult.direction;
+      if (modeResult.direction) direction = modeResult.direction;
       rangeSupport = modeResult.rangeSupport;
       rangeResistance = modeResult.rangeResistance;
       breakoutLevel = modeResult.breakoutLevel;
@@ -215,21 +230,13 @@ export class SignalAgent {
       vwapDistance = modeResult.vwapDistance;
     }
 
-    // Leading signal mode rescue: when mode detection returns 'none' because HTF ADX
-    // is still low (< 18) but leading indicators have confirmed a directional move,
-    // force trend mode. Without this, the entire pipeline stops — no confidence is
-    // computed, no entry is possible, and the leading indicator override is wasted.
-    // This is the critical bridge: leading indicators detect the move → force trend mode
-    // → trend confidence model runs with lowered threshold → entry happens before ADX rises.
-    if (signalMode === 'none' && leadingSignalOverride && direction !== 'neutral') {
-      signalMode = 'trend';
-      console.log(`[SignalAgent] Leading signal mode rescue: forced trend mode (ADX=${tfIndicators[2]?.dmi.adx.toFixed(1) ?? '?'}, dir=${direction})`);
-    }
-
     // Numeric strength score — per-symbol strategy or default
     const strengthScore = strategy
       ? strategy.computeStrength(tfIndicators)
-      : Math.min(100, Math.round((tfIndicators[2]?.dmi.adx ?? tfIndicators[1]?.dmi.adx ?? 0) * 2));
+      : Math.min(100, Math.round(
+          Math.abs(tfIndicators[0]?.priceVelocity.directionalVelocity ?? 0) * 500 +
+          Math.abs(tfIndicators[2]?.vwap.priceVsVwap ?? 0) * 50
+        ));
 
     // Market structure: PDH/PDL from daily bars; ORB from LTF (most granular intraday bars)
     const priorDayLevels = computePriorDayLevels(dailyBars, currentPrice);
@@ -251,8 +258,8 @@ export class SignalAgent {
       strengthScore,
       priorDayLevels,
       orb,
-      reversalOverride: reversalOverride || undefined,
-      leadingSignalOverride: leadingSignalOverride || undefined,
+      reversalOverride: undefined,
+      leadingSignalOverride: undefined,
       signalMode,
       rangeSupport,
       rangeResistance,

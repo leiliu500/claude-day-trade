@@ -51,7 +51,7 @@ import { defaultStrategy } from './default.js';
 function computeRegimeScore(
   bars: readonly { timestamp: string; open: number; high: number; low: number; close: number }[],
   vwapPriceVs: number,
-  adx: number,
+  _adx: number,
 ): number {
   // Filter to today's regular-session bars (13:30–20:00 UTC).
   // Stream cache / REST bars can span 2+ days; prior-day bars corrupt dayOpen.
@@ -103,10 +103,8 @@ function computeRegimeScore(
   }
   const trendStrComponent = Math.min(10, Math.max(maxConsecUp, maxConsecDown) * 2.5);
 
-  // D. ADX anchor — confirms trend is established (lagged but stabilizing)
-  //    Only adds score when ADX >= 20 (genuine trend, not noise).
-  //    ADX 20→0, ADX 25→+5, ADX 30→+10, ADX 35→+15 (capped)
-  const adxComponent = adx >= 20 ? Math.min(15, (adx - 20) * 1.0) : 0;
+  // D. Velocity component — replaces ADX anchor with price velocity magnitude
+  const adxComponent = Math.min(15, velocityComponent > 0 ? velocityComponent : 0);
 
   // E. VWAP distance — how extended from mean (minimal lag)
   const vwapComponent = Math.min(10, Math.abs(vwapPriceVs) / 0.20 * 10);
@@ -229,7 +227,7 @@ function spyShouldAllowEntry(ctx: EntryContext): true | string {
   const { signalMode, direction, atr, currentPrice } = ctx;
 
   const atrPct = currentPrice > 0 ? (atr / currentPrice) * 100 : 0;
-  if (signalMode === 'breakout' && atrPct < 0.08) return `breakout atrPct ${atrPct.toFixed(3)}% < 0.08%`;
+  if (signalMode === 'breakout' && atrPct < 0.04) return `breakout atrPct ${atrPct.toFixed(3)}% < 0.04%`;
 
   if (signalMode === 'breakout' && ctx.displacementVelocity !== undefined
       && ctx.displacementVelocity < -0.05) return `breakout dvel ${ctx.displacementVelocity.toFixed(4)} < -0.05`;

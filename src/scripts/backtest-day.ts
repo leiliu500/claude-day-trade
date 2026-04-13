@@ -14,6 +14,7 @@
 import 'dotenv/config';
 import { config } from '../config.js';
 import { computePriorDayLevels, computeORB } from '../indicators/market-structure.js';
+import { computePriceStructure } from '../indicators/price-structure.js';
 import type { OHLCVBar, Timeframe, AlpacaBarsResponse } from '../types/market.js';
 import type { TimeframeIndicators } from '../types/indicators.js';
 import type { SignalPayload, AlignmentType, SignalDirection } from '../types/signal.js';
@@ -553,23 +554,31 @@ async function main() {
 
     if (ltfBars.length < 14 || mtfBars.length < 14 || htfBars.length < 14) continue;
 
-    // ── Direction detection (shared with signal-agent.ts) ───────────────────
-    const { direction: detectedDir, reversalOverride, leadingSignalOverride } =
-      detectDirection(ltfBars, mtfBars, htfBars, true, btPersistence, currentTs);
+    // ── First pass: compute TF indicators with neutral direction ─────────────
+    const tfIndicatorsNeutral: TimeframeIndicators[] = [
+      computeTimeframeIndicators(ltfBars, '1m', 'neutral', true),
+      computeTimeframeIndicators(mtfBars, '3m', 'neutral', false),
+      computeTimeframeIndicators(htfBars, '5m', 'neutral', false),
+    ];
+
+    // ── Direction detection (price-action based) ──────────────────────────────
+    const { direction: detectedDir } =
+      detectDirection(tfIndicatorsNeutral, true, btPersistence, currentTs);
     let direction = detectedDir;
 
-    // Second pass: full indicators
-    const tfIndicators: TimeframeIndicators[] = [
-      computeTimeframeIndicators(ltfBars, '1m', direction, true),   // LTF: shorter DMI period (8)
-      computeTimeframeIndicators(mtfBars, '3m', direction, false),
-      computeTimeframeIndicators(htfBars, '5m', direction, false),
-    ];
+    // Second pass: recompute priceStructure with detected direction
+    const tfIndicators: TimeframeIndicators[] = tfIndicatorsNeutral.map(tf => ({
+      ...tf,
+      priceStructure: computePriceStructure(tf.bars, 20, direction),
+    }));
     const alignment = classifyAlignment(tfIndicators, direction);
     const currentPrice = ltfBars[ltfBars.length - 1]!.close;
     const atr = tfIndicators[2]?.atr.atr ?? tfIndicators[0]?.atr.atr ?? 0;
     const atm = Math.round(currentPrice);
-    const htfAdx = tfIndicators[2]?.dmi.adx ?? tfIndicators[1]?.dmi.adx ?? 0;
-    const strengthScore = Math.min(100, Math.round(htfAdx * 2));
+    const strengthScore = Math.min(100, Math.round(
+      Math.abs(tfIndicators[0]?.priceVelocity.directionalVelocity ?? 0) * 500 +
+      Math.abs(tfIndicators[2]?.vwap.priceVsVwap ?? 0) * 50
+    ));
     const priorDayLevels = computePriorDayLevels(dailyBars, currentPrice);
     const orb = computeORB(ltfBars, currentPrice);
 
@@ -578,8 +587,8 @@ async function main() {
       timeframes: tfIndicators, ltf: '1m', mtf: '3m', htf: '5m',
       direction, alignment, currentPrice, atr, atm, strengthScore,
       priorDayLevels, orb,
-      reversalOverride: reversalOverride || undefined,
-      leadingSignalOverride: leadingSignalOverride || undefined,
+      reversalOverride: undefined,
+      leadingSignalOverride: undefined,
       triggeredBy: 'AUTO', createdAt: timeStr,
     };
 
@@ -600,9 +609,7 @@ async function main() {
       const modeResult = resolveMode(trendCandidate, rangeCandidate, breakoutCandidate, vwapRevCandidate);
 
       signalMode = modeResult.signalMode;
-      // Only apply mode evaluator's direction when leading override hasn't already set a faster direction.
-      // Leading indicators (velocity + LTF DMI) detect direction changes 5-15 bars before HTF DI catches up.
-      if (modeResult.direction && !leadingSignalOverride) {
+      if (modeResult.direction) {
         direction = modeResult.direction;
         signal.direction = direction;
       }
@@ -632,11 +639,6 @@ async function main() {
         signal.vwapReversionTarget = modeResult.vwapReversionTarget;
         signal.vwapDistance = modeResult.vwapDistance;
       }
-    }
-
-    // Leading signal mode rescue: force trend when mode=none but leading indicators confirm
-    if (signalMode === 'none' && leadingSignalOverride && direction !== 'neutral') {
-      signalMode = 'trend';
     }
 
     // No qualifying regime — skip this bar (no default fallback)
