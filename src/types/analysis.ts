@@ -26,7 +26,7 @@ export interface ConfidenceBreakdown {
   priceVelocityBonus: number;      // -0.06..+0.08 — leading: raw price ROC + directional velocity (no smoothing)
   volumeSurgeBonus: number;        // 0..+0.06 — leading: volume surge detection (institutional activity)
   trendPersistenceBonus: number;   // 0..+0.12 — consecutive same-direction aligned signals boost (market self-confirming)
-  orderFlowBonus: number;          // -0.10..+0.10 — order flow imbalance confirmation or divergence
+  orderFlowBonus: number;          // -0.25..+0.25 — primary: order flow imbalance (causal, real-time); suppresses lagging penalties when confirming
   total: number;                   // clamped 0..1
 }
 

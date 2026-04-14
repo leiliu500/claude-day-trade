@@ -34,10 +34,14 @@ export const computeBreakoutConfidenceFn = (signal: SignalPayload): ConfidenceBr
 };
 
 /**
- * Order flow imbalance bonus/penalty for confidence scoring.
- * Confirmation: flow direction matches signal → bonus (+0.05..+0.10)
- * Divergence: flow opposes signal → penalty (-0.05..-0.10)
- * Scales with imbalance magnitude and trade intensity.
+ * Order flow imbalance — PRIMARY confidence factor (causal, real-time).
+ * Institutions move markets through aggressive order flow, not indicator crossovers.
+ * When flow data is available, this is the dominant signal; when absent (backtest,
+ * stream down), returns 0 and the model falls back to indicator-only behavior.
+ *
+ * Confirmation: flow matches signal → +0.05..+0.25
+ * Divergence: flow opposes signal → -0.05..-0.25
+ * Intensity multiplier: high trade rate amplifies the signal.
  */
 function computeOrderFlowBonus(signal: SignalPayload): number {
   const flow = signal.orderFlow;
@@ -45,19 +49,21 @@ function computeOrderFlowBonus(signal: SignalPayload): number {
   if (flow.totalVolume1m === 0) return 0;
 
   const imb = flow.imbalance1m;
-  // Determine if flow confirms or opposes signal direction
   const confirming = signal.direction === 'bullish' ? imb > 0 : imb < 0;
   const absImb = Math.abs(imb);
 
   // Below threshold = neutral (no bonus/penalty)
-  if (absImb < 0.15) return 0;
+  if (absImb < 0.10) return 0;
 
-  // Scale: 0.15 threshold → 0 bonus, 0.50+ → max bonus
-  // Linear ramp from 0.05 at threshold to 0.10 at 0.50+
-  const scale = Math.min(1, (absImb - 0.15) / 0.35);
-  const magnitude = 0.05 + scale * 0.05;
+  // Scale: 0.10 → 0.05, 0.30 → 0.15, 0.50+ → 0.25
+  const scale = Math.min(1, (absImb - 0.10) / 0.40);
+  const magnitude = 0.05 + scale * 0.20;
 
-  return confirming ? magnitude : -magnitude;
+  // Intensity multiplier: high trade rate = more reliable signal
+  const intensityMult = flow.tradesPerSecond > 50 ? 1.0 :
+                         flow.tradesPerSecond > 20 ? 0.85 : 0.7;
+
+  return (confirming ? magnitude : -magnitude) * intensityMult;
 }
 
 /**
@@ -1101,17 +1107,50 @@ function computeConfidence(signal: SignalPayload, option: OptionEvaluation): Con
   // Divergence: aggressive flow opposes signal (most predictive short-term contra-signal)
   const orderFlowBonus = computeOrderFlowBonus(signal);
 
+  // When order flow strongly confirms direction, suppress lagging indicator penalties.
+  // These penalties reflect aged/exhausted indicators, but strong real-time buying/selling
+  // means the move is still live regardless of what ADX maturity or exhaustion says.
+  // April 13 SPY: system saw persistent bullish accumulation but indicators killed
+  // confidence with exhaustion (-0.10), consolidation (-0.10), lowVol (-0.05) penalties.
+  if (orderFlowBonus >= 0.10) {
+    const suppressedPenalties = {
+      adxMat: adxMaturityPenalty, exhaust: moveExhaustionPenalty,
+      consol: consolidationPenalty, lowVol: lowVolPenalty,
+      trendPh: trendPhaseBonus, narrow: narrowRangePenalty,
+    };
+    adxMaturityPenalty *= 0.3;
+    moveExhaustionPenalty *= 0.3;
+    consolidationPenalty *= 0.3;
+    lowVolPenalty *= 0.3;
+    trendPhaseBonus = Math.max(trendPhaseBonus, -0.02);
+    narrowRangePenalty *= 0.5;
+    const saved = (suppressedPenalties.adxMat - adxMaturityPenalty)
+      + (suppressedPenalties.exhaust - moveExhaustionPenalty)
+      + (suppressedPenalties.consol - consolidationPenalty)
+      + (suppressedPenalties.lowVol - lowVolPenalty)
+      + (suppressedPenalties.trendPh - trendPhaseBonus)
+      + (suppressedPenalties.narrow - narrowRangePenalty);
+    if (saved !== 0) {
+      console.log(`[OrderFlow] ${signal.ticker} PENALTY SUPPRESSION: flow=+${(orderFlowBonus * 100).toFixed(1)}% rescued ${(saved * 100).toFixed(1)}% from lagging penalties (adxMat=${(suppressedPenalties.adxMat * 100).toFixed(1)}→${(adxMaturityPenalty * 100).toFixed(1)}, exhaust=${(suppressedPenalties.exhaust * 100).toFixed(1)}→${(moveExhaustionPenalty * 100).toFixed(1)}, consol=${(suppressedPenalties.consol * 100).toFixed(1)}→${(consolidationPenalty * 100).toFixed(1)}, lowVol=${(suppressedPenalties.lowVol * 100).toFixed(1)}→${(lowVolPenalty * 100).toFixed(1)})`);
+    }
+  }
+
   let total = Math.max(0, Math.min(1, base + diSpreadBonus + adxBonus + diCrossBonus + alignmentBonus + tdAdjustment + obvBonus + vwapBonus + oiVolumeBonus + pricePositionAdjustment + adxMaturityPenalty + trendPhaseBonus + momentumAccelBonus + structureBonus + orbBonus + recentPriceActionBonus + trContractionPenalty + lowVolPenalty + moveExhaustionPenalty + consolidationPenalty + nearLevelPenalty + thetaDecayPenalty + narrowRangePenalty + candlePatternBonus + priceVelocityBonus + volumeSurgeBonus + orderFlowBonus));
+
+  // Order flow confirms direction — raise hard gate caps since real-time trade data
+  // overrides lagging indicator concerns (exhaustion, low ADX, etc.)
+  const flowConfirms = orderFlowBonus >= 0.10;
 
   // Hard gate: no structure support — every backtest winner had Structure >= +0.06.
   // Losers often had 0 or negative structure (wrong side of prior-day levels).
-  if (structureBonus <= 0) total = Math.min(total, 0.68);
-  if (structureBonus < 0) total = Math.min(total, 0.62);
+  if (structureBonus <= 0) total = Math.min(total, flowConfirms ? 0.72 : 0.68);
+  if (structureBonus < 0) total = Math.min(total, flowConfirms ? 0.68 : 0.62);
 
   // Hard gate: low ADX strength — weak trend, unreliable signal.
   // ADX < 15: no established trend to ride. ADX 15-20: marginal, cap below threshold.
-  if (htf.dmi.adx < 15) total = Math.min(total, 0.55);
-  else if (htf.dmi.adx < 20) total = Math.min(total, 0.64);
+  // Relaxed when order flow confirms: institutions can accumulate before ADX catches up.
+  if (htf.dmi.adx < 15) total = Math.min(total, flowConfirms ? 0.68 : 0.55);
+  else if (htf.dmi.adx < 20) total = Math.min(total, flowConfirms ? 0.72 : 0.64);
 
   // Hard gate: TR contraction (instant momentum fade) without price confirmation
   // is a dying trend — cap confidence below entry threshold (0.65).
@@ -1119,7 +1158,7 @@ function computeConfidence(signal: SignalPayload, option: OptionEvaluation): Con
   // Skipped when recent price action confirms direction (recentPriceActionBonus > 0)
   // AND TR is only moderately contracted — genuine re-acceleration shows expanding bars.
   if (trContractionPenalty < 0 && recentPriceActionBonus <= 0) {
-    total = Math.min(total, 0.60);
+    total = Math.min(total, flowConfirms ? 0.68 : 0.60);
   }
 
   // Hard gate: extremely mature trend (20+ bars above ADX 25) without fresh price
@@ -1155,14 +1194,15 @@ function computeConfidence(signal: SignalPayload, option: OptionEvaluation): Con
   // Hard gate: move already exhausted + consolidation.  When a large move has played out
   // AND price is now chopping sideways, the setup is spent — even strong indicators are
   // just reflecting the completed move, not predicting continuation.
+  // Relaxed when flow confirms: active institutional flow means continuation despite chop.
   if (moveExhaustionPenalty <= -0.06 && consolidationPenalty < 0) {
-    total = Math.min(total, 0.58);
+    total = Math.min(total, flowConfirms ? 0.65 : 0.58);
   }
 
   // Hard gate: severe move exhaustion (2.5+ ATR).  At this magnitude, the move is almost
   // certainly done regardless of what other indicators say.  Cap below entry threshold.
   if (moveExhaustionPenalty <= -0.15) {
-    total = Math.min(total, 0.60);
+    total = Math.min(total, flowConfirms ? 0.68 : 0.60);
   }
 
   // Hard gate: mature trend + exhaustion.  When ADX has been above 25 for 10+ bars AND
@@ -1262,6 +1302,27 @@ function computeConfidence(signal: SignalPayload, option: OptionEvaluation): Con
         }
       }
     }
+  }
+
+  // Hard gate: strong order flow divergence — aggressive institutional flow opposing
+  // signal direction. This is the single most predictive short-term contra-signal:
+  // if institutions are selling aggressively while indicators say bullish, trust the flow.
+  if (orderFlowBonus <= -0.15) {
+    const preCap = total;
+    total = Math.min(total, 0.50);
+    if (total < preCap) {
+      console.log(`[OrderFlow] ${signal.ticker} DIVERGENCE GATE: flow=${(orderFlowBonus * 100).toFixed(1)}% capped ${(preCap * 100).toFixed(1)}% → ${(total * 100).toFixed(1)}% (institutions opposing ${signal.direction} signal)`);
+    }
+  }
+
+  // Order flow impact summary — log whenever flow data is active
+  if (signal.orderFlow && orderFlowBonus !== 0) {
+    const flow = signal.orderFlow!;
+    const meetsThreshold = total >= 0.65;
+    console.log(`[OrderFlow] ${signal.ticker} SUMMARY: dir=${signal.direction} flow=${flow.flowDirection} imb1m=${flow.imbalance1m.toFixed(3)} imb5m=${flow.imbalance5m.toFixed(3)} bonus=${(orderFlowBonus * 100).toFixed(1)}% conf=${(total * 100).toFixed(1)}% ${meetsThreshold ? '✅ ENTRY' : '⬜ WAIT'} tps=${flow.tradesPerSecond.toFixed(0)} vps=${flow.volumePerSecond.toFixed(0)} hvn=$${flow.highVolumeNode.toFixed(2)}`);
+  } else if (signal.orderFlow && orderFlowBonus === 0) {
+    const flow = signal.orderFlow!;
+    console.log(`[OrderFlow] ${signal.ticker} NEUTRAL: imb1m=${flow.imbalance1m.toFixed(3)} (below threshold) conf=${(total * 100).toFixed(1)}% tps=${flow.tradesPerSecond.toFixed(0)}`);
   }
 
   return { base, diSpreadBonus, adxBonus, diCrossBonus, alignmentBonus, tdAdjustment, obvBonus, vwapBonus, oiVolumeBonus, pricePositionAdjustment, adxMaturityPenalty, trendPhaseBonus, momentumAccelBonus, structureBonus, orbBonus, recentPriceActionBonus, trContractionPenalty, lowVolPenalty, moveExhaustionPenalty, consolidationPenalty, nearLevelPenalty, thetaDecayPenalty, narrowRangePenalty, candlePatternBonus, priceVelocityBonus, volumeSurgeBonus, trendPersistenceBonus: 0, orderFlowBonus, total };

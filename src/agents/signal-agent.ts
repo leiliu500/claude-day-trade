@@ -238,7 +238,9 @@ export class SignalAgent {
     // Order flow microstructure from SIP trade + quote streams
     const orderFlow = AlpacaStreamManager.getInstance().getOrderFlow(ticker) ?? undefined;
     if (orderFlow) {
-      console.log(`[SignalAgent] Order flow: ${ticker} imb1m=${orderFlow.imbalance1m.toFixed(3)} flow=${orderFlow.flowDirection} tps=${orderFlow.tradesPerSecond.toFixed(1)}`);
+      console.log(`[SignalAgent] Order flow: ${ticker} imb30s=${orderFlow.imbalance30s.toFixed(3)} imb1m=${orderFlow.imbalance1m.toFixed(3)} imb5m=${orderFlow.imbalance5m.toFixed(3)} flow=${orderFlow.flowDirection} buyVol=${orderFlow.buyVolume1m} sellVol=${orderFlow.sellVolume1m} tps=${orderFlow.tradesPerSecond.toFixed(1)} hvn=$${orderFlow.highVolumeNode.toFixed(2)}${orderFlow.lowVolumeGap ? ` gap=$${orderFlow.lowVolumeGap.toFixed(2)}` : ''}`);
+    } else {
+      console.log(`[SignalAgent] Order flow: ${ticker} — no data (stream warming up or disconnected)`);
     }
 
     return {
