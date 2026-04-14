@@ -1148,6 +1148,72 @@ export function startDashboard(port: number): void {
     }
   });
 
+  // ── Backtest runner ──────────────────────────────────────────────────────────
+  // Runs backtest-day.ts as a child process and returns JSON data for the dashboard
+  // GET /api/backtest?date=2026-04-14&ticker=SPY
+  app.get('/api/backtest', async (req, res) => {
+    try {
+      const dateRaw = req.query['date'];
+      const tickerRaw = req.query['ticker'];
+      const date = typeof dateRaw === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(dateRaw) ? dateRaw : null;
+      const ticker = typeof tickerRaw === 'string' && /^[A-Z]{1,10}$/.test(tickerRaw) ? tickerRaw : 'SPY';
+      if (!date) { res.status(400).json({ error: 'date param required (YYYY-MM-DD)' }); return; }
+
+      const { execFile } = await import('child_process');
+      const { promisify } = await import('util');
+      const execFileAsync = promisify(execFile);
+      const scriptPath = join(__dirname, '..', 'scripts', 'backtest-day.js');
+
+      const { stdout } = await execFileAsync(process.execPath, [scriptPath, date, ticker, '--json', '--html'], {
+        timeout: 120_000,
+        maxBuffer: 10 * 1024 * 1024,
+        env: { ...process.env },
+      });
+
+      // Extract JSON from __JSON_START__...__JSON_END__ markers
+      const jsonMatch = stdout.match(/__JSON_START__(.*?)__JSON_END__/s);
+      let backtestResult: any = null;
+      if (jsonMatch) {
+        backtestResult = JSON.parse(jsonMatch[1]!);
+      }
+
+      // Read the generated HTML file for the candlestick visualizer
+      const { readFileSync, existsSync } = await import('fs');
+      const htmlPath = join(process.cwd(), `backtest-${ticker.toLowerCase()}-${date}.html`);
+      let htmlAvailable = false;
+      if (existsSync(htmlPath)) {
+        htmlAvailable = true;
+      }
+
+      res.json({ ok: true, date, ticker, result: backtestResult, htmlAvailable });
+    } catch (err: any) {
+      const msg = err.stderr ? err.stderr.slice(0, 500) : err.message;
+      res.status(500).json({ error: msg });
+    }
+  });
+
+  // Serve generated backtest HTML files
+  // GET /api/backtest/html?date=2026-04-14&ticker=SPY
+  app.get('/api/backtest/html', async (req, res) => {
+    try {
+      const dateRaw = req.query['date'];
+      const tickerRaw = req.query['ticker'];
+      const date = typeof dateRaw === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(dateRaw) ? dateRaw : null;
+      const ticker = typeof tickerRaw === 'string' && /^[A-Z]{1,10}$/.test(tickerRaw) ? tickerRaw : 'SPY';
+      if (!date) { res.status(400).json({ error: 'date param required' }); return; }
+
+      const { existsSync } = await import('fs');
+      const htmlPath = join(process.cwd(), `backtest-${ticker.toLowerCase()}-${date}.html`);
+      if (!existsSync(htmlPath)) {
+        res.status(404).json({ error: 'Backtest HTML not found. Run the backtest first.' });
+        return;
+      }
+      res.sendFile(htmlPath);
+    } catch (err) {
+      res.status(500).json({ error: (err as Error).message });
+    }
+  });
+
   // SPA fallback
   app.get('*', (_req, res) => {
     res.sendFile(join(__dirname, 'public/index.html'));

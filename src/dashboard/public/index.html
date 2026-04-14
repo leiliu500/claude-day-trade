@@ -58,6 +58,7 @@
       <button class="page-btn" data-page="signals">Signals &amp; Analysis</button>
       <button class="page-btn" data-page="performance">Performance</button>
       <button class="page-btn" data-page="system">System</button>
+      <button class="page-btn" data-page="backtest">Backtest</button>
     </nav>
 
     <!-- Sub-tab navigation (per page) -->
@@ -83,6 +84,9 @@
       <button class="tab active" data-tab="scheduler">Scheduler</button>
       <button class="tab" data-tab="activity">Human Activity</button>
       <button class="tab" data-tab="database">Database</button>
+    </nav>
+    <nav class="tabs" id="tabs-backtest" style="display:none">
+      <button class="tab active" data-tab="backtest-chart">Chart</button>
     </nav>
 
     <!-- Filter bar (shown only for filterable tabs) -->
@@ -499,6 +503,66 @@
         <small style="color:#8b949e">How dispatch urgency and decision type correlate with final P&amp;L</small>
         <div id="aa-dispatches"></div>
       </div>
+    </section>
+
+    <!-- ── Backtest Visualizer ── -->
+    <section id="tab-backtest-chart" class="tab-content">
+      <!-- Controls -->
+      <div class="bt-controls">
+        <div class="filter-group">
+          <label for="bt-ticker">Ticker</label>
+          <select id="bt-ticker">
+            <option value="SPY">SPY</option>
+            <option value="QQQ">QQQ</option>
+            <option value="AAPL">AAPL</option>
+            <option value="MSFT">MSFT</option>
+            <option value="NVDA">NVDA</option>
+            <option value="IWM">IWM</option>
+          </select>
+        </div>
+        <div class="filter-group">
+          <label for="bt-date">Date</label>
+          <input type="date" id="bt-date">
+        </div>
+        <button class="btn-run-backtest" id="btn-run-backtest" onclick="runBacktest()">Run Backtest</button>
+        <button class="btn-open-html" id="btn-open-html" style="display:none" onclick="openBacktestHtml()">Open Full HTML</button>
+        <span id="bt-status" class="bt-status"></span>
+      </div>
+
+      <!-- Summary cards -->
+      <div class="bt-summary" id="bt-summary" style="display:none"></div>
+
+      <!-- Candlestick chart -->
+      <div class="bt-chart-wrap">
+        <canvas id="bt-candle-chart" height="500"></canvas>
+        <div id="bt-tooltip" class="bt-tooltip"></div>
+      </div>
+
+      <!-- Legend -->
+      <div class="bt-legend">
+        <span class="bt-legend-item"><span class="bt-dot" style="background:#3fb950"></span> Bull entry</span>
+        <span class="bt-legend-item"><span class="bt-dot" style="background:#f85149"></span> Bear entry</span>
+        <span class="bt-legend-item"><span class="bt-dot" style="background:#d2a8ff"></span> Exit TP</span>
+        <span class="bt-legend-item"><span class="bt-dot" style="background:#f0883e"></span> Exit Stop/Loss</span>
+        <span class="bt-legend-item"><span class="bt-dot" style="background:#8b949e"></span> Exit Other</span>
+      </div>
+
+      <!-- Premium path cards (per trade) -->
+      <div class="agents-section-header" id="bt-premium-header" style="display:none">Option Premium Paths</div>
+      <div class="bt-premium-grid" id="bt-premium-grid"></div>
+
+      <!-- Trades table -->
+      <div class="agents-section-header" id="bt-trades-header" style="display:none">Trade Details</div>
+      <table id="tbl-bt-trades" style="display:none">
+        <thead>
+          <tr>
+            <th>#</th><th>Entry</th><th>Dir</th><th>Mode</th><th>Grade</th>
+            <th>Delta</th><th>Premium</th><th>Exit $</th><th>Exit Reason</th>
+            <th>Hold</th><th>P&amp;L</th><th>Peak</th><th>DD</th>
+          </tr>
+        </thead>
+        <tbody></tbody>
+      </table>
     </section>
 
     <section id="tab-database" class="tab-content">

@@ -1,5 +1,5 @@
 /**
- * order-agent-sim-spy.ts — SPY-specific order simulation.
+ * order-agent-sim-spy.ts — SPY-specific order simulation with dynamic delta.
  *
  * Calibrated from March 23 2026 live trade data:
  *   Live: SPY260324C00663000, bought $3.08, sold $3.09 after 46s (+0.32%)
@@ -18,24 +18,29 @@
  *   3. Bar-0 early exit on adverse moves: the live order-agent polls option quotes
  *      every 5 seconds. On bar 0, if the bar closes adverse (stock reversed from
  *      entry), the live system would have exited partway through the bar — not at
- *      the full close loss. We model this by exiting at the midpoint between entry
- *      and close premium when bar 0 is adverse. This represents the 5s polling
- *      catching the decline midway.
+ *      the full close loss. We model this by exiting at 35% of the decline.
  *
- *      Mar 23 validation: entry at $662.41 bullish, bar 0 close ~$662.21.
- *        Without early exit: holds to bar 3, BAD_ENTRY at -9.2%
- *        With early exit: exits bar 0 at midpoint, ~-1.6% (vs live +0.3%)
- *        Still a loss but magnitude is realistic — the live +0.3% was bid-ask luck.
+ *   4. Dynamic delta simulation: delta shifts with underlying move via gamma.
+ *      Entry delta configurable (0.30–0.50), gamma models delta acceleration.
+ *      Theta decay erodes premium over hold time.
  */
 
 import {
   type OHLCVBar, type SignalDirection, type SimResult, type SimConfig,
-  toPremium, pnlPct, trailFactor, profitFloor, estimateEntryPremium,
+  type PremiumTracePoint,
+  toPremiumDynamic, pnlPct, trailFactor, profitFloor, estimateEntryPremium,
 } from './order-agent-sim.js';
 
 // SPY premium floor multiplier: 5x optionAtr.
 // Calibrated: ATR=$1.24, delta=0.5 → optionAtr=$0.62 → 5x=$3.10 ≈ live fill $3.08.
 const SPY_PREMIUM_FLOOR_MULT = 5;
+
+// Default gamma for SPY 0DTE/1DTE options (~0.008 delta per $1 move)
+const SPY_DEFAULT_GAMMA = 0.008;
+
+// Default theta: ~0.10% of premium per minute for 0DTE SPY options
+// (roughly $3 option loses ~$0.003/min = ~$0.18/hour during trading hours)
+const SPY_DEFAULT_THETA_PER_MIN_PCT = 0.001;
 
 export function simulateOrderAgentSpy(
   entryPrice: number,
@@ -44,13 +49,18 @@ export function simulateOrderAgentSpy(
   futureBars: OHLCVBar[],
   cfg: SimConfig = {},
 ): SimResult {
-  const delta = cfg.delta ?? 0.50;
+  const entryDelta = cfg.delta ?? 0.40;  // default OTM delta for SPY
   const stopMult = cfg.stopMult ?? 1.0;
   const tpMult = cfg.tpMult ?? 1.6;
+  const gamma = cfg.gamma ?? SPY_DEFAULT_GAMMA;
+  const trace = cfg.trace ?? false;
 
   const { entryPremium, recentVolatility, optionAtr } = estimateEntryPremium(
-    atr, delta, cfg.recentBars, SPY_PREMIUM_FLOOR_MULT,
+    atr, entryDelta, cfg.recentBars, SPY_PREMIUM_FLOOR_MULT,
   );
+
+  // Theta: absolute $ per minute decay
+  const thetaPerMin = cfg.theta ?? (entryPremium * SPY_DEFAULT_THETA_PER_MIN_PCT);
 
   // Initial stop: ATR-based, with trailing stop floor (matches live option-agent)
   const atrStop = entryPremium - stopMult * recentVolatility;
@@ -63,47 +73,88 @@ export function simulateOrderAgentSpy(
   let maxDrawdownPct_ = 0;
   let consecutiveDeclines = 0;
   let prevPremium = entryPremium;
+  let currentDelta = entryDelta;
+
+  // Premium trace for visualization
+  const premiumTrace: PremiumTracePoint[] = [];
+  if (trace && futureBars.length > 0) {
+    premiumTrace.push({
+      minute: 0, time: futureBars[0]!.timestamp,
+      underlying: entryPrice, premium: entryPremium,
+      pnlPct: 0, delta: entryDelta, stop: currentStop, isEntry: true,
+    });
+  }
 
   const mkResult = (i: number, reason: string, exitPremium: number): SimResult => {
     const ep = exitPremium;
     const exitPnl = pnlPct(ep, entryPremium);
+    // Mark exit on trace
+    if (trace && premiumTrace.length > 0) {
+      const last = premiumTrace[premiumTrace.length - 1]!;
+      // If exit bar matches last trace bar, mark it; otherwise add exit point
+      if (last.minute === i + 1 || last.minute === i) {
+        last.isExit = true;
+        last.premium = ep;
+        last.pnlPct = exitPnl;
+      } else {
+        premiumTrace.push({
+          minute: i + 1,
+          time: i < futureBars.length ? futureBars[i]!.timestamp : last.time,
+          underlying: i < futureBars.length ? futureBars[i]!.close : last.underlying,
+          premium: ep, pnlPct: exitPnl, delta: currentDelta,
+          stop: currentStop, isExit: true,
+        });
+      }
+    }
     return {
       exitPrice: direction === 'bullish'
-        ? entryPrice + (ep - entryPremium) / delta
-        : entryPrice - (ep - entryPremium) / delta,
+        ? entryPrice + (ep - entryPremium) / entryDelta
+        : entryPrice - (ep - entryPremium) / entryDelta,
       exitReason: reason,
       holdMinutes: i + 1,
       pnlPct: exitPnl,
       peakPnlPct: Math.max(peakPnlPct_, exitPnl),
       maxDrawdownPct: maxDrawdownPct_,
+      entryDelta,
+      entryPremium,
+      exitPremium: ep,
+      tpPremium: tpTarget,
+      stopPremium: currentStop,
+      premiumTrace: trace ? premiumTrace : undefined,
     };
   };
 
   for (let i = 0; i < futureBars.length; i++) {
     const bar = futureBars[i]!;
-    const currentPremium = toPremium(entryPrice, entryPremium, bar.close, direction, delta);
+
+    // Dynamic delta premium calculation
+    const { premium: currentPremium, currentDelta: newDelta } = toPremiumDynamic(
+      entryPrice, entryPremium, bar.close, direction, entryDelta, gamma, i + 1, thetaPerMin,
+    );
+    currentDelta = newDelta;
     const currentPnl = pnlPct(currentPremium, entryPremium);
 
-    // Intra-bar extremes for initial stop and TP checks
-    const bestUnderlying = direction === 'bullish' ? bar.high - entryPrice : entryPrice - bar.low;
-    const worstUnderlying = direction === 'bullish' ? bar.low - entryPrice : entryPrice - bar.high;
-    const bestPremium = entryPremium + bestUnderlying * delta;
-    const worstPremium = entryPremium + worstUnderlying * delta;
+    // Intra-bar extremes using dynamic delta
+    const bestUnderlyingPrice = direction === 'bullish' ? bar.high : bar.low;
+    const worstUnderlyingPrice = direction === 'bullish' ? bar.low : bar.high;
+    const { premium: bestPremium } = toPremiumDynamic(
+      entryPrice, entryPremium, bestUnderlyingPrice, direction, entryDelta, gamma, i + 1, thetaPerMin,
+    );
+    const { premium: worstPremium } = toPremiumDynamic(
+      entryPrice, entryPremium, worstUnderlyingPrice, direction, entryDelta, gamma, i + 1, thetaPerMin,
+    );
+
+    // Record trace point
+    if (trace) {
+      premiumTrace.push({
+        minute: i + 1, time: bar.timestamp,
+        underlying: bar.close, premium: currentPremium,
+        pnlPct: currentPnl, delta: currentDelta, stop: currentStop,
+      });
+    }
 
     // ── SPY Bar-0 early exit on adverse close ───────────────────────────────
-    // Live order-agent polls option quotes every 5s (~12 polls per minute).
-    // If bar 0 closes adverse, the live system catches the decline partway.
-    //
-    // Calibrated from Mar 23 live data: bar 0 loss ~4.6% at close, live exited
-    // at +0.3% within 46s (bid-ask luck on tight SPY spreads).
-    //
-    // Model: exit at 35% of bar 0 close loss. With 12 polls per minute,
-    // the average detection point is ~2.5 ticks into the decline (first few
-    // polls near entry, then decline accelerates). 35% models this curve.
-    // Threshold raised to -1.5%: the live system holds through small adverse
-    // moves (< 1.5%) on the monitor cycle, only exits on clear reversals.
     if (i === 0 && currentPnl < -1.5) {
-      // Exit at 35% of bar 0 close loss (not 50% midpoint)
       const earlyExitPremium = entryPremium + (currentPremium - entryPremium) * 0.35;
       return mkResult(0, 'EARLY_EXIT', earlyExitPremium);
     }
@@ -223,7 +274,9 @@ export function simulateOrderAgentSpy(
   if (!lastBar) {
     return { exitPrice: entryPrice, exitReason: 'CLOSE', holdMinutes: 0, pnlPct: 0, peakPnlPct: 0, maxDrawdownPct: 0 };
   }
-  const finalPremium = toPremium(entryPrice, entryPremium, lastBar.close, direction, delta);
+  const { premium: finalPremium } = toPremiumDynamic(
+    entryPrice, entryPremium, lastBar.close, direction, entryDelta, gamma, futureBars.length, thetaPerMin,
+  );
   const finalPnl = pnlPct(finalPremium, entryPremium);
   return {
     exitPrice: lastBar.close,
@@ -232,5 +285,11 @@ export function simulateOrderAgentSpy(
     pnlPct: finalPnl,
     peakPnlPct: peakPnlPct_,
     maxDrawdownPct: maxDrawdownPct_,
+    entryDelta,
+    entryPremium,
+    exitPremium: finalPremium,
+    tpPremium: tpTarget,
+    stopPremium: currentStop,
+    premiumTrace: trace ? premiumTrace : undefined,
   };
 }

@@ -2301,15 +2301,17 @@ export class OrderAgent {
       return;
     }
 
-    // Decrement qty in DB by actually-filled qty so subsequent monitor ticks and exits are correct
+    // Decrement qty and track partial close P&L so dashboard shows correct totals.
+    // Keep status OPEN so order agent continues managing remaining contracts.
     const pool = getPool();
     await pool.query(
       `UPDATE trading.position_journal
-          SET qty = GREATEST(qty - $1, 0)
+          SET qty = GREATEST(qty - $1, 0),
+              realized_pnl = COALESCE(realized_pnl, 0) + ($3::numeric - entry_price) * $1::int * 100
         WHERE id = $2 AND status = 'OPEN'`,
-      [actualFilledQty, this.positionId],
+      [actualFilledQty, this.positionId, reduceFill ?? 0],
     );
-    console.log(`[OrderAgent ${decision.ticker}] position_journal.qty decremented by ${actualFilledQty}`);
+    console.log(`[OrderAgent ${decision.ticker}] position_journal.qty decremented by ${actualFilledQty}, partial P&L recorded`);
 
     const entryForPnl = this.fillPrice ?? candidate.entryPremium;
     const pnlPct = entryForPnl > 0 && reduceFill

@@ -686,7 +686,14 @@ export class OrderAgentRegistry {
       await pool.query(
         `UPDATE trading.position_journal
             SET status='CLOSED', exit_price=$1,
-                realized_pnl=(($1::numeric - $2::numeric) * qty * 100),
+                realized_pnl=(
+                  SELECT COALESCE(SUM(
+                    (oe.fill_price - $2::numeric) * oe.filled_qty * 100
+                  ), ($1::numeric - $2::numeric) * qty * 100)
+                  FROM trading.order_executions oe
+                  WHERE oe.position_id = $4 AND oe.order_side = 'sell'
+                    AND oe.filled_qty > 0 AND oe.fill_price > 0
+                ),
                 close_reason=$3, closed_at=NOW()
           WHERE id=$4`,
         [exitPrice, entryPrice, reason, pos.id],

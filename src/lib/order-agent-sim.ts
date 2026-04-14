@@ -29,6 +29,19 @@ export interface OHLCVBar {
 
 export type SignalDirection = 'bullish' | 'bearish' | 'neutral';
 
+/** One bar of the option premium trace for visualization */
+export interface PremiumTracePoint {
+  minute: number;          // minutes after entry
+  time: string;            // UTC timestamp
+  underlying: number;      // underlying price (bar close)
+  premium: number;         // option premium estimate
+  pnlPct: number;          // P&L % at this point
+  delta: number;           // effective delta at this point
+  stop: number;            // current stop premium
+  isEntry?: boolean;       // marks the entry point
+  isExit?: boolean;        // marks the exit point
+}
+
 export interface SimResult {
   exitPrice: number;       // underlying price at exit
   exitReason: string;      // STOP | TP | PROFIT_REVERSAL | PRE_EMPTIVE | SMALL_GAIN_LOCK | BAD_ENTRY | RAPID_DECLINE | TRAILING_DECAY | CLOSE
@@ -36,24 +49,60 @@ export interface SimResult {
   pnlPct: number;          // simulated P&L % on the option premium
   peakPnlPct: number;      // highest P&L % reached before exit
   maxDrawdownPct: number;  // worst drawdown from peak before exit
+  // Option simulation details (populated when delta simulation is active)
+  entryDelta?: number;     // delta at entry
+  entryPremium?: number;   // option premium at entry ($)
+  exitPremium?: number;    // option premium at exit ($)
+  tpPremium?: number;      // take-profit premium level ($)
+  stopPremium?: number;    // initial stop premium level ($)
+  premiumTrace?: PremiumTracePoint[];  // bar-by-bar premium path for visualization
 }
 
 export interface SimConfig {
   stopMult?: number;    // default 1.0
   tpMult?: number;      // default 1.6
   delta?: number;       // option delta, default 0.50
+  gamma?: number;       // option gamma (delta change per $1 underlying move), default 0.008
+  theta?: number;       // theta decay per minute (as fraction of premium), default based on premium
   recentBars?: OHLCVBar[];  // recent 1m bars before entry for volatility measurement
+  /** Enable full premium trace recording for visualization (default false) */
+  trace?: boolean;
 }
 
 // ── Helpers ────────────────────────────────────────────────────────────────────
 
-/** Convert underlying bar close to option premium given entry state. */
+/** Convert underlying bar close to option premium given entry state (linear, fixed delta). */
 export function toPremium(
   entryPrice: number, entryPremium: number, barClose: number,
   direction: SignalDirection, delta: number,
 ): number {
   const move = direction === 'bullish' ? barClose - entryPrice : entryPrice - barClose;
   return entryPremium + move * delta;
+}
+
+/**
+ * Convert underlying price to option premium with dynamic delta (gamma model).
+ * Delta shifts with underlying move: delta_new = delta_entry + gamma * underlyingMove.
+ * Uses average delta over the move for a better approximation than linear.
+ * Returns { premium, currentDelta }.
+ */
+export function toPremiumDynamic(
+  entryPrice: number, entryPremium: number, barClose: number,
+  direction: SignalDirection, entryDelta: number, gamma: number,
+  minutesHeld: number, thetaPerMin: number,
+): { premium: number; currentDelta: number } {
+  const underlyingMove = direction === 'bullish' ? barClose - entryPrice : entryPrice - barClose;
+  // Delta shifts with gamma: for calls, delta increases as price rises (favorable)
+  // Clamp delta to [0.05, 0.95] to stay realistic
+  const rawDelta = entryDelta + gamma * underlyingMove;
+  const currentDelta = Math.max(0.05, Math.min(0.95, rawDelta));
+  // Use average delta over the move for better approximation (midpoint rule)
+  const avgDelta = (entryDelta + currentDelta) / 2;
+  const deltaContribution = avgDelta * underlyingMove;
+  // Theta decay: small per-minute erosion
+  const thetaDecay = thetaPerMin * minutesHeld;
+  const premium = Math.max(0.01, entryPremium + deltaContribution - thetaDecay);
+  return { premium, currentDelta };
 }
 
 export function pnlPct(current: number, entry: number): number {

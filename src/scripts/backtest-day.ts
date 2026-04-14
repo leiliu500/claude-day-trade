@@ -31,11 +31,13 @@ import { computeTimeframeIndicators, classifyAlignment } from '../agents/signal-
 import { computeEntryMetrics } from '../lib/entry-context.js';
 import { getTickerConfig } from '../ticker-configs.js';
 import { detectDirection } from '../lib/direction-detector.js';
+import { writeVisualizerHTML, type VisEntry, type VisBar } from './backtest-visualizer.js';
 
 // ── Config ────────────────────────────────────────────────────────────────────
 
 const USE_AI = process.argv.includes('--ai');
 const JSON_OUTPUT = process.argv.includes('--json');
+const HTML_OUTPUT = process.argv.includes('--html');
 const TARGET_DATE = process.argv.filter(a => !a.startsWith('--'))[2] || '2026-03-18';
 const TICKER = process.argv.filter(a => !a.startsWith('--'))[3] || 'SPY';
 const PROFILE = 'S' as const; // Scalp: 1m, 3m, 5m
@@ -918,6 +920,7 @@ async function main() {
       // Simulate order-agent trailing stop on remaining bars (secondary metric)
       const sim = TCFG.simulate(currentPrice, direction, atr, allFutureBars, {
         recentBars,
+        trace: HTML_OUTPUT,
         ...(signalMode === 'vwap_reversion' ? { stopMult: 0.4, tpMult: 0.6 }
           : signalMode === 'range' ? { stopMult: 0.5, tpMult: 0.8 }
           : signalMode === 'breakout' ? { stopMult: TCFG.breakoutStopMult, tpMult: TCFG.breakoutTpMult } : {}),
@@ -1382,7 +1385,9 @@ async function main() {
       : e.sim.exitReason === 'STOP' ? '🛑 STOP'
       : e.sim.exitReason === 'CLOSE' ? '🔔 CLOSE'
       : e.sim.exitReason;
-    console.log(`    Sim (approx): ${simIcon} P&L ${e.sim.pnlPct >= 0 ? '+' : ''}${e.sim.pnlPct.toFixed(1)}% | Exit: ${simExitTag} after ${e.sim.holdMinutes}m | Peak: +${e.sim.peakPnlPct.toFixed(1)}% | DD: -${e.sim.maxDrawdownPct.toFixed(1)}%`);
+    const deltaInfo = e.sim.entryDelta != null ? ` | Delta: ${e.sim.entryDelta.toFixed(2)}` : '';
+    const premInfo = e.sim.entryPremium != null ? ` | Prem: $${e.sim.entryPremium.toFixed(2)}→$${(e.sim.exitPremium ?? 0).toFixed(2)}` : '';
+    console.log(`    Sim (approx): ${simIcon} P&L ${e.sim.pnlPct >= 0 ? '+' : ''}${e.sim.pnlPct.toFixed(1)}% | Exit: ${simExitTag} after ${e.sim.holdMinutes}m | Peak: +${e.sim.peakPnlPct.toFixed(1)}% | DD: -${e.sim.maxDrawdownPct.toFixed(1)}%${deltaInfo}${premInfo}`);
     // Top confidence factors
     const cb = e.breakdown;
     const factors = [
@@ -2594,6 +2599,31 @@ async function main() {
       delete (globalThis as any).__btDelayAnalysis;
     }
     console.log(`\n__JSON_START__${JSON.stringify(jsonSummary)}__JSON_END__`);
+  }
+
+  // ── HTML Visualizer Output ──
+  if (HTML_OUTPUT) {
+    const visEntries: VisEntry[] = confirmedEntries.map((e, i) => ({
+      index: i + 1,
+      time: e.time,
+      timeET: e.timeET,
+      direction: e.direction,
+      price: e.price,
+      confidence: e.confidence,
+      entryGrade: e.entryGrade,
+      signalMode: e.signalMode,
+      sim: e.sim,
+    }));
+    const visBars: VisBar[] = targetDateBars.map(b => ({
+      time: b.timestamp,
+      open: b.open,
+      high: b.high,
+      low: b.low,
+      close: b.close,
+    }));
+    const htmlPath = `backtest-${TICKER.toLowerCase()}-${TARGET_DATE}.html`;
+    writeVisualizerHTML({ ticker: TICKER, date: TARGET_DATE, bars: visBars, entries: visEntries }, htmlPath);
+    console.log(`\n  HTML visualizer written to: ${htmlPath}`);
   }
 }
 

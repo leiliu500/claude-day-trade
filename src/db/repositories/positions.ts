@@ -59,15 +59,14 @@ export async function closePosition(params: {
                             AND oe.filled_qty > 0 AND oe.fill_price > 0)
                        ),
          realized_pnl = (
-                         COALESCE(
-                           NULLIF($2::numeric, 0),
-                           (SELECT SUM(oe.fill_price * oe.filled_qty) / NULLIF(SUM(oe.filled_qty), 0)
-                            FROM trading.order_executions oe
-                            WHERE oe.position_id = $1 AND oe.order_side = 'sell'
-                              AND oe.filled_qty > 0 AND oe.fill_price > 0)
-                         ) -
-                         CASE WHEN $3::numeric > 0 THEN $3::numeric ELSE entry_price END
-                       ) * qty * 100,
+                         SELECT COALESCE(SUM(
+                           (oe.fill_price - CASE WHEN $3::numeric > 0 THEN $3::numeric ELSE entry_price END)
+                           * oe.filled_qty * 100
+                         ), 0)
+                         FROM trading.order_executions oe
+                         WHERE oe.position_id = $1 AND oe.order_side = 'sell'
+                           AND oe.filled_qty > 0 AND oe.fill_price > 0
+                       ),
          close_reason = $4,
          closed_at    = NOW()
      WHERE id = $1`,
