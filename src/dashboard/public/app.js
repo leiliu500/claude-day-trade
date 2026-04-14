@@ -2092,15 +2092,7 @@ async function refreshAll() {
 }
 
 // ── Backtest Visualizer ──────────────────────────────────────────────────────
-
-let btData = null; // { bars, entries } cached after run
-
-function btToET(utc) {
-  const d = new Date(utc);
-  return d.toLocaleTimeString('en-US', { timeZone: 'America/New_York', hour: '2-digit', minute: '2-digit', hour12: false });
-}
-function btFmtPnl(v) { return (v >= 0 ? '+' : '') + v.toFixed(1) + '%'; }
-function btFmtDollar(v) { return '$' + v.toFixed(2); }
+// Loads the standalone backtest HTML in an iframe for identical rendering.
 
 async function runBacktest() {
   const ticker = document.getElementById('bt-ticker').value;
@@ -2109,424 +2101,40 @@ async function runBacktest() {
 
   const btn = document.getElementById('btn-run-backtest');
   const status = document.getElementById('bt-status');
+  const iframe = document.getElementById('bt-iframe');
+  const consoleEl = document.getElementById('bt-console');
   btn.disabled = true;
   status.textContent = 'Running backtest...';
+  consoleEl.style.display = 'none';
+  iframe.style.display = 'none';
 
   try {
     const resp = await fetch(`${API}/api/backtest?ticker=${ticker}&date=${date}`);
     const data = await resp.json();
     if (!resp.ok) throw new Error(data.error || 'Backtest failed');
 
-    status.textContent = 'Done. Fetching chart data...';
+    // Show the full console report
+    if (data.consoleOutput) {
+      consoleEl.textContent = data.consoleOutput;
+      consoleEl.style.display = 'block';
+    }
 
-    // Fetch the HTML file to extract bars and entries data
-    const htmlResp = await fetch(`${API}/api/backtest/html?ticker=${ticker}&date=${date}`);
-    if (!htmlResp.ok) throw new Error('HTML file not available');
-    const htmlText = await htmlResp.text();
+    // Load the standalone chart HTML in the iframe
+    if (data.htmlAvailable) {
+      const htmlUrl = `${API}/api/backtest/html?ticker=${ticker}&date=${date}`;
+      iframe.src = htmlUrl;
+      iframe.style.display = 'block';
 
-    // Extract BARS and ENTRIES from the HTML script
-    const barsMatch = htmlText.match(/const BARS = (\[.*?\]);\s*const ENTRIES/s);
-    const entriesMatch = htmlText.match(/const ENTRIES = (\[.*?\]);\s*\/\//s);
-    if (!barsMatch || !entriesMatch) throw new Error('Could not parse backtest data from HTML');
+      document.getElementById('btn-open-html').style.display = '';
+      document.getElementById('btn-open-html').onclick = () => window.open(htmlUrl, '_blank');
+    }
 
-    const bars = JSON.parse(barsMatch[1]);
-    const entries = JSON.parse(entriesMatch[1]);
-    btData = { bars, entries, ticker, date };
-
-    // Show open-html button
-    document.getElementById('btn-open-html').style.display = '';
-
-    renderBacktest();
-    status.textContent = `${ticker} ${date} — ${entries.length} entries, ${bars.length} bars`;
+    status.textContent = `${ticker} ${date} — backtest complete`;
   } catch (err) {
     status.textContent = 'Error: ' + err.message;
   } finally {
     btn.disabled = false;
   }
-}
-
-function openBacktestHtml() {
-  if (!btData) return;
-  window.open(`${API}/api/backtest/html?ticker=${btData.ticker}&date=${btData.date}`, '_blank');
-}
-
-function renderBacktest() {
-  if (!btData) return;
-  renderBtSummary();
-  renderBtCandlestickChart();
-  renderBtPremiumCards();
-  renderBtTradesTable();
-}
-
-function renderBtSummary() {
-  const { entries } = btData;
-  const div = document.getElementById('bt-summary');
-  div.style.display = '';
-  const wins = entries.filter(e => e.sim.pnlPct > 0).length;
-  const losses = entries.length - wins;
-  const totalPnl = entries.reduce((s, e) => s + e.sim.pnlPct, 0);
-  const avgPnl = entries.length > 0 ? totalPnl / entries.length : 0;
-  const avgDelta = entries.length > 0 ? entries.reduce((s, e) => s + (e.sim.entryDelta || 0.40), 0) / entries.length : 0;
-  const avgHold = entries.length > 0 ? entries.reduce((s, e) => s + e.sim.holdMinutes, 0) / entries.length : 0;
-
-  const cards = [
-    { label: 'Entries', value: entries.length, cls: '' },
-    { label: 'Win / Loss', value: `${wins}W / ${losses}L`, cls: wins >= losses ? 'bullish' : 'bearish' },
-    { label: 'Total P&L', value: btFmtPnl(totalPnl), cls: totalPnl >= 0 ? 'bullish' : 'bearish' },
-    { label: 'Avg P&L', value: btFmtPnl(avgPnl), cls: avgPnl >= 0 ? 'bullish' : 'bearish' },
-    { label: 'Avg Delta', value: avgDelta.toFixed(2), cls: '' },
-    { label: 'Avg Hold', value: avgHold.toFixed(0) + 'm', cls: '' },
-  ];
-  div.innerHTML = cards.map(c =>
-    `<div class="bt-card"><div class="bt-card-label">${c.label}</div><div class="bt-card-value ${c.cls}">${c.value}</div></div>`
-  ).join('');
-}
-
-function renderBtCandlestickChart() {
-  const { bars, entries } = btData;
-  const canvas = document.getElementById('bt-candle-chart');
-  const ctx = canvas.getContext('2d');
-  const dpr = window.devicePixelRatio || 1;
-
-  if (bars.length === 0) return;
-
-  const candleW = 6, candleGap = 2, candleStep = candleW + candleGap;
-  const H = 500;
-  const pad = { top: 30, right: 80, bottom: 50, left: 80 };
-  const minW = bars.length * candleStep + pad.left + pad.right;
-  const W = Math.max(canvas.parentElement.getBoundingClientRect().width, minW);
-
-  canvas.style.width = W + 'px';
-  canvas.style.height = H + 'px';
-  canvas.width = W * dpr;
-  canvas.height = H * dpr;
-  ctx.scale(dpr, dpr);
-
-  const ch = H - pad.top - pad.bottom;
-  const prices = bars.flatMap(b => [b.high, b.low]);
-  const pMin = Math.min(...prices), pMax = Math.max(...prices);
-  const pRange = pMax - pMin || 1;
-  const pPad = pRange * 0.08;
-
-  const xS = (i) => pad.left + i * candleStep + candleW / 2;
-  const yS = (p) => pad.top + ch - ((p - (pMin - pPad)) / (pRange + 2 * pPad)) * ch;
-
-  // Background
-  ctx.fillStyle = '#0d1117';
-  ctx.fillRect(0, 0, W, H);
-
-  // Price grid
-  ctx.strokeStyle = '#21262d'; ctx.lineWidth = 0.5;
-  for (let i = 0; i <= 8; i++) {
-    const p = pMin - pPad + (pRange + 2 * pPad) * (i / 8);
-    const y = yS(p);
-    ctx.beginPath(); ctx.moveTo(pad.left, y); ctx.lineTo(W - pad.right, y); ctx.stroke();
-    ctx.fillStyle = '#8b949e'; ctx.font = '10px monospace';
-    ctx.textAlign = 'right'; ctx.fillText(btFmtDollar(p), pad.left - 8, y + 3);
-    ctx.textAlign = 'left';  ctx.fillText(btFmtDollar(p), W - pad.right + 8, y + 3);
-  }
-
-  // Time labels (every 15m)
-  let lastLbl = '';
-  bars.forEach((b, i) => {
-    const et = btToET(b.time);
-    const min = parseInt(et.split(':')[1]);
-    if (min % 15 === 0 && et !== lastLbl) {
-      lastLbl = et;
-      const x = xS(i);
-      ctx.strokeStyle = '#21262d30'; ctx.lineWidth = 0.5;
-      ctx.beginPath(); ctx.moveTo(x, pad.top); ctx.lineTo(x, H - pad.bottom); ctx.stroke();
-      ctx.fillStyle = '#8b949e'; ctx.font = '10px monospace'; ctx.textAlign = 'center';
-      ctx.fillText(et, x, H - pad.bottom + 16);
-    }
-  });
-
-  // Candlesticks
-  bars.forEach((b, i) => {
-    const x = xS(i);
-    const bull = b.close >= b.open;
-    const color = bull ? '#3fb950' : '#f85149';
-    const bodyTop = yS(Math.max(b.open, b.close));
-    const bodyBot = yS(Math.min(b.open, b.close));
-    const bodyH = Math.max(bodyBot - bodyTop, 1);
-
-    // Wick
-    ctx.strokeStyle = color; ctx.lineWidth = 1;
-    ctx.beginPath(); ctx.moveTo(x, yS(b.high)); ctx.lineTo(x, yS(b.low)); ctx.stroke();
-
-    // Body
-    ctx.fillStyle = bull ? '#0d1117' : color;
-    ctx.fillRect(x - candleW / 2, bodyTop, candleW, bodyH);
-    ctx.strokeStyle = color; ctx.lineWidth = 1;
-    ctx.strokeRect(x - candleW / 2, bodyTop, candleW, bodyH);
-  });
-
-  // Find bar index by UTC time
-  function findIdx(time) {
-    const t = new Date(time).getTime();
-    let best = 0, bestD = Infinity;
-    bars.forEach((b, i) => { const d = Math.abs(new Date(b.time).getTime() - t); if (d < bestD) { bestD = d; best = i; } });
-    return best;
-  }
-
-  // Trade overlays
-  entries.forEach((e, idx) => {
-    const ei = findIdx(e.time);
-    const ex = xS(ei), ey = yS(e.price);
-    const entryColor = e.direction === 'bullish' ? '#3fb950' : '#f85149';
-    const isWin = e.sim && e.sim.pnlPct >= 0;
-
-    // Exit bar
-    let xi = ei + (e.sim ? e.sim.holdMinutes : 0);
-    if (e.sim && e.sim.premiumTrace) {
-      const ep = e.sim.premiumTrace.find(p => p.isExit);
-      if (ep) xi = findIdx(ep.time);
-    }
-    xi = Math.min(xi, bars.length - 1);
-    const exx = xS(xi);
-    const exitPrice = e.sim ? e.sim.exitPrice : e.price;
-    const exy = yS(exitPrice);
-
-    // Shaded trade region
-    const rL = Math.min(ex, exx) - candleStep / 2;
-    const rR = Math.max(ex, exx) + candleStep / 2;
-    ctx.fillStyle = isWin ? 'rgba(63,185,80,0.06)' : 'rgba(248,81,73,0.06)';
-    ctx.fillRect(rL, pad.top, rR - rL, ch);
-
-    // Entry price line
-    ctx.setLineDash([2, 3]); ctx.strokeStyle = entryColor + '60'; ctx.lineWidth = 1;
-    ctx.beginPath(); ctx.moveTo(ex, ey); ctx.lineTo(exx, ey); ctx.stroke();
-    ctx.setLineDash([]);
-
-    // Entry-to-exit line
-    ctx.setLineDash([4, 3]); ctx.strokeStyle = isWin ? '#3fb95090' : '#f8514990'; ctx.lineWidth = 1.5;
-    ctx.beginPath(); ctx.moveTo(ex, ey); ctx.lineTo(exx, exy); ctx.stroke();
-    ctx.setLineDash([]);
-
-    // Entry triangle
-    const bar = bars[ei];
-    const mo = 14;
-    ctx.beginPath();
-    if (e.direction === 'bullish') {
-      const my = yS(bar.low) + mo;
-      ctx.moveTo(ex, my - 10); ctx.lineTo(ex - 7, my); ctx.lineTo(ex + 7, my);
-    } else {
-      const my = yS(bar.high) - mo;
-      ctx.moveTo(ex, my + 10); ctx.lineTo(ex - 7, my); ctx.lineTo(ex + 7, my);
-    }
-    ctx.closePath();
-    ctx.fillStyle = entryColor; ctx.fill();
-    ctx.strokeStyle = '#0d1117'; ctx.lineWidth = 1.5; ctx.stroke();
-
-    // Entry label
-    ctx.fillStyle = '#f0f6fc'; ctx.font = 'bold 10px monospace'; ctx.textAlign = 'center';
-    const ly = e.direction === 'bullish' ? yS(bar.low) + mo + 12 : yS(bar.high) - mo - 8;
-    ctx.fillText('#' + (idx + 1), ex, ly);
-
-    // Exit circle
-    if (e.sim) {
-      const ec = e.sim.exitReason === 'TP' ? '#d2a8ff'
-        : ['STOP','BAD_ENTRY','PRE_EMPTIVE','RAPID_DECLINE','EARLY_EXIT'].includes(e.sim.exitReason) ? '#f0883e' : '#8b949e';
-      ctx.beginPath(); ctx.arc(exx, exy, 5, 0, Math.PI * 2); ctx.closePath();
-      ctx.fillStyle = ec; ctx.fill();
-      ctx.strokeStyle = '#0d1117'; ctx.lineWidth = 1.5; ctx.stroke();
-
-      // P&L label
-      ctx.fillStyle = isWin ? '#3fb950' : '#f85149';
-      ctx.font = 'bold 10px monospace'; ctx.textAlign = 'left';
-      ctx.fillText(btFmtPnl(e.sim.pnlPct), exx + 8, exy - 4);
-      ctx.fillStyle = '#8b949e'; ctx.font = '9px monospace';
-      ctx.fillText(e.sim.exitReason + ' ' + e.sim.holdMinutes + 'm', exx + 8, exy + 8);
-    }
-  });
-
-  // Tooltip
-  const tooltip = document.getElementById('bt-tooltip');
-  canvas.onmousemove = (evt) => {
-    const r = canvas.getBoundingClientRect();
-    const mx = (evt.clientX - r.left) * (W / r.width);
-    let near = -1, nd = Infinity;
-    for (let i = 0; i < bars.length; i++) { const d = Math.abs(mx - xS(i)); if (d < nd) { nd = d; near = i; } }
-    if (near < 0 || nd > candleStep * 2) { tooltip.style.display = 'none'; return; }
-    const b = bars[near];
-    const bull = b.close >= b.open;
-    const chg = b.open ? ((b.close - b.open) / b.open * 100) : 0;
-    const cc = bull ? '#3fb950' : '#f85149';
-    tooltip.style.display = 'block';
-    tooltip.style.left = (evt.clientX - canvas.parentElement.getBoundingClientRect().left + 16) + 'px';
-    tooltip.style.top = (evt.clientY - canvas.parentElement.getBoundingClientRect().top - 10) + 'px';
-    tooltip.innerHTML = `<b>${btToET(b.time)} ET</b><br>`
-      + `<span style="color:#8b949e">O:</span> ${btFmtDollar(b.open)} `
-      + `<span style="color:#8b949e">H:</span> ${btFmtDollar(b.high)}<br>`
-      + `<span style="color:#8b949e">L:</span> ${btFmtDollar(b.low)} `
-      + `<span style="color:#8b949e">C:</span> <span style="color:${cc}">${btFmtDollar(b.close)} (${chg >= 0 ? '+' : ''}${chg.toFixed(2)}%)</span>`;
-  };
-  canvas.onmouseleave = () => { tooltip.style.display = 'none'; };
-}
-
-function renderBtPremiumCards() {
-  const { entries } = btData;
-  const grid = document.getElementById('bt-premium-grid');
-  const header = document.getElementById('bt-premium-header');
-  grid.innerHTML = '';
-
-  const withTrace = entries.filter(e => e.sim.premiumTrace && e.sim.premiumTrace.length >= 2);
-  if (withTrace.length === 0) { header.style.display = 'none'; return; }
-  header.style.display = '';
-
-  withTrace.forEach((e, _) => {
-    const idx = entries.indexOf(e);
-    const trace = e.sim.premiumTrace;
-    const pnlCls = e.sim.pnlPct >= 0 ? 'bullish' : 'bearish';
-    const gradeCls = 'bt-tag-' + e.entryGrade.toLowerCase();
-    const dirCls = e.direction === 'bullish' ? 'bt-tag-bull' : 'bt-tag-bear';
-
-    const card = document.createElement('div');
-    card.className = 'bt-prem-card';
-    card.innerHTML =
-      `<div class="bt-prem-header">`
-      + `<span><b>#${idx + 1}</b> ${e.timeET} ET `
-      + `<span class="bt-tag ${gradeCls}">${e.entryGrade}</span> `
-      + `<span class="bt-tag ${dirCls}">${e.direction.toUpperCase()}</span></span>`
-      + `<span class="${pnlCls}">${btFmtPnl(e.sim.pnlPct)} (${e.sim.exitReason} @ ${e.sim.holdMinutes}m)</span>`
-      + `</div>`
-      + `<canvas class="bt-prem-canvas" height="150"></canvas>`
-      + `<div class="bt-prem-meta">`
-      + `Entry: ${btFmtDollar(e.sim.entryPremium || 0)} | `
-      + `Exit: ${btFmtDollar(e.sim.exitPremium || 0)} | `
-      + `Delta: ${(e.sim.entryDelta || 0).toFixed(2)} &rarr; ${trace[trace.length - 1].delta.toFixed(2)} | `
-      + `TP: ${btFmtDollar(e.sim.tpPremium || 0)} | `
-      + `Stop: ${btFmtDollar(e.sim.stopPremium || 0)}`
-      + `</div>`;
-    grid.appendChild(card);
-
-    // Draw premium chart
-    requestAnimationFrame(() => {
-      const cvs = card.querySelector('.bt-prem-canvas');
-      if (!cvs) return;
-      const cx = cvs.getContext('2d');
-      const dpr = window.devicePixelRatio || 1;
-      const rect = cvs.getBoundingClientRect();
-      cvs.width = rect.width * dpr;
-      cvs.height = 150 * dpr;
-      cx.scale(dpr, dpr);
-      const W = rect.width, H = 150;
-      const p = { top: 12, right: 50, bottom: 24, left: 50 };
-      const cw = W - p.left - p.right, ch2 = H - p.top - p.bottom;
-
-      const prems = trace.map(t => t.premium);
-      const stops = trace.map(t => t.stop);
-      const allV = [...prems, ...stops, e.sim.tpPremium || 0].filter(v => v > 0);
-      const vMin = Math.min(...allV) * 0.97, vMax = Math.max(...allV) * 1.03;
-      const vR = vMax - vMin || 1;
-
-      const xP = (i) => p.left + (i / Math.max(trace.length - 1, 1)) * cw;
-      const yP = (v) => p.top + ch2 - ((v - vMin) / vR) * ch2;
-
-      // Grid
-      cx.strokeStyle = '#21262d'; cx.lineWidth = 0.5;
-      for (let i = 0; i <= 4; i++) {
-        const v = vMin + vR * (i / 4), y = yP(v);
-        cx.beginPath(); cx.moveTo(p.left, y); cx.lineTo(W - p.right, y); cx.stroke();
-        cx.fillStyle = '#8b949e'; cx.font = '9px monospace'; cx.textAlign = 'right';
-        cx.fillText(btFmtDollar(v), p.left - 4, y + 3);
-      }
-
-      // TP line
-      if (e.sim.tpPremium) {
-        const ty = yP(e.sim.tpPremium);
-        cx.setLineDash([4, 4]); cx.strokeStyle = '#d2a8ff60'; cx.lineWidth = 1;
-        cx.beginPath(); cx.moveTo(p.left, ty); cx.lineTo(W - p.right, ty); cx.stroke();
-        cx.setLineDash([]);
-        cx.fillStyle = '#d2a8ff'; cx.font = '9px monospace'; cx.textAlign = 'left';
-        cx.fillText('TP ' + btFmtDollar(e.sim.tpPremium), W - p.right + 4, ty + 3);
-      }
-
-      // Entry line
-      const ey = yP(e.sim.entryPremium || prems[0]);
-      cx.setLineDash([2, 4]); cx.strokeStyle = '#8b949e40'; cx.lineWidth = 1;
-      cx.beginPath(); cx.moveTo(p.left, ey); cx.lineTo(W - p.right, ey); cx.stroke();
-      cx.setLineDash([]);
-
-      // Stop line
-      cx.beginPath(); cx.strokeStyle = '#f8514960'; cx.lineWidth = 1;
-      trace.forEach((t, i) => { const x = xP(i), y = yP(t.stop); i === 0 ? cx.moveTo(x, y) : cx.lineTo(x, y); });
-      cx.stroke();
-
-      // Premium line
-      cx.beginPath();
-      cx.strokeStyle = e.sim.pnlPct >= 0 ? '#3fb950' : '#f85149';
-      cx.lineWidth = 1.5;
-      trace.forEach((t, i) => { const x = xP(i), y = yP(t.premium); i === 0 ? cx.moveTo(x, y) : cx.lineTo(x, y); });
-      cx.stroke();
-
-      // Fill
-      cx.lineTo(xP(trace.length - 1), yP(vMin));
-      cx.lineTo(xP(0), yP(vMin));
-      cx.closePath();
-      cx.fillStyle = e.sim.pnlPct >= 0 ? 'rgba(63,185,80,0.08)' : 'rgba(248,81,73,0.08)';
-      cx.fill();
-
-      // Entry dot
-      cx.beginPath(); cx.arc(xP(0), yP(prems[0]), 5, 0, Math.PI * 2);
-      cx.fillStyle = e.direction === 'bullish' ? '#3fb950' : '#f85149'; cx.fill();
-      cx.strokeStyle = '#0d1117'; cx.lineWidth = 1.5; cx.stroke();
-
-      // Exit dot
-      const exi = trace.findIndex(t => t.isExit);
-      if (exi >= 0) {
-        cx.beginPath(); cx.arc(xP(exi), yP(trace[exi].premium), 5, 0, Math.PI * 2);
-        cx.fillStyle = e.sim.exitReason === 'TP' ? '#d2a8ff' : '#f0883e'; cx.fill();
-        cx.strokeStyle = '#0d1117'; cx.lineWidth = 1.5; cx.stroke();
-      }
-
-      // Time labels
-      const nL = Math.min(6, trace.length);
-      cx.fillStyle = '#8b949e'; cx.font = '9px monospace'; cx.textAlign = 'center';
-      for (let i = 0; i < nL; i++) {
-        const ti = Math.floor((i / (nL - 1)) * (trace.length - 1));
-        cx.fillText(trace[ti].minute + 'm', xP(ti), H - 4);
-      }
-
-      // Delta annotations
-      cx.fillStyle = '#8b949e80'; cx.font = '8px monospace'; cx.textAlign = 'left';
-      [0, Math.floor(trace.length * 0.5), trace.length - 1].forEach(ti => {
-        if (ti < trace.length) cx.fillText('d=' + trace[ti].delta.toFixed(2), xP(ti) + 4, yP(trace[ti].premium) - 6);
-      });
-    });
-  });
-}
-
-function renderBtTradesTable() {
-  const { entries } = btData;
-  const tbl = document.getElementById('tbl-bt-trades');
-  const header = document.getElementById('bt-trades-header');
-  if (entries.length === 0) { tbl.style.display = 'none'; header.style.display = 'none'; return; }
-  tbl.style.display = ''; header.style.display = '';
-
-  const tbody = tbl.querySelector('tbody');
-  tbody.innerHTML = '';
-  entries.forEach((e, idx) => {
-    const pnlCls = e.sim.pnlPct >= 0 ? 'bullish' : 'bearish';
-    const gradeCls = 'bt-tag-' + e.entryGrade.toLowerCase();
-    const dirCls = e.direction === 'bullish' ? 'bt-tag-bull' : 'bt-tag-bear';
-    const row = document.createElement('tr');
-    row.innerHTML =
-      `<td>${idx + 1}</td>`
-      + `<td>${e.timeET} ET</td>`
-      + `<td><span class="bt-tag ${dirCls}">${e.direction === 'bullish' ? 'BULL' : 'BEAR'}</span></td>`
-      + `<td>${e.signalMode}</td>`
-      + `<td><span class="bt-tag ${gradeCls}">${e.entryGrade}</span></td>`
-      + `<td>${(e.sim.entryDelta || 0.40).toFixed(2)}</td>`
-      + `<td>${btFmtDollar(e.sim.entryPremium || 0)} &rarr; ${btFmtDollar(e.sim.exitPremium || 0)}</td>`
-      + `<td>${btFmtDollar(e.sim.exitPrice)}</td>`
-      + `<td>${e.sim.exitReason}</td>`
-      + `<td>${e.sim.holdMinutes}m</td>`
-      + `<td class="${pnlCls}">${btFmtPnl(e.sim.pnlPct)}</td>`
-      + `<td class="bullish">+${e.sim.peakPnlPct.toFixed(1)}%</td>`
-      + `<td class="bearish">-${e.sim.maxDrawdownPct.toFixed(1)}%</td>`;
-    tbody.appendChild(row);
-  });
 }
 
 // Set default date for backtest

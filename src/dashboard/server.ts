@@ -1185,7 +1185,12 @@ export function startDashboard(port: number): void {
         htmlAvailable = true;
       }
 
-      res.json({ ok: true, date, ticker, result: backtestResult, htmlAvailable });
+      // Strip JSON blob from stdout to get clean console report
+      const consoleOutput = stdout
+        .replace(/__JSON_START__.*?__JSON_END__/s, '')
+        .trim();
+
+      res.json({ ok: true, date, ticker, result: backtestResult, htmlAvailable, consoleOutput });
     } catch (err: any) {
       const msg = err.stderr ? err.stderr.slice(0, 500) : err.message;
       res.status(500).json({ error: msg });
