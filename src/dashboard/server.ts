@@ -1177,18 +1177,21 @@ export function startDashboard(port: number): void {
         backtestResult = JSON.parse(jsonMatch[1]!);
       }
 
-      // Read the generated HTML file for the candlestick visualizer
-      const { readFileSync, existsSync } = await import('fs');
-      const htmlPath = join(process.cwd(), `backtest-${ticker.toLowerCase()}-${date}.html`);
-      let htmlAvailable = false;
-      if (existsSync(htmlPath)) {
-        htmlAvailable = true;
-      }
-
       // Strip JSON blob from stdout to get clean console report
       const consoleOutput = stdout
         .replace(/__JSON_START__.*?__JSON_END__/s, '')
         .trim();
+
+      // Read the generated HTML file for the candlestick visualizer
+      const { readFileSync, writeFileSync, existsSync } = await import('fs');
+      const htmlPath = join(process.cwd(), `backtest-${ticker.toLowerCase()}-${date}.html`);
+      const reportPath = join(process.cwd(), `backtest-${ticker.toLowerCase()}-${date}.report.txt`);
+      let htmlAvailable = false;
+      if (existsSync(htmlPath)) {
+        htmlAvailable = true;
+        // Save report alongside HTML so /api/backtest/html can inject it
+        writeFileSync(reportPath, consoleOutput, 'utf-8');
+      }
 
       res.json({ ok: true, date, ticker, result: backtestResult, htmlAvailable, consoleOutput });
     } catch (err: any) {
@@ -1207,13 +1210,27 @@ export function startDashboard(port: number): void {
       const ticker = typeof tickerRaw === 'string' && /^[A-Z]{1,10}$/.test(tickerRaw) ? tickerRaw : 'SPY';
       if (!date) { res.status(400).json({ error: 'date param required' }); return; }
 
-      const { existsSync } = await import('fs');
+      const { existsSync, readFileSync } = await import('fs');
       const htmlPath = join(process.cwd(), `backtest-${ticker.toLowerCase()}-${date}.html`);
       if (!existsSync(htmlPath)) {
         res.status(404).json({ error: 'Backtest HTML not found. Run the backtest first.' });
         return;
       }
-      res.sendFile(htmlPath);
+      // Inject console report into the HTML before serving
+      let html = readFileSync(htmlPath, 'utf-8');
+      const reportPath = join(process.cwd(), `backtest-${ticker.toLowerCase()}-${date}.report.txt`);
+      if (existsSync(reportPath)) {
+        const report = readFileSync(reportPath, 'utf-8');
+        const escaped = report.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+        const reportSection = `
+<div class="section-title">Full Backtest Report</div>
+<div style="margin:0 24px 16px;background:#161b22;border:1px solid #21262d;border-radius:6px;padding:16px 20px;overflow-x:auto">
+<pre style="font-family:inherit;font-size:12px;line-height:1.5;color:#c9d1d9;white-space:pre-wrap;word-break:break-word;margin:0">${escaped}</pre>
+</div>`;
+        // Insert before the closing </body>
+        html = html.replace('</body>', reportSection + '\n</body>');
+      }
+      res.type('html').send(html);
     } catch (err) {
       res.status(500).json({ error: (err as Error).message });
     }

@@ -2102,10 +2102,8 @@ async function runBacktest() {
   const btn = document.getElementById('btn-run-backtest');
   const status = document.getElementById('bt-status');
   const iframe = document.getElementById('bt-iframe');
-  const consoleEl = document.getElementById('bt-console');
   btn.disabled = true;
   status.textContent = 'Running backtest...';
-  consoleEl.style.display = 'none';
   iframe.style.display = 'none';
 
   try {
@@ -2113,13 +2111,7 @@ async function runBacktest() {
     const data = await resp.json();
     if (!resp.ok) throw new Error(data.error || 'Backtest failed');
 
-    // Show the full console report
-    if (data.consoleOutput) {
-      consoleEl.textContent = data.consoleOutput;
-      consoleEl.style.display = 'block';
-    }
-
-    // Load the standalone chart HTML in the iframe
+    // Load the standalone HTML (charts + report) in the iframe
     if (data.htmlAvailable) {
       const htmlUrl = `${API}/api/backtest/html?ticker=${ticker}&date=${date}`;
       iframe.src = htmlUrl;
