@@ -235,6 +235,12 @@ export class SignalAgent {
     const priorDayLevels = computePriorDayLevels(dailyBars, currentPrice);
     const orb = computeORB(ltfBars, currentPrice);
 
+    // Order flow microstructure from SIP trade + quote streams
+    const orderFlow = AlpacaStreamManager.getInstance().getOrderFlow(ticker) ?? undefined;
+    if (orderFlow) {
+      console.log(`[SignalAgent] Order flow: ${ticker} imb1m=${orderFlow.imbalance1m.toFixed(3)} flow=${orderFlow.flowDirection} tps=${orderFlow.tradesPerSecond.toFixed(1)}`);
+    }
+
     return {
       id: uuidv4(),
       ticker,
@@ -260,6 +266,7 @@ export class SignalAgent {
       breakoutBeyond,
       vwapReversionTarget,
       vwapDistance,
+      orderFlow,
       triggeredBy: trigger,
       sessionId,
       createdAt: new Date().toISOString(),

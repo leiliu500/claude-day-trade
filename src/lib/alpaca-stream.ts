@@ -3,9 +3,14 @@
  * plus one REST-polling loop for option quotes:
  *
  *  1. Data stream  (wss://stream.data.alpaca.markets/v2/sip)
- *     Subscribes to 1-minute bars for all watched tickers.
+ *     Subscribes to 1-minute bars, trades, and quotes for all watched tickers.
  *     Maintains an in-memory ring buffer of 1-min OHLCVBar per ticker.
  *     getBars() derives any N-minute aggregation on demand.
+ *     Trades + quotes feed the order flow engine:
+ *       - Latest NBBO per ticker for trade classification (quote rule)
+ *       - Classified trade ring buffer (5-min TTL) for imbalance computation
+ *       - Session volume profile for support/resistance identification
+ *     getOrderFlow() computes imbalance, intensity, and volume profile on demand.
  *
  *  2. Option quote poll (REST OPRA snapshot, every OPTION_POLL_MS)
  *     Alpaca's option WebSocket stream requires a separate subscription (402).
@@ -19,13 +24,14 @@
  *     so OrderAgents detect fills without polling.
  *
  * Both WebSocket streams auto-reconnect with exponential backoff.
- * getBars() / getOptionMid() return null when cache is absent so callers
- * fall back to the Alpaca REST API transparently.
+ * getBars() / getOptionMid() / getOrderFlow() return null when cache is absent
+ * so callers fall back to the Alpaca REST API transparently.
  */
 
 import { EventEmitter } from 'events';
 import { config } from '../config.js';
 import type { OHLCVBar, Timeframe } from '../types/market.js';
+import type { OrderFlowResult } from '../types/indicators.js';
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
@@ -42,6 +48,15 @@ const MAX_RECONNECT_MS = 30_000;
 /** How often to poll option snapshots for all watched symbols (ms) */
 const OPTION_POLL_MS = 1_000;
 
+/** Max age (ms) for trades in the order flow ring buffer */
+const TRADE_BUFFER_TTL_MS = 5 * 60_000; // 5 minutes
+
+/** Volume profile bucket size in dollars */
+const VP_BUCKET_SIZE = 0.01;
+
+/** Minimum absolute imbalance to classify as buying/selling (vs neutral) */
+const FLOW_DIRECTION_THRESHOLD = 0.15;
+
 // ── Internal types ────────────────────────────────────────────────────────────
 
 interface AlpacaStreamBar {
@@ -51,6 +66,47 @@ interface AlpacaStreamBar {
   v: number;
   vw?: number;
   t: string;
+}
+
+interface AlpacaStreamTrade {
+  T: 't';
+  S: string;   // symbol
+  p: number;   // price
+  s: number;   // size
+  t: string;   // timestamp (RFC 3339)
+  x: string;   // exchange
+  c?: string[]; // conditions
+}
+
+interface AlpacaStreamQuote {
+  T: 'q';
+  S: string;   // symbol
+  bp: number;  // bid price
+  bs: number;  // bid size
+  ap: number;  // ask price
+  as: number;  // ask size
+  t: string;   // timestamp
+}
+
+/** Classified trade stored in the ring buffer */
+interface ClassifiedTrade {
+  ts: number;    // epoch ms
+  price: number;
+  size: number;
+  side: 'buy' | 'sell';
+}
+
+/** Latest NBBO state per ticker */
+interface NBBOState {
+  bid: number;
+  ask: number;
+  midpoint: number;
+}
+
+/** Session volume profile bucket */
+interface VolumeProfileBucket {
+  price: number;   // bucketed price
+  volume: number;  // total volume at this price
 }
 
 
@@ -75,6 +131,15 @@ export class AlpacaStreamManager extends EventEmitter {
 
   // 1-min bar ring buffer per ticker
   private readonly barCache = new Map<string, OHLCVBar[]>();
+
+  // Order flow: classified trades ring buffer per ticker (5-min TTL)
+  private readonly tradeBuffer = new Map<string, ClassifiedTrade[]>();
+
+  // Order flow: latest NBBO per ticker (for trade classification)
+  private readonly nbboCache = new Map<string, NBBOState>();
+
+  // Order flow: session volume profile per ticker (reset on connect)
+  private readonly volumeProfile = new Map<string, Map<number, number>>();
 
   // Tickers subscribed on the data stream
   private readonly subscribedTickers = new Set<string>();
@@ -225,6 +290,9 @@ export class AlpacaStreamManager extends EventEmitter {
     this.optionQuoteCallbacks.clear();
     this.subscribedOptionSymbols.clear();
     this.optionMidCache.clear();
+    this.tradeBuffer.clear();
+    this.nbboCache.clear();
+    this.volumeProfile.clear();
     console.log('[AlpacaStream] Disconnected');
   }
 
@@ -287,6 +355,14 @@ export class AlpacaStreamManager extends EventEmitter {
         this._ingestBar(m as unknown as AlpacaStreamBar);
       }
 
+      if (T === 't') {
+        this._ingestTrade(m as unknown as AlpacaStreamTrade);
+      }
+
+      if (T === 'q') {
+        this._ingestQuote(m as unknown as AlpacaStreamQuote);
+      }
+
       if (T === 'error') {
         console.error('[AlpacaStream/data] Stream error:', obj['msg']);
       }
@@ -297,8 +373,13 @@ export class AlpacaStreamManager extends EventEmitter {
     const toSubscribe = tickers.filter(t => this.subscribedTickers.has(t) ? true : (this.subscribedTickers.add(t), true));
     if (toSubscribe.length === 0) return;
     if (this.dataWs?.readyState === WebSocket.OPEN) {
-      this.dataWs.send(JSON.stringify({ action: 'subscribe', bars: toSubscribe }));
-      console.log(`[AlpacaStream/data] Subscribed bars: ${toSubscribe.join(',')}`);
+      this.dataWs.send(JSON.stringify({
+        action: 'subscribe',
+        bars: toSubscribe,
+        trades: toSubscribe,
+        quotes: toSubscribe,
+      }));
+      console.log(`[AlpacaStream/data] Subscribed bars+trades+quotes: ${toSubscribe.join(',')}`);
     }
   }
 
@@ -389,6 +470,174 @@ export class AlpacaStreamManager extends EventEmitter {
 
     this.emit('bar', bar.S, ohlcv);
     console.log(`[AlpacaStream] 1m bar: ${bar.S} c=$${bar.c} t=${bar.t}`);
+  }
+
+  // ── Trade / Quote ingestion (order flow) ────────────────────────────────────
+
+  private _ingestQuote(quote: AlpacaStreamQuote): void {
+    if (quote.bp <= 0 || quote.ap <= 0) return;
+    this.nbboCache.set(quote.S, {
+      bid: quote.bp,
+      ask: quote.ap,
+      midpoint: (quote.bp + quote.ap) / 2,
+    });
+  }
+
+  private _ingestTrade(trade: AlpacaStreamTrade): void {
+    const nbbo = this.nbboCache.get(trade.S);
+    if (!nbbo) return; // can't classify without NBBO
+
+    // Classify using quote rule: trade at or above midpoint = buy-initiated
+    const side: 'buy' | 'sell' = trade.p >= nbbo.midpoint ? 'buy' : 'sell';
+    const ts = new Date(trade.t).getTime();
+
+    const classified: ClassifiedTrade = {
+      ts,
+      price: trade.p,
+      size: trade.s,
+      side,
+    };
+
+    // Append to ring buffer
+    let buffer = this.tradeBuffer.get(trade.S);
+    if (!buffer) { buffer = []; this.tradeBuffer.set(trade.S, buffer); }
+    buffer.push(classified);
+
+    // Update session volume profile
+    let vp = this.volumeProfile.get(trade.S);
+    if (!vp) { vp = new Map(); this.volumeProfile.set(trade.S, vp); }
+    const bucket = Math.round(trade.p / VP_BUCKET_SIZE) * VP_BUCKET_SIZE;
+    vp.set(bucket, (vp.get(bucket) ?? 0) + trade.s);
+
+    // Prune expired trades (only every ~1000 trades to avoid overhead)
+    if (buffer.length % 1000 === 0) {
+      this._pruneTradeBuffer(trade.S, ts);
+    }
+  }
+
+  private _pruneTradeBuffer(ticker: string, now: number): void {
+    const buffer = this.tradeBuffer.get(ticker);
+    if (!buffer) return;
+    const cutoff = now - TRADE_BUFFER_TTL_MS;
+    const firstValid = buffer.findIndex(t => t.ts >= cutoff);
+    if (firstValid > 0) buffer.splice(0, firstValid);
+  }
+
+  /**
+   * Compute order flow metrics on demand from the trade ring buffer.
+   * Returns null when there's insufficient data (no trades or no NBBO yet).
+   */
+  getOrderFlow(ticker: string): OrderFlowResult | null {
+    const buffer = this.tradeBuffer.get(ticker);
+    if (!buffer || buffer.length === 0) return null;
+    if (!this.nbboCache.has(ticker)) return null;
+
+    const now = Date.now();
+    const cutoff5m = now - 5 * 60_000;
+    const cutoff1m = now - 60_000;
+    const cutoff30s = now - 30_000;
+
+    // Filter to trades within 5-min window (prune stale while we're at it)
+    const firstValid = buffer.findIndex(t => t.ts >= cutoff5m);
+    if (firstValid > 0) buffer.splice(0, firstValid);
+    if (buffer.length === 0) return null;
+
+    // Compute imbalances for each window
+    let buy5m = 0, sell5m = 0;
+    let buy1m = 0, sell1m = 0;
+    let buy30s = 0, sell30s = 0;
+    let trades30s = 0, vol30s = 0;
+
+    for (const t of buffer) {
+      if (t.side === 'buy') buy5m += t.size; else sell5m += t.size;
+      if (t.ts >= cutoff1m) {
+        if (t.side === 'buy') buy1m += t.size; else sell1m += t.size;
+      }
+      if (t.ts >= cutoff30s) {
+        if (t.side === 'buy') buy30s += t.size; else sell30s += t.size;
+        trades30s++;
+        vol30s += t.size;
+      }
+    }
+
+    const total5m = buy5m + sell5m;
+    const total1m = buy1m + sell1m;
+    const total30s = buy30s + sell30s;
+
+    const imbalance5m = total5m > 0 ? (buy5m - sell5m) / total5m : 0;
+    const imbalance1m = total1m > 0 ? (buy1m - sell1m) / total1m : 0;
+    const imbalance30s = total30s > 0 ? (buy30s - sell30s) / total30s : 0;
+
+    // Trade intensity (30s window)
+    const elapsed30s = Math.max(1, (now - cutoff30s) / 1000);
+    const tradesPerSecond = trades30s / elapsed30s;
+    const volumePerSecond = vol30s / elapsed30s;
+
+    // Volume profile — top buckets from session profile
+    const vp = this.volumeProfile.get(ticker);
+    let volumeProfileArr: { price: number; volume: number }[] = [];
+    let highVolumeNode = 0;
+    let lowVolumeGap: number | null = null;
+
+    if (vp && vp.size > 0) {
+      volumeProfileArr = [...vp.entries()]
+        .map(([price, volume]) => ({ price, volume }))
+        .sort((a, b) => a.price - b.price);
+
+      // High-volume node: price with max volume
+      let maxVol = 0;
+      for (const entry of volumeProfileArr) {
+        if (entry.volume > maxVol) {
+          maxVol = entry.volume;
+          highVolumeNode = entry.price;
+        }
+      }
+
+      // Low-volume gap: largest price gap between significant volume nodes
+      // Only consider nodes with volume > 10% of max
+      const threshold = maxVol * 0.10;
+      const significantNodes = volumeProfileArr.filter(e => e.volume >= threshold);
+      if (significantNodes.length >= 2) {
+        let maxGap = 0;
+        let gapMid: number | null = null;
+        for (let i = 1; i < significantNodes.length; i++) {
+          const gap = significantNodes[i]!.price - significantNodes[i - 1]!.price;
+          if (gap > maxGap) {
+            maxGap = gap;
+            gapMid = (significantNodes[i]!.price + significantNodes[i - 1]!.price) / 2;
+          }
+        }
+        // Only report gaps wider than $0.10
+        if (maxGap > 0.10) lowVolumeGap = gapMid;
+      }
+
+      // Trim profile to top 50 buckets by volume for payload size
+      if (volumeProfileArr.length > 50) {
+        volumeProfileArr.sort((a, b) => b.volume - a.volume);
+        volumeProfileArr = volumeProfileArr.slice(0, 50);
+        volumeProfileArr.sort((a, b) => a.price - b.price);
+      }
+    }
+
+    // Flow direction from 1m imbalance
+    const flowDirection: 'buying' | 'selling' | 'neutral' =
+      imbalance1m > FLOW_DIRECTION_THRESHOLD ? 'buying' :
+      imbalance1m < -FLOW_DIRECTION_THRESHOLD ? 'selling' : 'neutral';
+
+    return {
+      imbalance30s,
+      imbalance1m,
+      imbalance5m,
+      buyVolume1m: buy1m,
+      sellVolume1m: sell1m,
+      totalVolume1m: total1m,
+      tradesPerSecond,
+      volumePerSecond,
+      volumeProfile: volumeProfileArr,
+      highVolumeNode,
+      lowVolumeGap,
+      flowDirection,
+    };
   }
 
   /**

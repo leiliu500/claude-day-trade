@@ -1,5 +1,5 @@
 import type { TradingProfile, Timeframe } from './market.js';
-import type { TimeframeIndicators, PriorDayLevels, ORBResult } from './indicators.js';
+import type { TimeframeIndicators, PriorDayLevels, ORBResult, OrderFlowResult } from './indicators.js';
 
 export type SignalDirection = 'bullish' | 'bearish' | 'neutral';
 export type AlignmentType = 'all_aligned' | 'htf_mtf_aligned' | 'mtf_ltf_aligned' | 'mixed';
@@ -41,6 +41,9 @@ export interface SignalPayload {
   breakoutBeyond?: number;   // how far price is beyond breakout level (% of price)
   vwapReversionTarget?: number;  // VWAP price (target for reversion)
   vwapDistance?: number;         // % distance from VWAP at entry
+
+  // Order flow microstructure (from SIP trade + quote streams)
+  orderFlow?: OrderFlowResult;
 
   triggeredBy: 'AUTO' | 'MANUAL';
   sessionId?: string;

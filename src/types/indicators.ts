@@ -128,4 +128,25 @@ export interface ORBResult {
   orbFormed: boolean;        // false if before 10:00 ET or no bars in the window
 }
 
+/** Real-time order flow microstructure metrics computed from SIP trade + quote streams. */
+export interface OrderFlowResult {
+  // Order flow imbalance: (buyVol - sellVol) / totalVol, range -1.0 to +1.0
+  imbalance30s: number;
+  imbalance1m: number;
+  imbalance5m: number;
+  // Raw volumes (1-min window)
+  buyVolume1m: number;
+  sellVolume1m: number;
+  totalVolume1m: number;
+  // Trade intensity (rolling 30s average)
+  tradesPerSecond: number;
+  volumePerSecond: number;
+  // Volume profile (session-to-date, bucketed by $0.01 for stocks)
+  volumeProfile: { price: number; volume: number }[];
+  highVolumeNode: number;      // price level with max volume (support/resistance)
+  lowVolumeGap: number | null; // midpoint of largest gap between nodes (fast-move zone)
+  // Directional signal derived from 1m imbalance (±0.15 threshold)
+  flowDirection: 'buying' | 'selling' | 'neutral';
+}
+
 export type { AllCandlePatterns };
