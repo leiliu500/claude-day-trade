@@ -26,9 +26,14 @@ export interface ATRResult {
 }
 
 export interface OBVResult {
-  value: number;                            // current OBV (cumulative)
-  trend: 'bullish' | 'bearish' | 'neutral'; // direction over last N bars
-  divergence: 'bullish' | 'bearish' | 'none'; // OBV vs price divergence
+  value: number;                            // current raw OBV (cumulative)
+  obvm: number;                             // OBVM: EMA-smoothed OBV (TOS OnBalanceVolumeModified)
+  signal: number;                           // Signal line: EMA of OBVM (TOS "Signals" plot)
+  trend: 'bullish' | 'bearish' | 'neutral'; // OBVM direction over lookback window
+  divergence: 'bullish' | 'bearish' | 'none'; // OBVM vs price divergence
+  crossUp: boolean;                         // OBVM crossed above Signal (bullish)
+  crossDown: boolean;                       // OBVM crossed below Signal (bearish)
+  obvmAboveSignal: boolean;                 // OBVM is currently above Signal line
 }
 
 export interface TDSetup {

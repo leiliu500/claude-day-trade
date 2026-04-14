@@ -105,7 +105,10 @@ export function evaluateBreakout(
   if (beyondPct <= 0.02 || beyondPct >= 0.40) return null;
 
   const htfObv = tfIndicators[2]!.obv;
-  const obvConfirms = brokeHigh ? htfObv.trend === 'bullish' : htfObv.trend === 'bearish';
+  // OBVM trend (smoothed) or OBVM/Signal crossover confirms volume behind breakout
+  const obvConfirms = brokeHigh
+    ? (htfObv.trend === 'bullish' || htfObv.crossUp)
+    : (htfObv.trend === 'bearish' || htfObv.crossDown);
   const htfDiCross = brokeHigh ? htfTf.dmi.crossedUp : htfTf.dmi.crossedDown;
   const diSpreadConfirms = htfTf.dmi.diSpreadSlope > 1;
   if (!obvConfirms && !htfDiCross && !diSpreadConfirms) return null;

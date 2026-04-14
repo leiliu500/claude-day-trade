@@ -1139,11 +1139,15 @@ function renderAnalysisCard(sig) {
             else if (price < vwap.vwap - dev) vwapBandStr = '<span class="bullish">−1σ</span>';
             else                              vwapBandStr = 'near';
           }
-          // OBV display
+          // OBVM display (TOS OnBalanceVolumeModified)
           const obvTrendCls = obv.trend === 'bullish' ? 'bullish' : obv.trend === 'bearish' ? 'bearish' : '';
           const obvDivStr = obv.divergence && obv.divergence !== 'none'
             ? ` <span style="font-size:0.65rem;opacity:0.7">(${obv.divergence})</span>` : '';
-          const obvStr = obv.trend ? `<span class="${obvTrendCls}">${obv.trend}</span>${obvDivStr}` : '—';
+          const obvSigStr = obv.crossUp ? ' <span class="bullish">X↑</span>'
+            : obv.crossDown ? ' <span class="bearish">X↓</span>'
+            : obv.obvmAboveSignal ? ' <span style="font-size:0.65rem;opacity:0.7">▲sig</span>'
+            : ' <span style="font-size:0.65rem;opacity:0.7">▼sig</span>';
+          const obvStr = obv.trend ? `<span class="${obvTrendCls}">${obv.trend}</span>${obvSigStr}${obvDivStr}` : '—';
 
           return `<tr>
             <td><b>${tf.timeframe}</b></td>

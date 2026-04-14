@@ -188,21 +188,31 @@ function computeConfidence(signal: SignalPayload, option: OptionEvaluation): Con
   }
   tdAdjustment = Math.max(-0.015, Math.min(0.02, tdAdjustment));
 
-  // OBV bonus — HTF and MTF only; LTF OBV is too noisy to score
-  // +0.03 per TF whose OBV trend matches signal direction (max +0.06)
-  // -0.02 per TF showing OBV divergence against signal direction (clamped -0.04)
-  // OBV trend confirmation is largely redundant with DI spread in trending markets,
-  // so kept modest to prevent confidence inflation when all indicators agree.
+  // OBVM bonus — HTF and MTF only; LTF OBVM is too noisy to score
+  // Uses TOS OnBalanceVolumeModified (EMA-smoothed OBV + signal line).
+  // +0.03 per TF whose OBVM trend matches signal direction (max +0.06)
+  // +0.03 bonus if OBVM crossed above/below signal line confirming direction
+  // -0.02 per TF showing OBVM divergence against signal direction (clamped -0.04)
   let obvBonus = 0;
   if (signal.direction !== 'neutral') {
     for (const tf of [htf, mtf]) {
       if (tf.obv.trend === signal.direction) obvBonus += 0.03;
+      // OBVM/Signal crossover confirmation (TOS "Signals" — the key OBVM feature)
+      const crossConfirms =
+        (signal.direction === 'bullish' && tf.obv.crossUp) ||
+        (signal.direction === 'bearish' && tf.obv.crossDown);
+      if (crossConfirms) obvBonus += 0.03;
+      // OBVM above/below signal alignment (weaker than fresh cross)
+      const alignedWithSignal =
+        (signal.direction === 'bullish' && tf.obv.obvmAboveSignal) ||
+        (signal.direction === 'bearish' && !tf.obv.obvmAboveSignal);
+      if (alignedWithSignal && !crossConfirms) obvBonus += 0.01;
       const badDivergence =
         (signal.direction === 'bullish' && tf.obv.divergence === 'bearish') ||
         (signal.direction === 'bearish' && tf.obv.divergence === 'bullish');
       if (badDivergence) obvBonus -= 0.02;
     }
-    obvBonus = Math.max(-0.04, Math.min(0.06, obvBonus));
+    obvBonus = Math.max(-0.04, Math.min(0.08, obvBonus));
   }
 
   // VWAP bonus — HTF and MTF direction alignment + HTF band extension penalty.
@@ -1422,11 +1432,16 @@ function computeRangeConfidence(signal: SignalPayload): ConfidenceBreakdown {
     }
   }
 
-  // OBV divergence (classic mean-reversion signal)
+  // OBVM divergence (classic mean-reversion signal — uses smoothed OBVM, not raw OBV)
   let obvBonus = 0;
   if (signal.direction === 'bullish' && htf.obv.divergence === 'bullish') obvBonus = 0.04;
   else if (signal.direction === 'bearish' && htf.obv.divergence === 'bearish') obvBonus = 0.04;
   if (htf.obv.trend !== signal.direction && htf.obv.trend !== 'neutral') obvBonus += 0.02;
+  // OBVM/Signal crossover adds conviction for range reversal
+  const rangeCrossConfirms =
+    (signal.direction === 'bullish' && htf.obv.crossUp) ||
+    (signal.direction === 'bearish' && htf.obv.crossDown);
+  if (rangeCrossConfirms) obvBonus += 0.02;
   obvBonus = Math.min(0.06, obvBonus);
 
   // Recent price action reversal (want bars turning at extreme)
@@ -1606,11 +1621,17 @@ function computeBreakoutConfidence(signal: SignalPayload): ConfidenceBreakdown {
   }, 0) / tfs.length;
   diSpreadBonus = Math.max(-0.05, Math.min(0.08, (avgDISpread / 30) * 0.08));
 
-  // ── OBV confirmation: volume supporting the breakout ──
+  // ── OBVM confirmation: volume supporting the breakout ──
+  // Uses TOS OBVM (smoothed OBV) trend + signal line crossover
   let obvBonus = 0;
   if (htf.obv.trend === signal.direction) obvBonus += 0.04;
   if (mtf.obv.trend === signal.direction) obvBonus += 0.02;
-  obvBonus = Math.min(0.06, obvBonus);
+  // OBVM/Signal crossover confirms breakout volume conviction
+  const boCrossConfirms =
+    (signal.direction === 'bullish' && htf.obv.crossUp) ||
+    (signal.direction === 'bearish' && htf.obv.crossDown);
+  if (boCrossConfirms) obvBonus += 0.03;
+  obvBonus = Math.min(0.08, obvBonus);
 
   // ── Breakout freshness: closer to level = fresher breakout ──
   // pricePositionAdjustment: reward fresh breakouts, penalize chasing
@@ -1822,6 +1843,11 @@ async function generateExplanation(
       adx_slope: parseFloat(tf.dmi.adxSlope.toFixed(1)),
       di_spread_slope: parseFloat(tf.dmi.diSpreadSlope.toFixed(1)),
       di_cross: diCross,
+      obvm: parseFloat(tf.obv.obvm.toFixed(0)),
+      obvm_signal: parseFloat(tf.obv.signal.toFixed(0)),
+      obvm_above_signal: tf.obv.obvmAboveSignal,
+      obvm_cross_up: tf.obv.crossUp,
+      obvm_cross_down: tf.obv.crossDown,
       obv_trend: tf.obv.trend,
       obv_divergence: tf.obv.divergence,
       td_setup: tf.td.setup,
