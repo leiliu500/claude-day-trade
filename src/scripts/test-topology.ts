@@ -439,29 +439,25 @@ async function main() {
     return { timestamp: b.timestamp, open: b.open, high: b.high, low: b.low, close: b.close, volume: b.volume };
   }
 
-  const ENTRY_COOLDOWN_MS = 3 * 60_000; // 3-min cooldown between entries (matches live scheduler cycle)
-
-  let inPosition = false;
-  let posDir: 'bullish' | 'bearish' = 'bullish';
-  let entryTime = '';
-  let entryUnderlying = 0;
-  let consecutiveStops = 0;
-  let consecutiveStopDir: 'bullish' | 'bearish' | null = null; // direction of the stops
-  let skipUntilTs = 0; // skip bars while sim holds the position + cooldown
-
-  interface TradeRecord {
-    time: string; dir: string; underlying: number;
-    conviction: number; regime: string; action: 'ENTER' | 'EXIT'; gates: string;
-    exitReason?: string; pnl?: number; pnlPct?: number; holdBars?: number;
-    entryPremium?: number; exitPremium?: number; atr?: number;
-    peakPnlPct?: number;
+  // Signal quality records — independent sim per signal, no position blocking
+  interface SignalRecord {
+    time: string; dir: 'bullish' | 'bearish'; underlying: number;
+    conviction: number; regime: string; gates: string; atr: number;
+    // Forward price metrics (2h window)
+    mfePct: number; maePct: number; mfeOverMae: number;
+    directionCorrect: boolean; mfePeakMinutes: number;
+    // Sim (independent)
+    sim: { pnlPct: number; exitReason: string; holdMinutes: number; peakPnlPct: number;
+           entryPremium: number; exitPremium: number };
+    // Grade
+    entryGrade: 'A' | 'B' | 'C' | 'D' | 'F';
+    outcome: 'GOOD' | 'BAD' | 'MARGINAL';
   }
-  const trades: TradeRecord[] = [];
+  const signals: SignalRecord[] = [];
 
   resetSessionOI(TICKER);
 
   for (let ts = firstTs + 30 * 60_000; ts <= lastTs; ts += entryStepMs) {
-    if (ts < skipUntilTs) continue; // skip bars consumed by the order sim
     const window = bars1m.filter(b => new Date(b.timestamp).getTime() <= ts).slice(-200);
     if (window.length < 50) continue;
     const price = window[window.length - 1]!.close;
@@ -506,120 +502,117 @@ async function main() {
       price: priceTopo, chain: chainTopo, iv: ivTopo, actions, anomalyScore: 0,
     };
 
-    if (!inPosition) {
-      // Infer price direction from slope of recent closes.
-      // Use 30-bar window with linear regression slope — more stable than
-      // EMA crossovers which whipsaw on pullbacks within a trend.
-      const slopeWindow = window.slice(-30).map(b => b.close);
-      const n = slopeWindow.length;
-      const sumX = n * (n - 1) / 2;
-      const sumX2 = n * (n - 1) * (2 * n - 1) / 6;
-      let sumY = 0, sumXY = 0;
-      for (let i = 0; i < n; i++) { sumY += slopeWindow[i]!; sumXY += i * slopeWindow[i]!; }
-      const slope = (n * sumXY - sumX * sumY) / (n * sumX2 - sumX * sumX);
-      // Normalize slope by price to get % per bar
-      const slopePct = (slope / slopeWindow[0]!) * 100;
-      const priceDir: 'bullish' | 'bearish' | 'neutral' =
-        slopePct > 0.003 ? 'bullish' :
-        slopePct < -0.003 ? 'bearish' : 'neutral';
+    // Infer price direction from slope of recent closes (30-bar linear regression)
+    const slopeWindow = window.slice(-30).map(b => b.close);
+    const n = slopeWindow.length;
+    const sumX = n * (n - 1) / 2;
+    const sumX2 = n * (n - 1) * (2 * n - 1) / 6;
+    let sumY = 0, sumXY = 0;
+    for (let i = 0; i < n; i++) { sumY += slopeWindow[i]!; sumXY += i * slopeWindow[i]!; }
+    const slope = (n * sumXY - sumX * sumY) / (n * sumX2 - sumX * sumX);
+    const slopePct = (slope / slopeWindow[0]!) * 100;
+    const priceDir: 'bullish' | 'bearish' | 'neutral' =
+      slopePct > 0.003 ? 'bullish' :
+      slopePct < -0.003 ? 'bearish' : 'neutral';
 
-      // Reset chop guard when direction reverses — stops from the old
-      // direction shouldn't block entries in the new direction.
-      const entry = computeTopologyEntry(topoSignal, priceDir, consecutiveStops);
-      if (entry.action === 'ENTER' && entry.conviction > 0.40) {
-        posDir = entry.direction as 'bullish' | 'bearish';
-        entryTime = time;
-        entryUnderlying = price;
+    // No consecutiveStops in signal-quality mode — evaluate every signal independently
+    const entry = computeTopologyEntry(topoSignal, priceDir, 0);
+    if (entry.action !== 'ENTER' || entry.conviction <= 0.20) continue;
 
-        const gateStr = entry.gates.map(g => `${g.name}(${g.strength.toFixed(2)})`).join(' × ');
+    const dir = entry.direction as 'bullish' | 'bearish';
+    const gateStr = entry.gates.map(g => `${g.name}(${g.strength.toFixed(2)})`).join(' × ');
+    const atr = computeATR5m(window);
 
-        // Run order simulation on remaining bars (same as backtest-day.ts)
-        const futureBars = target.filter(b => new Date(b.timestamp).getTime() > ts).map(toSimBar);
-        const recentBars = target.filter(b => {
-          const bt = new Date(b.timestamp).getTime();
-          return bt <= ts && bt > ts - 10 * 60_000;
-        }).map(toSimBar);
-        const atr = computeATR5m(window); // 5m ATR matches backtest-day multi-timeframe
-
-        const sim = simulateOrderAgentSpy(price, posDir, atr, futureBars, { recentBars });
-
-        // Record entry
-        trades.push({
-          time, dir: entry.direction, underlying: price,
-          conviction: entry.conviction, regime: entry.regime, action: 'ENTER', gates: gateStr,
-          entryPremium: sim.entryPremium, atr,
-        });
-
-        // Record exit from sim result
-        const exitTs = ts + sim.holdMinutes * 60_000;
-        const exitTime = timeET(new Date(exitTs).toISOString());
-        const exitPremium = sim.exitPremium ?? (sim.entryPremium ? sim.entryPremium * (1 + sim.pnlPct / 100) : 0);
-
-        trades.push({
-          time: exitTime, dir: posDir, underlying: sim.exitPrice,
-          conviction: 1.0, regime: entry.regime, action: 'EXIT',
-          gates: sim.exitReason, exitReason: sim.exitReason,
-          pnl: sim.entryPremium ? exitPremium - sim.entryPremium : undefined,
-          pnlPct: sim.pnlPct, holdBars: sim.holdMinutes, peakPnlPct: sim.peakPnlPct,
-          entryPremium: sim.entryPremium, exitPremium,
-        });
-
-        // Track consecutive stops for topology entry model
-        if (sim.exitReason === 'STOP' || sim.exitReason === 'BAD_ENTRY' || sim.exitReason === 'EARLY_EXIT') {
-          // Reset if direction changed (bearish stops shouldn't block bullish entries)
-          if (consecutiveStopDir && consecutiveStopDir !== posDir) {
-            consecutiveStops = 0;
-          }
-          consecutiveStops++;
-          consecutiveStopDir = posDir;
-        } else if (sim.pnlPct > 0) {
-          consecutiveStops = 0;
-          consecutiveStopDir = null;
-        }
-
-        // Skip ahead past the sim hold period + cooldown (matches live 3-min scheduler cycle)
-        skipUntilTs = exitTs + ENTRY_COOLDOWN_MS;
+    // ── Forward price metrics (2h window, same as backtest-day) ──
+    const futureBars = target.filter(b => {
+      const bt = new Date(b.timestamp).getTime();
+      return bt > ts && bt <= ts + 120 * 60_000;
+    });
+    let maxFav = 0, maxAdv = 0, mfePeakMinutes = 0;
+    for (const fb of futureBars) {
+      const favMove = dir === 'bullish'
+        ? Math.max(0, fb.high - price)
+        : Math.max(0, price - fb.low);
+      const advMove = dir === 'bullish'
+        ? Math.max(0, price - fb.low)
+        : Math.max(0, fb.high - price);
+      if (favMove > maxFav) {
+        maxFav = favMove;
+        mfePeakMinutes = Math.round((new Date(fb.timestamp).getTime() - ts) / 60_000);
       }
+      maxAdv = Math.max(maxAdv, advMove);
     }
+    const mfePct = (maxFav / price) * 100;
+    const maePct = (maxAdv / price) * 100;
+    const mfeOverMae = maePct > 0 ? mfePct / maePct : mfePct > 0 ? 99.9 : 0;
+    const directionCorrect = mfePct > 0.15;
+
+    // Grade: same logic as backtest-day
+    let entryGrade: 'A' | 'B' | 'C' | 'D' | 'F';
+    if (mfePct >= 0.30 && mfeOverMae >= 3.0) entryGrade = 'A';
+    else if (mfePct >= 0.20 && mfeOverMae >= 2.0) entryGrade = 'B';
+    else if (mfePct >= 0.10 && mfeOverMae >= 1.0) entryGrade = 'C';
+    else if (mfePct >= 0.05) entryGrade = 'D';
+    else entryGrade = 'F';
+
+    const outcome: 'GOOD' | 'BAD' | 'MARGINAL' =
+      entryGrade === 'A' || entryGrade === 'B' ? 'GOOD' :
+      entryGrade === 'F' ? 'BAD' : 'MARGINAL';
+
+    // ── Independent sim ──
+    const simFuture = target.filter(b => new Date(b.timestamp).getTime() > ts).map(toSimBar);
+    const recentBars = target.filter(b => {
+      const bt = new Date(b.timestamp).getTime();
+      return bt <= ts && bt > ts - 10 * 60_000;
+    }).map(toSimBar);
+    const sim = simulateOrderAgentSpy(price, dir, atr, simFuture, { recentBars });
+    const exitPremium = sim.exitPremium ?? (sim.entryPremium ? sim.entryPremium * (1 + sim.pnlPct / 100) : 0);
+
+    signals.push({
+      time, dir, underlying: price, conviction: entry.conviction,
+      regime: entry.regime, gates: gateStr, atr,
+      mfePct, maePct, mfeOverMae, directionCorrect, mfePeakMinutes,
+      sim: { pnlPct: sim.pnlPct, exitReason: sim.exitReason, holdMinutes: sim.holdMinutes,
+             peakPnlPct: sim.peakPnlPct ?? 0, entryPremium: sim.entryPremium ?? 0, exitPremium },
+      entryGrade, outcome,
+    });
   }
 
-  // Print trades
-  const entryTrades = trades.filter(t => t.action === 'ENTER');
-  const exitTrades = trades.filter(t => t.action === 'EXIT');
+  // ── Print signal quality results ──
+  const gradeIcon: Record<string, string> = { A: '🟢', B: '🔵', C: '🟡', D: '🟠', F: '🔴' };
 
-  console.log(`\n  ENTRIES & EXITS (${entryTrades.length} round-trips):`);
-  if (entryTrades.length === 0) console.log(`    No entries fired.`);
-  for (let i = 0; i < entryTrades.length; i++) {
-    const e = entryTrades[i]!;
-    const x = exitTrades[i];
-    const atrStr = e.atr ? `ATR=$${e.atr.toFixed(3)}` : '';
-    const premStr = e.entryPremium ? `Prem=$${e.entryPremium.toFixed(2)}` : '';
-    console.log(`    Entry #${i + 1}: ${e.time} ET  ${e.dir.toUpperCase().padEnd(7)}  ${TICKER} $${e.underlying.toFixed(2)}  ${atrStr}  ${premStr}  conv=${e.conviction.toFixed(3)}  [${e.regime}]`);
-    console.log(`      Gates: ${e.gates}`);
-    if (x) {
-      const icon = (x.pnlPct ?? 0) >= 0 ? '📈' : '📉';
-      const pctStr = (x.pnlPct ?? 0) >= 0 ? `+${(x.pnlPct ?? 0).toFixed(1)}%` : `${(x.pnlPct ?? 0).toFixed(1)}%`;
-      const peakStr = x.peakPnlPct != null ? `Peak: +${x.peakPnlPct.toFixed(1)}%` : '';
-      const ePrem = e.entryPremium?.toFixed(2) ?? '?';
-      const xPrem = x.exitPremium?.toFixed(2) ?? '?';
-      console.log(`      Sim: ${icon} P&L ${pctStr} | Exit: ${x.exitReason} after ${x.holdBars}m | ${peakStr} | Prem: $${ePrem}→$${xPrem}`);
-    }
+  console.log(`\n  SIGNAL QUALITY (${signals.length} signals, independent sims):`);
+  if (signals.length === 0) console.log(`    No entry signals fired.`);
+  for (let i = 0; i < signals.length; i++) {
+    const s = signals[i]!;
+    const icon = s.sim.pnlPct >= 0 ? '📈' : '📉';
+    const dirIcon = s.directionCorrect ? '✅' : '❌';
+    console.log(`    #${i + 1}: ${gradeIcon[s.entryGrade]} ${s.entryGrade} | ${s.time} ET  ${s.dir.toUpperCase().padEnd(7)} $${s.underlying.toFixed(2)}  conv=${s.conviction.toFixed(3)}  [${s.regime}]`);
+    console.log(`      MFE=${s.mfePct.toFixed(2)}% MAE=${s.maePct.toFixed(2)}% R=${s.mfeOverMae.toFixed(1)} Dir=${dirIcon} Peak@${s.mfePeakMinutes}m`);
+    console.log(`      Sim: ${icon} ${s.sim.pnlPct >= 0 ? '+' : ''}${s.sim.pnlPct.toFixed(1)}% | ${s.sim.exitReason} after ${s.sim.holdMinutes}m | Peak: +${s.sim.peakPnlPct.toFixed(1)}%`);
+    console.log(`      Gates: ${s.gates}`);
   }
 
-  // Summary
-  const totalPremiumPnl = exitTrades.reduce((s, t) => s + (t.pnl ?? 0), 0);
-  console.log(`\n  TRADE SUMMARY:`);
-  console.log(`    Round-trips: ${exitTrades.length}   Win: ${exitTrades.filter(t => (t.pnl ?? 0) > 0).length}   Loss: ${exitTrades.filter(t => (t.pnl ?? 0) <= 0).length}`);
-  if (exitTrades.length > 0) {
-    const avgPnlPct = exitTrades.reduce((s, t) => s + (t.pnlPct ?? 0), 0) / exitTrades.length;
-    console.log(`    Closed premium P&L: ${totalPremiumPnl >= 0 ? '+' : ''}$${totalPremiumPnl.toFixed(2)} per contract`);
-    console.log(`    Per 1 contract (×100): ${totalPremiumPnl >= 0 ? '+' : ''}$${(totalPremiumPnl * 100).toFixed(0)}`);
-    console.log(`    Avg P&L%: ${avgPnlPct >= 0 ? '+' : ''}${avgPnlPct.toFixed(1)}%`);
-    // Exit reason breakdown
-    const reasons: Record<string, number> = {};
-    for (const t of exitTrades) reasons[t.exitReason ?? '?'] = (reasons[t.exitReason ?? '?'] ?? 0) + 1;
-    console.log(`    Exit reasons: ${Object.entries(reasons).map(([r, n]) => `${r}=${n}`).join('  ')}`);
-  }
+  // ── Summary ──
+  const grades = { A: 0, B: 0, C: 0, D: 0, F: 0 };
+  for (const s of signals) grades[s.entryGrade]++;
+  const good = signals.filter(s => s.outcome === 'GOOD');
+  const bad = signals.filter(s => s.outcome === 'BAD');
+  const wins = signals.filter(s => s.sim.pnlPct > 0);
+  const avgSimPnl = signals.length > 0 ? signals.reduce((s, r) => s + r.sim.pnlPct, 0) / signals.length : 0;
+  const totalSimPnl = signals.reduce((s, r) => s + r.sim.pnlPct, 0);
+
+  console.log(`\n  SIGNAL QUALITY SUMMARY:`);
+  console.log(`    Signals:    ${signals.length} | Direction correct: ${signals.filter(s => s.directionCorrect).length}/${signals.length}`);
+  console.log(`    Grades:     ${Object.entries(grades).map(([g, n]) => `${gradeIcon[g]} ${g}:${n}`).join('  ')}`);
+  console.log(`    Outcome:    ✅ ${good.length} good (A+B) | ❌ ${bad.length} bad (F) | ⚠️  ${signals.length - good.length - bad.length} marginal (C+D)`);
+  console.log(`    Avg MFE:    ${(signals.reduce((s, r) => s + r.mfePct, 0) / Math.max(1, signals.length)).toFixed(3)}%`);
+  console.log(`    Avg MAE:    ${(signals.reduce((s, r) => s + r.maePct, 0) / Math.max(1, signals.length)).toFixed(3)}%`);
+  console.log(`    Sim W/L:    ${wins.length}W / ${signals.length - wins.length}L (${signals.length > 0 ? ((wins.length / signals.length) * 100).toFixed(0) : 0}%) | Avg: ${avgSimPnl >= 0 ? '+' : ''}${avgSimPnl.toFixed(1)}% | Total: ${totalSimPnl >= 0 ? '+' : ''}${totalSimPnl.toFixed(1)}%`);
+  // Exit reason breakdown
+  const reasons: Record<string, number> = {};
+  for (const s of signals) reasons[s.sim.exitReason] = (reasons[s.sim.exitReason] ?? 0) + 1;
+  console.log(`    Exits:      ${Object.entries(reasons).map(([r, n]) => `${r}=${n}`).join('  ')}`);
 
   // ────────────────────────────────────────────────────────────────────────────
   //  TEST 9 — Compare: topology entry model vs confidence model
@@ -680,11 +673,9 @@ async function main() {
   const b1changes = snaps.filter((s, i) => i > 0 && s.t.diagram.betti[1] !== snaps[i - 1]!.t.diagram.betti[1]).length;
   console.log(`\n  Betti changes:  β₀ changed ${b0changes}x   β₁ changed ${b1changes}x`);
 
-  console.log(`\n  Entry model results (order sim: simulateOrderAgentSpy):`);
-  console.log(`    Entries: ${entryTrades.length}   Exits: ${exitTrades.length}`);
-  const closedPnl = exitTrades.reduce((s, t) => s + (t.pnl ?? 0), 0);
-  console.log(`    Closed premium P&L: ${closedPnl >= 0 ? '+' : ''}$${closedPnl.toFixed(2)} per contract`);
-  console.log(`    Per 1 contract (×100): ${closedPnl >= 0 ? '+' : ''}$${(closedPnl * 100).toFixed(0)}`);
+  console.log(`\n  Entry model results (signal quality mode):`);
+  console.log(`    Signals: ${signals.length}   Good: ${signals.filter(s => s.outcome === 'GOOD').length}   Bad: ${signals.filter(s => s.outcome === 'BAD').length}`);
+  console.log(`    Sim total: ${totalSimPnl >= 0 ? '+' : ''}${totalSimPnl.toFixed(1)}%`);
 
   console.log(`\nDone.\n`);
 }
