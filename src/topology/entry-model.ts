@@ -138,21 +138,33 @@ function structureGate(price: PriceTopology): GateResult {
 
   switch (regime) {
     case 'trending': {
-      // New trend (bottleneck spike) OR confirmed trend (stability)
+      // Three ways to confirm a trend:
+      //   1. Bottleneck spike (structural break — new trend forming)
+      //   2. Stability gap (dominant H0 feature well-separated)
+      //   3. Low effective dimension (attractor is nearly 1D = clean trend line)
+      //      dim < 1.0 is strong directional evidence even when stability is low
       const isNewTrend = bn > 0.3;
-      const isConfirmed = regimeStability > 0.05;
-      if (!isNewTrend && !isConfirmed) {
+      const isConfirmed = regimeStability > 0.10;
+      const isLowDim = price.effectiveDimension < 0.9;
+      if (!isNewTrend && !isConfirmed && !isLowDim) {
         return { name: 'STRUCTURE', passed: false, strength: 0,
-          reason: `Trend not confirmed (stability=${regimeStability.toFixed(2)}, bn=${bn.toFixed(3)})` };
+          reason: `Trend not confirmed (stability=${regimeStability.toFixed(2)} < 0.10, bn=${bn.toFixed(3)} < 0.30, dim=${price.effectiveDimension.toFixed(1)} >= 0.9)` };
       }
-      // Bottleneck spike = early entry opportunity (higher conviction)
-      const strength = isNewTrend
-        ? 0.6 + Math.min(0.4, bn * 0.5)
-        : 0.4 + Math.min(0.4, regimeStability);
-      return { name: 'STRUCTURE', passed: true, strength: Math.min(1, strength),
-        reason: isNewTrend
-          ? `Structural break (bn=${bn.toFixed(3)}) — new trend forming`
-          : `Trend confirmed (stability=${regimeStability.toFixed(2)})` };
+      // Compute strength based on which condition fired
+      let strength: number;
+      let reason: string;
+      if (isNewTrend) {
+        strength = 0.5 + Math.min(0.5, bn * 0.5);
+        reason = `Structural break (bn=${bn.toFixed(3)}) — new trend forming`;
+      } else if (isLowDim) {
+        // Lower dimension = cleaner trend → higher strength
+        strength = 0.5 + Math.min(0.4, (0.9 - price.effectiveDimension) * 4);
+        reason = `Low-dimensional trend (dim=${price.effectiveDimension.toFixed(2)}, stability=${regimeStability.toFixed(2)})`;
+      } else {
+        strength = 0.4 + Math.min(0.5, regimeStability * 2);
+        reason = `Trend confirmed (stability=${regimeStability.toFixed(2)})`;
+      }
+      return { name: 'STRUCTURE', passed: true, strength: Math.min(1, strength), reason };
     }
 
     case 'ranging': {
@@ -369,14 +381,17 @@ function inferDirection(
  */
 function timeGate(timestamp: string): GateResult {
   const ts = new Date(timestamp);
-  // Convert to ET (handle EDT/EST automatically)
-  const etStr = ts.toLocaleString('en-US', { timeZone: 'America/New_York', hour12: false });
-  const parts = etStr.split(', ')[1]?.split(':');
-  if (!parts || parts.length < 2) {
-    return { name: 'TIME', passed: true, strength: 0.5, reason: 'Could not parse time — allowing' };
+  if (isNaN(ts.getTime())) {
+    return { name: 'TIME', passed: false, strength: 0,
+      reason: 'Invalid timestamp — blocking entry' };
   }
-  const hour = parseInt(parts[0]!, 10);
-  const minute = parseInt(parts[1]!, 10);
+  // Convert to ET using Intl (handles EDT/EST automatically, locale-independent)
+  const etParts = new Intl.DateTimeFormat('en-US', {
+    timeZone: 'America/New_York',
+    hour: '2-digit', minute: '2-digit', hour12: false,
+  }).formatToParts(ts);
+  const hour = parseInt(etParts.find(p => p.type === 'hour')!.value, 10);
+  const minute = parseInt(etParts.find(p => p.type === 'minute')!.value, 10);
   const minutesSinceMidnight = hour * 60 + minute;
 
   const entryOpen = 10 * 60;       // 10:00 ET

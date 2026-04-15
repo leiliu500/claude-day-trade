@@ -110,9 +110,24 @@ async function main() {
   // Fetch bars: 3 warmup days + target
   const warmupStart = new Date(TARGET_DATE);
   warmupStart.setDate(warmupStart.getDate() - 4);
-  const bars1m = await fetchBars(TICKER, warmupStart.toISOString(), `${TARGET_DATE}T23:59:59Z`);
+  const bars1mRaw = await fetchBars(TICKER, warmupStart.toISOString(), `${TARGET_DATE}T23:59:59Z`);
+
+  // Filter to regular session (9:30–16:00 ET) — matches live stream's _isRegularSession.
+  // Pre/post-market bars contaminate the Takens embedding with flat noise that
+  // drowns out intraday trend structure and suppresses regime stability.
+  const bars1m = bars1mRaw.filter(b => {
+    const parts = new Intl.DateTimeFormat('en-US', {
+      timeZone: 'America/New_York',
+      hour: '2-digit', minute: '2-digit', hour12: false,
+    }).formatToParts(new Date(b.timestamp));
+    const h = parseInt(parts.find(p => p.type === 'hour')!.value, 10);
+    const m = parseInt(parts.find(p => p.type === 'minute')!.value, 10);
+    const mins = h * 60 + m;
+    return mins >= 9 * 60 + 30 && mins < 16 * 60;
+  });
+
   const target = bars1m.filter(b => b.timestamp.startsWith(TARGET_DATE));
-  console.log(`  Fetched ${bars1m.length} total 1m bars, ${target.length} on target date`);
+  console.log(`  Fetched ${bars1mRaw.length} raw 1m bars → ${bars1m.length} regular-session, ${target.length} on target date`);
   if (target.length === 0) { console.error('  No bars on target date'); process.exit(1); }
 
   const dayOpen = target[0]!.open;
@@ -188,14 +203,14 @@ async function main() {
 
   const firstTs = new Date(target[0]!.timestamp).getTime();
   const lastTs  = new Date(target[target.length - 1]!.timestamp).getTime();
-  const snaps: { time: string; price: number; t: PriceTopology }[] = [];
+  const snaps: { time: string; timestamp: string; price: number; t: PriceTopology }[] = [];
 
   for (let ts = firstTs + 30 * 60_000; ts <= lastTs; ts += 15 * 60_000) {
     const window = bars1m.filter(b => new Date(b.timestamp).getTime() <= ts).slice(-200);
     if (window.length < 50) continue;
     const price = window[window.length - 1]!.close;
     const t = computePriceTopology(window, TICKER);
-    snaps.push({ time: timeET(new Date(ts).toISOString()), price, t });
+    snaps.push({ time: timeET(new Date(ts).toISOString()), timestamp: new Date(ts).toISOString(), price, t });
   }
 
   console.log(`\n  Time    Price    Regime          Stab  Cyclic   Dim   β₀ β₁  Bottleneck`);
@@ -493,7 +508,7 @@ async function main() {
     if (!inPosition) {
       // Try to enter
       const entry = computeTopologyEntry(topoSignal, 'bullish', consecutiveStops);
-      if (entry.action === 'ENTER' && entry.conviction > 0.02) {
+      if (entry.action === 'ENTER' && entry.conviction > 0.40) {
         posDir = entry.direction as 'bullish' | 'bearish';
         entryTime = time;
         entryUnderlying = price;
@@ -600,7 +615,7 @@ async function main() {
 
   for (const s of keyMoments) {
     const topoSig: TopologySignal = {
-      ticker: TICKER, timestamp: '', price: s.t, chain: null, iv: null,
+      ticker: TICKER, timestamp: s.timestamp, price: s.t, chain: null, iv: null,
       actions: [], anomalyScore: 0,
     };
     const entry = computeTopologyEntry(topoSig, 'bullish');
