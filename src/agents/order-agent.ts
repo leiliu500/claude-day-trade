@@ -47,6 +47,7 @@ import { AlpacaStreamManager } from '../lib/alpaca-stream.js';
 import type { TradeUpdateEvent } from '../lib/alpaca-stream.js';
 import { config } from '../config.js';
 import { getTickerConfig } from '../ticker-configs.js';
+import { blacklistSymbol } from './option-agent.js';
 import type { DecisionResult } from '../types/decision.js';
 import type { OptionCandidate } from '../types/options.js';
 import type { SizeResult, OrderRecord } from '../types/trade.js';
@@ -776,6 +777,7 @@ export class OrderAgent {
         `[OrderAgent ${decision.ticker} ${candidate.contract.symbol}] ` +
         `FILL_TIMEOUT — order unfilled after ${Math.round(elapsedMs / 1000)}s, cancelling`,
       );
+      blacklistSymbol(candidate.contract.symbol);
       if (this.alpacaOrderId) AlpacaStreamManager.getInstance().unwatchOrder(this.alpacaOrderId);
       await cancelOpenOrdersForSymbol(candidate.contract.symbol);
       await this._voidPosition('fill_timeout');
@@ -835,6 +837,7 @@ export class OrderAgent {
             `above limit $${originalLimit.toFixed(2)} (cap=${(REPRICE_MAX_DRIFT_PCT * 100).toFixed(0)}%), ` +
             `cancelling unfilled order`,
           );
+          blacklistSymbol(candidate.contract.symbol);
           if (this.alpacaOrderId) AlpacaStreamManager.getInstance().unwatchOrder(this.alpacaOrderId);
           await cancelOpenOrdersForSymbol(candidate.contract.symbol);
           await this._voidPosition('reprice_runaway');
