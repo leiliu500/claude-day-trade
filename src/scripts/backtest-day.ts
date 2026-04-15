@@ -1409,6 +1409,8 @@ async function main() {
       { name: 'Consolidation', val: cb.consolidationPenalty },
       { name: 'Near Level', val: cb.nearLevelPenalty },
       { name: 'Narrow Range', val: cb.narrowRangePenalty },
+      { name: 'MACD', val: cb.macdBonus },
+      { name: 'Conv/Div', val: cb.convergenceDurationBonus },
     ].filter(f => Math.abs(f.val) >= 0.01);
     const factorStr = factors.map(f => `${f.name}=${f.val >= 0 ? '+' : ''}${f.val.toFixed(3)}`).join(', ');
     console.log(`    Factors:    base=0.380, ${factorStr}`);
@@ -1502,6 +1504,7 @@ async function main() {
         { name: 'Exhaust', val: bcb.moveExhaustionPenalty }, { name: 'Consol', val: bcb.consolidationPenalty },
         { name: 'NearLvl', val: bcb.nearLevelPenalty }, { name: 'LowVol', val: bcb.lowVolPenalty },
         { name: 'NarrowRng', val: bcb.narrowRangePenalty },
+        { name: 'MACD', val: bcb.macdBonus }, { name: 'Conv/Div', val: bcb.convergenceDurationBonus },
       ].filter(f => Math.abs(f.val) >= 0.01);
       const bFactorStr = bFactors.map(f => `${f.name}=${f.val >= 0 ? '+' : ''}${f.val.toFixed(3)}`).join(', ');
       console.log(`     ${blocked.timeET} ET ${blocked.direction} ${blockTag} → ${outcomeIcon} ${gradeIcon} (conf=${(blocked.confidence * 100).toFixed(1)}%, MFE=${blocked.mfePct.toFixed(2)}% MAE=${blocked.maePct.toFixed(2)}%)`);

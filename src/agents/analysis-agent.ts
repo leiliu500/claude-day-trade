@@ -87,7 +87,7 @@ function computeConfidence(signal: SignalPayload, option: OptionEvaluation): Con
   const tfs = signal.timeframes;
   const [ltf, mtf, htf] = tfs;
   if (!ltf || !mtf || !htf) {
-    return { base: 0.38, diSpreadBonus: 0, adxBonus: 0, diCrossBonus: 0, alignmentBonus: 0, tdAdjustment: 0, obvBonus: 0, vwapBonus: 0, oiVolumeBonus: 0, pricePositionAdjustment: 0, adxMaturityPenalty: 0, trendPhaseBonus: 0, momentumAccelBonus: 0, structureBonus: 0, orbBonus: 0, recentPriceActionBonus: 0, trContractionPenalty: 0, lowVolPenalty: 0, moveExhaustionPenalty: 0, consolidationPenalty: 0, nearLevelPenalty: 0, thetaDecayPenalty: 0, narrowRangePenalty: 0, candlePatternBonus: 0, priceVelocityBonus: 0, volumeSurgeBonus: 0, trendPersistenceBonus: 0, orderFlowBonus: 0, total: 0.38 };
+    return { base: 0.38, diSpreadBonus: 0, adxBonus: 0, diCrossBonus: 0, alignmentBonus: 0, tdAdjustment: 0, obvBonus: 0, vwapBonus: 0, oiVolumeBonus: 0, pricePositionAdjustment: 0, adxMaturityPenalty: 0, trendPhaseBonus: 0, momentumAccelBonus: 0, structureBonus: 0, orbBonus: 0, recentPriceActionBonus: 0, trContractionPenalty: 0, lowVolPenalty: 0, moveExhaustionPenalty: 0, consolidationPenalty: 0, nearLevelPenalty: 0, thetaDecayPenalty: 0, narrowRangePenalty: 0, candlePatternBonus: 0, priceVelocityBonus: 0, volumeSurgeBonus: 0, macdBonus: 0, convergenceDurationBonus: 0, trendPersistenceBonus: 0, orderFlowBonus: 0, total: 0.38 };
   }
 
   // Base: direction-neutral starting point
@@ -1112,6 +1112,133 @@ function computeConfidence(signal: SignalPayload, option: OptionEvaluation): Con
   // momentum, not fresh signal. Cap to prevent inflated confidence on stale setups.
   if (adxMaturityPenalty <= -0.04) diSpreadBonus = Math.min(diSpreadBonus, 0.06);
 
+  // ── MACD bonus — trend confirmation, crossover timing, and divergence ──
+  // MACD is a momentum/trend indicator that captures convergence/divergence of
+  // moving averages. It complements DMI (which measures directional strength)
+  // by measuring momentum shifts — MACD often leads DMI at turning points.
+  //
+  // Histogram alignment with signal direction: +0.02 (HTF) +0.01 (MTF)
+  // MACD/signal crossover in signal direction: +0.02 (timing signal)
+  // Histogram increasing in signal direction: +0.01 (momentum building)
+  // Histogram opposing direction: -0.02 (HTF) -0.01 (MTF)
+  // MACD crossover opposing direction: -0.03 (bearish timing — penalties stay asymmetric)
+  // Suppress positive MACD in exhausting trends (same as velocity/accel).
+  // Suppress when near support/resistance — MACD confirming at a bounce zone is lagging.
+  // Clamped -0.06..+0.05
+  let macdBonus = 0;
+  if (signal.direction !== 'neutral') {
+    const isBull = signal.direction === 'bullish';
+    for (let i = 1; i < tfs.length; i++) { // MTF (i=1), HTF (i=2) — skip LTF (too noisy)
+      const tf = tfs[i]!;
+      const m = tf.macd;
+      const weight = i === 2 ? 0.02 : 0.01; // HTF > MTF
+
+      // Histogram alignment: positive histogram = bullish momentum, negative = bearish
+      const histAligned = isBull ? m.histogram > 0 : m.histogram < 0;
+      const histOpposes = isBull ? m.histogram < 0 : m.histogram > 0;
+      if (histAligned) macdBonus += weight;
+      if (histOpposes) macdBonus -= weight;
+
+      // Crossover timing — MACD crossing signal line is a phase-change signal
+      const crossAligned = isBull ? m.macdCrossUp : m.macdCrossDown;
+      const crossOpposing = isBull ? m.macdCrossDown : m.macdCrossUp;
+      if (crossAligned) macdBonus += 0.02;
+      if (crossOpposing) macdBonus -= 0.03;
+    }
+
+    // Histogram momentum: when HTF histogram is building in signal direction,
+    // momentum is accelerating — complementary to DI spread acceleration
+    if (htf.macd.histogramIncreasing && (isBull ? htf.macd.histogram > 0 : htf.macd.histogram < 0)) {
+      macdBonus += 0.01;
+    }
+
+    // Suppress positive MACD in exhausting trends — MACD lags like DI spread;
+    // a still-positive histogram at the end of a move is artifact, not fresh signal.
+    if (isExhaustingTrend && macdBonus > 0) {
+      macdBonus = 0;
+    }
+    // Suppress positive MACD near support/resistance — MACD confirming direction
+    // at a bounce zone is the tail end of a move, not fresh momentum.
+    if (nearLevelPenalty < 0 && macdBonus > 0) {
+      macdBonus *= 0.5;
+    }
+
+    macdBonus = Math.max(-0.06, Math.min(0.05, macdBonus));
+  }
+
+  // ── Convergence/divergence duration bonus ──
+  // Measures how long MACD and OBV convergence/divergence signals have persisted.
+  // A divergence that has held for many bars is a stronger signal than one that
+  // just appeared — it represents sustained pressure building against price.
+  //
+  // MACD divergence: histogram and price moving in opposite directions.
+  //   Price rising + MACD histogram declining = bearish divergence (weakening momentum)
+  //   Price falling + MACD histogram rising = bullish divergence (building momentum)
+  // Duration is measured by counting consecutive bars where histogram trends
+  // opposite to price direction on HTF.
+  //
+  // Confirming convergence (indicators agree with price): +0.02 base (cap +0.04)
+  // Opposing divergence (indicators disagree with price): -0.02 base (cap -0.04)
+  // OBV divergence adds +/-0.01 when it aligns with MACD divergence direction.
+  // Clamped -0.04..+0.04
+  let convergenceDurationBonus = 0;
+  if (signal.direction !== 'neutral' && htf.bars.length >= 10) {
+    const isBull = signal.direction === 'bullish';
+    const htfBars = htf.bars;
+    const htfMacd = htf.macd;
+
+    // Detect MACD-price divergence by comparing price trend vs histogram trend
+    // over the last N bars. Count consecutive bars where divergence holds.
+    const recentBars = htfBars.slice(-10);
+    const priceSlope = recentBars[recentBars.length - 1]!.close - recentBars[0]!.close;
+    const priceRising = priceSlope > 0;
+    const priceFalling = priceSlope < 0;
+
+    // MACD histogram trend: declining histogram while price rises = bearish divergence
+    // For duration counting, check how many consecutive recent bars show histogram
+    // moving against price direction
+    const histDeclining = htfMacd.histogram < htfMacd.prevHistogram;
+    const histRising = htfMacd.histogram > htfMacd.prevHistogram;
+
+    // Bearish divergence: price rising but MACD histogram declining (momentum fading)
+    // Only count as divergence when histogram has crossed zero — a declining-but-still-positive
+    // histogram just means the initial momentum spike is normalizing, not that the trend is
+    // reversing. Same logic for bullish divergence (rising-but-still-negative histogram).
+    const bearishDivergence = priceRising && histDeclining && htfMacd.histogram < 0;
+    // Bullish divergence: price falling but MACD histogram rising (momentum building)
+    const bullishDivergence = priceFalling && histRising && htfMacd.histogram > 0;
+
+    // Determine if the divergence confirms or opposes the signal direction
+    if (bearishDivergence) {
+      // Bearish divergence: good for bearish signals, bad for bullish
+      convergenceDurationBonus += isBull ? -0.02 : 0.02;
+    } else if (bullishDivergence) {
+      // Bullish divergence: good for bullish signals, bad for bearish
+      convergenceDurationBonus += isBull ? 0.02 : -0.02;
+    }
+
+    // Convergence: histogram and price both moving in signal direction (confirmation)
+    const histConfirms = (isBull && htfMacd.histogram > 0 && htfMacd.histogramIncreasing)
+                      || (!isBull && htfMacd.histogram < 0 && !htfMacd.histogramIncreasing);
+    const priceConfirms = (isBull && priceRising) || (!isBull && priceFalling);
+    if (histConfirms && priceConfirms && convergenceDurationBonus === 0) {
+      convergenceDurationBonus += 0.02;
+    }
+
+    // OBV divergence amplifier: when OBV divergence aligns with MACD divergence,
+    // the signal is stronger (two independent indicators agree on hidden pressure).
+    const obvDivAligned =
+      (htf.obv.divergence === 'bearish' && !isBull) ||
+      (htf.obv.divergence === 'bullish' && isBull);
+    const obvDivOpposing =
+      (htf.obv.divergence === 'bearish' && isBull) ||
+      (htf.obv.divergence === 'bullish' && !isBull);
+    if (obvDivAligned) convergenceDurationBonus += 0.01;
+    if (obvDivOpposing) convergenceDurationBonus -= 0.01;
+
+    convergenceDurationBonus = Math.max(-0.04, Math.min(0.04, convergenceDurationBonus));
+  }
+
   // Order flow imbalance — causal signal from real-time trade classification
   // Confirmation: flow direction matches signal direction + meaningful intensity
   // Divergence: aggressive flow opposes signal (most predictive short-term contra-signal)
@@ -1145,7 +1272,7 @@ function computeConfidence(signal: SignalPayload, option: OptionEvaluation): Con
     }
   }
 
-  let total = Math.max(0, Math.min(1, base + diSpreadBonus + adxBonus + diCrossBonus + alignmentBonus + tdAdjustment + obvBonus + vwapBonus + oiVolumeBonus + pricePositionAdjustment + adxMaturityPenalty + trendPhaseBonus + momentumAccelBonus + structureBonus + orbBonus + recentPriceActionBonus + trContractionPenalty + lowVolPenalty + moveExhaustionPenalty + consolidationPenalty + nearLevelPenalty + thetaDecayPenalty + narrowRangePenalty + candlePatternBonus + priceVelocityBonus + volumeSurgeBonus + orderFlowBonus));
+  let total = Math.max(0, Math.min(1, base + diSpreadBonus + adxBonus + diCrossBonus + alignmentBonus + tdAdjustment + obvBonus + vwapBonus + oiVolumeBonus + pricePositionAdjustment + adxMaturityPenalty + trendPhaseBonus + momentumAccelBonus + structureBonus + orbBonus + recentPriceActionBonus + trContractionPenalty + lowVolPenalty + moveExhaustionPenalty + consolidationPenalty + nearLevelPenalty + thetaDecayPenalty + narrowRangePenalty + candlePatternBonus + priceVelocityBonus + volumeSurgeBonus + macdBonus + convergenceDurationBonus + orderFlowBonus));
 
   // Order flow confirms direction — raise hard gate caps since real-time trade data
   // overrides lagging indicator concerns (exhaustion, low ADX, etc.)
@@ -1335,7 +1462,7 @@ function computeConfidence(signal: SignalPayload, option: OptionEvaluation): Con
     console.log(`[OrderFlow] ${signal.ticker} NEUTRAL: imb1m=${flow.imbalance1m.toFixed(3)} (below threshold) conf=${(total * 100).toFixed(1)}% tps=${flow.tradesPerSecond.toFixed(0)}`);
   }
 
-  return { base, diSpreadBonus, adxBonus, diCrossBonus, alignmentBonus, tdAdjustment, obvBonus, vwapBonus, oiVolumeBonus, pricePositionAdjustment, adxMaturityPenalty, trendPhaseBonus, momentumAccelBonus, structureBonus, orbBonus, recentPriceActionBonus, trContractionPenalty, lowVolPenalty, moveExhaustionPenalty, consolidationPenalty, nearLevelPenalty, thetaDecayPenalty, narrowRangePenalty, candlePatternBonus, priceVelocityBonus, volumeSurgeBonus, trendPersistenceBonus: 0, orderFlowBonus, total };
+  return { base, diSpreadBonus, adxBonus, diCrossBonus, alignmentBonus, tdAdjustment, obvBonus, vwapBonus, oiVolumeBonus, pricePositionAdjustment, adxMaturityPenalty, trendPhaseBonus, momentumAccelBonus, structureBonus, orbBonus, recentPriceActionBonus, trContractionPenalty, lowVolPenalty, moveExhaustionPenalty, consolidationPenalty, nearLevelPenalty, thetaDecayPenalty, narrowRangePenalty, candlePatternBonus, priceVelocityBonus, volumeSurgeBonus, macdBonus, convergenceDurationBonus, trendPersistenceBonus: 0, orderFlowBonus, total };
 }
 
 /**
@@ -1346,7 +1473,7 @@ function computeConfidence(signal: SignalPayload, option: OptionEvaluation): Con
 function computeRangeConfidence(signal: SignalPayload): ConfidenceBreakdown {
   const tfs = signal.timeframes;
   const [ltf, , htf] = tfs;
-  const empty: ConfidenceBreakdown = { base: 0.38, diSpreadBonus: 0, adxBonus: 0, diCrossBonus: 0, alignmentBonus: 0, tdAdjustment: 0, obvBonus: 0, vwapBonus: 0, oiVolumeBonus: 0, pricePositionAdjustment: 0, adxMaturityPenalty: 0, trendPhaseBonus: 0, momentumAccelBonus: 0, structureBonus: 0, orbBonus: 0, recentPriceActionBonus: 0, trContractionPenalty: 0, lowVolPenalty: 0, moveExhaustionPenalty: 0, consolidationPenalty: 0, nearLevelPenalty: 0, thetaDecayPenalty: 0, narrowRangePenalty: 0, candlePatternBonus: 0, priceVelocityBonus: 0, volumeSurgeBonus: 0, trendPersistenceBonus: 0, orderFlowBonus: 0, total: 0.38 };
+  const empty: ConfidenceBreakdown = { base: 0.38, diSpreadBonus: 0, adxBonus: 0, diCrossBonus: 0, alignmentBonus: 0, tdAdjustment: 0, obvBonus: 0, vwapBonus: 0, oiVolumeBonus: 0, pricePositionAdjustment: 0, adxMaturityPenalty: 0, trendPhaseBonus: 0, momentumAccelBonus: 0, structureBonus: 0, orbBonus: 0, recentPriceActionBonus: 0, trContractionPenalty: 0, lowVolPenalty: 0, moveExhaustionPenalty: 0, consolidationPenalty: 0, nearLevelPenalty: 0, thetaDecayPenalty: 0, narrowRangePenalty: 0, candlePatternBonus: 0, priceVelocityBonus: 0, volumeSurgeBonus: 0, macdBonus: 0, convergenceDurationBonus: 0, trendPersistenceBonus: 0, orderFlowBonus: 0, total: 0.38 };
   if (!ltf || !htf || !signal.rangeSupport || !signal.rangeResistance) return empty;
 
   const base = 0.38;
@@ -1576,7 +1703,7 @@ function computeRangeConfidence(signal: SignalPayload): ConfidenceBreakdown {
     if (chopRatio >= 1.3) total = Math.min(total, 0.55);
   }
 
-  return { base, diSpreadBonus, adxBonus, diCrossBonus, alignmentBonus, tdAdjustment, obvBonus, vwapBonus, oiVolumeBonus, pricePositionAdjustment, adxMaturityPenalty, trendPhaseBonus, momentumAccelBonus, structureBonus, orbBonus, recentPriceActionBonus, trContractionPenalty, lowVolPenalty, moveExhaustionPenalty, consolidationPenalty, nearLevelPenalty, thetaDecayPenalty, narrowRangePenalty, candlePatternBonus, priceVelocityBonus, volumeSurgeBonus, trendPersistenceBonus: 0, orderFlowBonus: 0, total };
+  return { base, diSpreadBonus, adxBonus, diCrossBonus, alignmentBonus, tdAdjustment, obvBonus, vwapBonus, oiVolumeBonus, pricePositionAdjustment, adxMaturityPenalty, trendPhaseBonus, momentumAccelBonus, structureBonus, orbBonus, recentPriceActionBonus, trContractionPenalty, lowVolPenalty, moveExhaustionPenalty, consolidationPenalty, nearLevelPenalty, thetaDecayPenalty, narrowRangePenalty, candlePatternBonus, priceVelocityBonus, volumeSurgeBonus, macdBonus: 0, convergenceDurationBonus: 0, trendPersistenceBonus: 0, orderFlowBonus: 0, total };
 }
 
 /**
@@ -1589,7 +1716,7 @@ function computeRangeConfidence(signal: SignalPayload): ConfidenceBreakdown {
 function computeBreakoutConfidence(signal: SignalPayload): ConfidenceBreakdown {
   const tfs = signal.timeframes;
   const [ltf, mtf, htf] = tfs;
-  const empty: ConfidenceBreakdown = { base: 0.38, diSpreadBonus: 0, adxBonus: 0, diCrossBonus: 0, alignmentBonus: 0, tdAdjustment: 0, obvBonus: 0, vwapBonus: 0, oiVolumeBonus: 0, pricePositionAdjustment: 0, adxMaturityPenalty: 0, trendPhaseBonus: 0, momentumAccelBonus: 0, structureBonus: 0, orbBonus: 0, recentPriceActionBonus: 0, trContractionPenalty: 0, lowVolPenalty: 0, moveExhaustionPenalty: 0, consolidationPenalty: 0, nearLevelPenalty: 0, thetaDecayPenalty: 0, narrowRangePenalty: 0, candlePatternBonus: 0, priceVelocityBonus: 0, volumeSurgeBonus: 0, trendPersistenceBonus: 0, orderFlowBonus: 0, total: 0.38 };
+  const empty: ConfidenceBreakdown = { base: 0.38, diSpreadBonus: 0, adxBonus: 0, diCrossBonus: 0, alignmentBonus: 0, tdAdjustment: 0, obvBonus: 0, vwapBonus: 0, oiVolumeBonus: 0, pricePositionAdjustment: 0, adxMaturityPenalty: 0, trendPhaseBonus: 0, momentumAccelBonus: 0, structureBonus: 0, orbBonus: 0, recentPriceActionBonus: 0, trContractionPenalty: 0, lowVolPenalty: 0, moveExhaustionPenalty: 0, consolidationPenalty: 0, nearLevelPenalty: 0, thetaDecayPenalty: 0, narrowRangePenalty: 0, candlePatternBonus: 0, priceVelocityBonus: 0, volumeSurgeBonus: 0, macdBonus: 0, convergenceDurationBonus: 0, trendPersistenceBonus: 0, orderFlowBonus: 0, total: 0.38 };
   if (!ltf || !mtf || !htf || !signal.breakoutLevel) return empty;
 
   const base = 0.38;
@@ -1768,7 +1895,7 @@ function computeBreakoutConfidence(signal: SignalPayload): ConfidenceBreakdown {
   // No structure support = breakout not at a key prior-day level, lower conviction.
   if (structureBonus <= 0) total = Math.min(total, 0.78);
 
-  return { base, diSpreadBonus, adxBonus, diCrossBonus, alignmentBonus, tdAdjustment, obvBonus, vwapBonus, oiVolumeBonus, pricePositionAdjustment, adxMaturityPenalty, trendPhaseBonus, momentumAccelBonus, structureBonus, orbBonus, recentPriceActionBonus, trContractionPenalty, lowVolPenalty, moveExhaustionPenalty, consolidationPenalty, nearLevelPenalty, thetaDecayPenalty, narrowRangePenalty, candlePatternBonus, priceVelocityBonus, volumeSurgeBonus, trendPersistenceBonus: 0, orderFlowBonus: 0, total };
+  return { base, diSpreadBonus, adxBonus, diCrossBonus, alignmentBonus, tdAdjustment, obvBonus, vwapBonus, oiVolumeBonus, pricePositionAdjustment, adxMaturityPenalty, trendPhaseBonus, momentumAccelBonus, structureBonus, orbBonus, recentPriceActionBonus, trContractionPenalty, lowVolPenalty, moveExhaustionPenalty, consolidationPenalty, nearLevelPenalty, thetaDecayPenalty, narrowRangePenalty, candlePatternBonus, priceVelocityBonus, volumeSurgeBonus, macdBonus: 0, convergenceDurationBonus: 0, trendPersistenceBonus: 0, orderFlowBonus: 0, total };
 }
 
 /**

@@ -1041,6 +1041,8 @@ function renderAnalysisCard(sig) {
       ${renderConfidenceBar('Candle Pat',  cb.candlePatternBonus ?? 0, 0.08, 'conf-bar-bonus')}
       ${renderConfidenceBar('Price Vel',   cb.priceVelocityBonus ?? 0, 0.08, 'conf-bar-bonus')}
       ${renderConfidenceBar('Vol Surge',   cb.volumeSurgeBonus   ?? 0, 0.06, 'conf-bar-bonus')}
+      ${renderConfidenceBar('MACD',        cb.macdBonus          ?? 0, 0.08, 'conf-bar-bonus')}
+      ${renderConfidenceBar('Conv/Div',    cb.convergenceDurationBonus ?? 0, 0.06, 'conf-bar-bonus')}
       <div class="conf-total-row">
         <span>Total</span>
         <span class="${thresh ? 'bullish' : 'bearish'}" style="font-weight:700">${confPct}%${thresh ? ' ✅' : ' (below threshold)'}</span>

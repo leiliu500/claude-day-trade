@@ -25,6 +25,8 @@ export interface ConfidenceBreakdown {
   candlePatternBonus: number;      // -0.08..+0.08 — leading: engulfing/hammer patterns at key levels (instant, no lag)
   priceVelocityBonus: number;      // -0.06..+0.08 — leading: raw price ROC + directional velocity (no smoothing)
   volumeSurgeBonus: number;        // 0..+0.06 — leading: volume surge detection (institutional activity)
+  macdBonus: number;               // -0.06..+0.05 — MACD histogram alignment, crossover timing, divergence detection
+  convergenceDurationBonus: number; // -0.04..+0.04 — convergence/divergence across MACD+OBV (price vs histogram agreement)
   trendPersistenceBonus: number;   // 0..+0.12 — consecutive same-direction aligned signals boost (market self-confirming)
   orderFlowBonus: number;          // -0.25..+0.25 — primary: order flow imbalance (causal, real-time); suppresses lagging penalties when confirming
   total: number;                   // clamped 0..1

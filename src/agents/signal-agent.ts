@@ -11,6 +11,7 @@ import { computeVWAP } from '../indicators/vwap.js';
 import { computePriorDayLevels, computeORB } from '../indicators/market-structure.js';
 import { computePriceVelocity } from '../indicators/price-velocity.js';
 import { computeVolumeSurge } from '../indicators/volume-surge.js';
+import { computeMACD } from '../indicators/macd.js';
 import { detectDirection, type PersistenceState } from '../lib/direction-detector.js';
 import { PROFILE_TIMEFRAMES, normalizeAlpacaBars } from '../types/market.js';
 import type { OHLCVBar, Timeframe, TradingProfile, AlpacaBarsResponse } from '../types/market.js';
@@ -109,6 +110,7 @@ export function computeTimeframeIndicators(
     priceStructure: computePriceStructure(bars, 20, direction),
     priceVelocity: computePriceVelocity(bars),
     volumeSurge: computeVolumeSurge(bars),
+    macd: computeMACD(bars),
     currentPrice: bars[bars.length - 1]?.close ?? 0,
   };
 }

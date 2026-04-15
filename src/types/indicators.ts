@@ -2,6 +2,7 @@ import type { OHLCVBar, Timeframe } from './market.js';
 import type { AllCandlePatterns } from '../indicators/candle-patterns.js';
 import type { PriceVelocityResult } from '../indicators/price-velocity.js';
 import type { VolumeSurgeResult } from '../indicators/volume-surge.js';
+import type { MACDResult } from '../indicators/macd.js';
 
 export interface DMIResult {
   plusDI: number;
@@ -102,6 +103,7 @@ export interface TimeframeIndicators {
   priceStructure: PriceStructure;
   priceVelocity: PriceVelocityResult;   // leading: raw price ROC + velocity (no smoothing)
   volumeSurge: VolumeSurgeResult;       // leading: volume spike detection
+  macd: MACDResult;                     // MACD histogram, crossovers, convergence/divergence
   currentPrice: number;
 }
 
