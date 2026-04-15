@@ -524,6 +524,10 @@
           <label for="bt-date">Date</label>
           <input type="date" id="bt-date">
         </div>
+        <div class="filter-group" style="display:flex;align-items:center;gap:6px">
+          <input type="checkbox" id="bt-topology" checked>
+          <label for="bt-topology" style="margin:0">Topology</label>
+        </div>
         <button class="btn-run-backtest" id="btn-run-backtest" onclick="runBacktest()">Run Backtest</button>
         <button class="btn-open-html" id="btn-open-html" style="display:none" onclick="openBacktestHtml()">Open Full HTML</button>
         <span id="bt-status" class="bt-status"></span>

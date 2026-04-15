@@ -2113,7 +2113,8 @@ async function runBacktest() {
   iframe.style.display = 'none';
 
   try {
-    const resp = await fetch(`${API}/api/backtest?ticker=${ticker}&date=${date}`);
+    const topo = document.getElementById('bt-topology').checked;
+    const resp = await fetch(`${API}/api/backtest?ticker=${ticker}&date=${date}${topo ? '&topology=1' : ''}`);
     const data = await resp.json();
     if (!resp.ok) throw new Error(data.error || 'Backtest failed');
 

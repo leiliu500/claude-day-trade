@@ -1164,7 +1164,12 @@ export function startDashboard(port: number): void {
       const execFileAsync = promisify(execFile);
       const scriptPath = join(__dirname, '..', 'scripts', 'backtest-day.js');
 
-      const { stdout } = await execFileAsync(process.execPath, [scriptPath, date, ticker, '--json', '--html'], {
+      const topoRaw = req.query['topology'];
+      const useTopo = topoRaw === '1' || topoRaw === 'true';
+      const args = [scriptPath, date, ticker, '--json', '--html'];
+      if (useTopo) args.push('--topo');
+
+      const { stdout } = await execFileAsync(process.execPath, args, {
         timeout: 120_000,
         maxBuffer: 10 * 1024 * 1024,
         env: { ...process.env },
