@@ -42,8 +42,14 @@ const BAR_CACHE_SIZE = 800;
  *  90 s allows one missed bar before falling back to REST. */
 const STALENESS_THRESHOLD_S = 90;
 
-const MIN_RECONNECT_MS = 1_000;
-const MAX_RECONNECT_MS = 30_000;
+const MIN_RECONNECT_MS = 500;
+const MAX_RECONNECT_MS = 5_000;
+
+/** Ping interval to detect dead connections (ms) */
+const HEARTBEAT_INTERVAL_MS = 10_000;
+
+/** How long to wait for a pong before declaring connection dead (ms) */
+const PONG_TIMEOUT_MS = 5_000;
 
 /** How often to poll option snapshots for all watched symbols (ms) */
 const OPTION_POLL_MS = 1_000;
@@ -163,6 +169,14 @@ export class AlpacaStreamManager extends EventEmitter {
   private tradingReconnectMs = MIN_RECONNECT_MS;
   private dataReconnectTimer:    ReturnType<typeof setTimeout> | null = null;
   private tradingReconnectTimer: ReturnType<typeof setTimeout> | null = null;
+  private dataReconnectAttempt    = 0; // 0 = immediate retry
+  private tradingReconnectAttempt = 0;
+
+  // Heartbeat: activity-based dead connection detection
+  private dataHeartbeatTimer:    ReturnType<typeof setInterval> | null = null;
+  private tradingHeartbeatTimer: ReturnType<typeof setInterval> | null = null;
+  private dataLastMessageAt    = 0;
+  private tradingLastMessageAt = 0;
 
   private started = false;
 
@@ -281,6 +295,8 @@ export class AlpacaStreamManager extends EventEmitter {
   disconnect(): void {
     if (this.dataReconnectTimer)    { clearTimeout(this.dataReconnectTimer);    this.dataReconnectTimer    = null; }
     if (this.tradingReconnectTimer) { clearTimeout(this.tradingReconnectTimer); this.tradingReconnectTimer = null; }
+    this._stopDataHeartbeat();
+    this._stopTradingHeartbeat();
     this._stopOptionPoll();
     this.dataWs?.close();
     this.tradingWs?.close();
@@ -310,12 +326,14 @@ export class AlpacaStreamManager extends EventEmitter {
 
     this.dataWs.onopen = () => {
       this.dataReconnectMs = MIN_RECONNECT_MS;
+      this.dataReconnectAttempt = 0;
       console.log('[AlpacaStream/data] Connected — authenticating');
       this.dataWs!.send(JSON.stringify({
         action: 'auth',
         key:    config.ALPACA_API_KEY,
         secret: config.ALPACA_SECRET_KEY,
       }));
+      this._startDataHeartbeat();
     };
 
     this.dataWs.onmessage = (ev) => this._handleDataMessage(String(ev.data));
@@ -325,13 +343,16 @@ export class AlpacaStreamManager extends EventEmitter {
     };
 
     this.dataWs.onclose = () => {
+      this._stopDataHeartbeat();
       console.warn('[AlpacaStream/data] Connection closed — will reconnect');
       this.dataWs = null;
+      this.emit('stream_down', 'data');
       this._scheduleDataReconnect();
     };
   }
 
   private _handleDataMessage(raw: string): void {
+    this.dataLastMessageAt = Date.now();
     let msgs: unknown[];
     try { msgs = JSON.parse(raw) as unknown[]; }
     catch { return; }
@@ -343,6 +364,9 @@ export class AlpacaStreamManager extends EventEmitter {
       if (T === 'success' && obj['msg'] === 'authenticated') {
         console.log('[AlpacaStream/data] Authenticated — subscribing bars');
         this._subscribeDataTickers([...this.subscribedTickers]);
+        this.emit('stream_up', 'data');
+        // Re-seed historical bars to fill any gap from the disconnect
+        void this.seedHistoricalBars([...this.subscribedTickers]);
         continue;
       }
 
@@ -729,8 +753,19 @@ export class AlpacaStreamManager extends EventEmitter {
 
   private _scheduleDataReconnect(): void {
     if (!this.started) return;
-    const delay = this.dataReconnectMs;
-    console.log(`[AlpacaStream/data] Reconnecting in ${delay}ms`);
+    this.dataReconnectAttempt++;
+
+    // First attempt is immediate (no delay)
+    if (this.dataReconnectAttempt === 1) {
+      console.log('[AlpacaStream/data] Reconnecting immediately (attempt 1)');
+      this._connectData();
+      return;
+    }
+
+    // Subsequent attempts: exponential backoff with jitter, capped at MAX_RECONNECT_MS
+    const jitter = Math.random() * 0.3 + 0.85; // 0.85–1.15x
+    const delay = Math.min(Math.round(this.dataReconnectMs * jitter), MAX_RECONNECT_MS);
+    console.log(`[AlpacaStream/data] Reconnecting in ${delay}ms (attempt ${this.dataReconnectAttempt})`);
     this.dataReconnectTimer = setTimeout(() => {
       this.dataReconnectTimer = null;
       this._connectData();
@@ -759,12 +794,14 @@ export class AlpacaStreamManager extends EventEmitter {
 
     this.tradingWs.onopen = () => {
       this.tradingReconnectMs = MIN_RECONNECT_MS;
+      this.tradingReconnectAttempt = 0;
       console.log('[AlpacaStream/trading] Connected — authenticating');
       this.tradingWs!.send(JSON.stringify({
         action: 'auth',
         key:    config.ALPACA_API_KEY,
         secret: config.ALPACA_SECRET_KEY,
       }));
+      this._startTradingHeartbeat();
     };
 
     this.tradingWs.onmessage = (ev) => {
@@ -779,13 +816,16 @@ export class AlpacaStreamManager extends EventEmitter {
     };
 
     this.tradingWs.onclose = () => {
+      this._stopTradingHeartbeat();
       console.warn('[AlpacaStream/trading] Connection closed — will reconnect');
       this.tradingWs = null;
+      this.emit('stream_down', 'trading');
       this._scheduleTradingReconnect();
     };
   }
 
   private _handleTradingMessage(raw: string): void {
+    this.tradingLastMessageAt = Date.now();
     let msg: unknown;
     try { msg = JSON.parse(raw); }
     catch { return; }
@@ -801,6 +841,7 @@ export class AlpacaStreamManager extends EventEmitter {
           action: 'listen',
           data: { streams: ['trade_updates'] },
         }));
+        this.emit('stream_up', 'trading');
       } else {
         console.error('[AlpacaStream/trading] Auth failed:', data?.['message']);
       }
@@ -834,13 +875,65 @@ export class AlpacaStreamManager extends EventEmitter {
 
   private _scheduleTradingReconnect(): void {
     if (!this.started) return;
-    const delay = this.tradingReconnectMs;
-    console.log(`[AlpacaStream/trading] Reconnecting in ${delay}ms`);
+    this.tradingReconnectAttempt++;
+
+    // First attempt is immediate (no delay)
+    if (this.tradingReconnectAttempt === 1) {
+      console.log('[AlpacaStream/trading] Reconnecting immediately (attempt 1)');
+      this._connectTrading();
+      return;
+    }
+
+    // Subsequent attempts: exponential backoff with jitter, capped at MAX_RECONNECT_MS
+    const jitter = Math.random() * 0.3 + 0.85; // 0.85–1.15x
+    const delay = Math.min(Math.round(this.tradingReconnectMs * jitter), MAX_RECONNECT_MS);
+    console.log(`[AlpacaStream/trading] Reconnecting in ${delay}ms (attempt ${this.tradingReconnectAttempt})`);
     this.tradingReconnectTimer = setTimeout(() => {
       this.tradingReconnectTimer = null;
       this._connectTrading();
     }, delay);
     this.tradingReconnectMs = Math.min(this.tradingReconnectMs * 2, MAX_RECONNECT_MS);
+  }
+
+  // ── Heartbeat (activity-based dead connection detection) ─────────────────────
+  //
+  // The SIP data stream delivers trades/quotes/bars continuously during market
+  // hours, so silence for HEARTBEAT_INTERVAL_MS + PONG_TIMEOUT_MS means the
+  // connection is dead. The trading stream is quieter, so we also check
+  // readyState as a secondary signal.
+
+  private _startDataHeartbeat(): void {
+    this._stopDataHeartbeat();
+    this.dataLastMessageAt = Date.now();
+    this.dataHeartbeatTimer = setInterval(() => {
+      if (!this.dataWs || this.dataWs.readyState !== WebSocket.OPEN) return;
+      const silenceMs = Date.now() - this.dataLastMessageAt;
+      if (silenceMs > HEARTBEAT_INTERVAL_MS + PONG_TIMEOUT_MS) {
+        console.error(`[AlpacaStream/data] No message for ${Math.round(silenceMs / 1000)}s — forcing reconnect`);
+        this.dataWs.close();
+      }
+    }, HEARTBEAT_INTERVAL_MS);
+  }
+
+  private _stopDataHeartbeat(): void {
+    if (this.dataHeartbeatTimer) { clearInterval(this.dataHeartbeatTimer); this.dataHeartbeatTimer = null; }
+  }
+
+  private _startTradingHeartbeat(): void {
+    this._stopTradingHeartbeat();
+    this.tradingLastMessageAt = Date.now();
+    this.tradingHeartbeatTimer = setInterval(() => {
+      if (!this.tradingWs || this.tradingWs.readyState !== WebSocket.OPEN) return;
+      const silenceMs = Date.now() - this.tradingLastMessageAt;
+      if (silenceMs > HEARTBEAT_INTERVAL_MS + PONG_TIMEOUT_MS) {
+        console.error(`[AlpacaStream/trading] No message for ${Math.round(silenceMs / 1000)}s — forcing reconnect`);
+        this.tradingWs.close();
+      }
+    }, HEARTBEAT_INTERVAL_MS);
+  }
+
+  private _stopTradingHeartbeat(): void {
+    if (this.tradingHeartbeatTimer) { clearInterval(this.tradingHeartbeatTimer); this.tradingHeartbeatTimer = null; }
   }
 
   // ── Bar aggregation ─────────────────────────────────────────────────────────
