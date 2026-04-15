@@ -410,6 +410,9 @@ export class AlpacaStreamManager extends EventEmitter {
       const symbols = [...this.subscribedOptionSymbols];
       const snapshots = await this._fetchOptionSnapshots(symbols);
       for (const [sym, snap] of Object.entries(snapshots)) {
+        // Skip symbols that were unwatched while the REST fetch was in-flight
+        // to avoid poisoning the cache with stale values after unwatchOptionQuote()
+        if (!this.subscribedOptionSymbols.has(sym)) continue;
         const bid = snap?.latestQuote?.bp ?? 0;
         const ask = snap?.latestQuote?.ap ?? 0;
         const mid = bid > 0 && ask > 0 ? (bid + ask) / 2 : 0;

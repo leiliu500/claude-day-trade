@@ -20,7 +20,9 @@ import { computeChainTopology } from '../topology/chain-topology.js';
 import { computeIVTopology } from '../topology/iv-topology.js';
 import { computeTopologyEntry, computeTopologyExit, formatEntrySignal } from '../topology/entry-model.js';
 import { simulateChain, resetSessionOI } from '../topology/chain-simulator.js';
+import { simulateOrderAgentSpy } from '../lib/order-agent-sim-spy.js';
 import type { OHLCVBar } from '../types/market.js';
+import type { OHLCVBar as SimOHLCVBar } from '../lib/order-agent-sim.js';
 import type { ChainContract, PriceTopology, TopologySignal } from '../topology/types.js';
 
 // ── Alpaca fetch (inline, no shared helpers) ─────────────────────────────────
@@ -379,37 +381,75 @@ async function main() {
   const marketCloseTs = lastTs;
   const entryStepMs = 1 * 60_000; // 1-min steps — matches live data feed
 
-  // Position state — tracks the actual option contract, not just underlying
+  // Helpers for order simulation (same approach as backtest-day.ts)
+
+  /** Aggregate 1m bars into N-minute bars for ATR calculation */
+  function aggregateNm(bars1: OHLCVBar[], minutes: number): OHLCVBar[] {
+    const bucketMs = minutes * 60_000;
+    const groups = new Map<number, OHLCVBar[]>();
+    for (const b of bars1) {
+      const ts = new Date(b.timestamp).getTime();
+      const bk = Math.floor(ts / bucketMs) * bucketMs;
+      let g = groups.get(bk);
+      if (!g) { g = []; groups.set(bk, g); }
+      g.push(b);
+    }
+    return Array.from(groups.entries())
+      .sort(([a], [b]) => a - b)
+      .map(([bk, bs]) => ({
+        timestamp: new Date(bk).toISOString(),
+        open: bs[0]!.open,
+        high: Math.max(...bs.map(b => b.high)),
+        low: Math.min(...bs.map(b => b.low)),
+        close: bs[bs.length - 1]!.close,
+        volume: bs.reduce((s, b) => s + b.volume, 0),
+      }));
+  }
+
+  /** Compute ATR from 5-minute aggregated bars (matches backtest-day.ts multi-timeframe ATR) */
+  function computeATR5m(bars1: OHLCVBar[], period = 14): number {
+    const bars5 = aggregateNm(bars1, 5);
+    if (bars5.length < 2) return 0;
+    const trs: number[] = [];
+    for (let i = 1; i < bars5.length; i++) {
+      const b = bars5[i]!, prev = bars5[i - 1]!;
+      trs.push(Math.max(b.high - b.low, Math.abs(b.high - prev.close), Math.abs(b.low - prev.close)));
+    }
+    const slice = trs.slice(-period);
+    return slice.reduce((s, v) => s + v, 0) / slice.length;
+  }
+
+  /** Convert OHLCVBar (market type) to SimOHLCVBar (sim type) */
+  function toSimBar(b: OHLCVBar): SimOHLCVBar {
+    return { timestamp: b.timestamp, open: b.open, high: b.high, low: b.low, close: b.close, volume: b.volume };
+  }
+
+  const ENTRY_COOLDOWN_MS = 3 * 60_000; // 3-min cooldown between entries (matches live scheduler cycle)
+
   let inPosition = false;
   let posDir: 'bullish' | 'bearish' = 'bullish';
-  let entryRegime: PriceTopology['regime'] = 'trending';
   let entryTime = '';
   let entryUnderlying = 0;
-  let entryStrike = 0;
-  let entryPremium = 0;
-  let entryDelta = 0;
-  let entrySide: 'call' | 'put' = 'call';
-  let contractQty = 1;
   let consecutiveStops = 0;
+  let skipUntilTs = 0; // skip bars while sim holds the position + cooldown
 
   interface TradeRecord {
-    time: string; dir: string; underlying: number; strike: number;
-    side: string; premium: number; delta: number; conviction: number;
-    regime: string; action: 'ENTER' | 'EXIT'; gates: string;
-    pnl?: number; pnlPct?: number; holdBars?: number;
+    time: string; dir: string; underlying: number;
+    conviction: number; regime: string; action: 'ENTER' | 'EXIT'; gates: string;
+    exitReason?: string; pnl?: number; pnlPct?: number; holdBars?: number;
+    entryPremium?: number; exitPremium?: number; atr?: number;
+    peakPnlPct?: number;
   }
   const trades: TradeRecord[] = [];
-  let entryBarIdx = 0;
-  let barIdx = 0;
 
   resetSessionOI(TICKER);
 
   for (let ts = firstTs + 30 * 60_000; ts <= lastTs; ts += entryStepMs) {
+    if (ts < skipUntilTs) continue; // skip bars consumed by the order sim
     const window = bars1m.filter(b => new Date(b.timestamp).getTime() <= ts).slice(-200);
     if (window.length < 50) continue;
     const price = window[window.length - 1]!.close;
     const time = timeET(new Date(ts).toISOString());
-    barIdx++;
 
     // Price topology
     const priceTopo = computePriceTopology(window, 'SPY_entry');
@@ -454,88 +494,52 @@ async function main() {
       // Try to enter
       const entry = computeTopologyEntry(topoSignal, 'bullish', consecutiveStops);
       if (entry.action === 'ENTER' && entry.conviction > 0.02) {
-        inPosition = true;
         posDir = entry.direction as 'bullish' | 'bearish';
-        entryRegime = entry.regime;
         entryTime = time;
         entryUnderlying = price;
-        entryBarIdx = barIdx;
-
-        // Select the option contract: ATM or 1-strike OTM in the signal direction
-        // Bullish → buy call (ATM or +1 OTM), Bearish → buy put (ATM or -1 OTM)
-        entrySide = posDir === 'bullish' ? 'call' : 'put';
-        const chain = entrySide === 'call' ? simCalls : simPuts;
-        const atm = Math.round(price);
-        const otmStrike = entrySide === 'call' ? atm + 1 : atm - 1;
-
-        // Prefer 1-strike OTM for better leverage; fall back to ATM
-        let contract = chain.find(c => c.strike === otmStrike);
-        if (!contract || contract.mid <= 0) contract = chain.find(c => c.strike === atm);
-        if (!contract || contract.mid <= 0) contract = chain.reduce((best, c) => c.mid > 0 && Math.abs(c.strike - atm) < Math.abs(best.strike - atm) ? c : best, chain[0]!);
-
-        entryStrike = contract!.strike;
-        entryPremium = contract!.mid;
-        entryDelta = contract!.delta;
 
         const gateStr = entry.gates.map(g => `${g.name}(${g.strength.toFixed(2)})`).join(' × ');
+
+        // Run order simulation on remaining bars (same as backtest-day.ts)
+        const futureBars = target.filter(b => new Date(b.timestamp).getTime() > ts).map(toSimBar);
+        const recentBars = target.filter(b => {
+          const bt = new Date(b.timestamp).getTime();
+          return bt <= ts && bt > ts - 10 * 60_000;
+        }).map(toSimBar);
+        const atr = computeATR5m(window); // 5m ATR matches backtest-day multi-timeframe
+
+        const sim = simulateOrderAgentSpy(price, posDir, atr, futureBars, { recentBars });
+
+        // Record entry
         trades.push({
-          time, dir: entry.direction, underlying: price, strike: entryStrike,
-          side: entrySide, premium: entryPremium, delta: entryDelta,
+          time, dir: entry.direction, underlying: price,
           conviction: entry.conviction, regime: entry.regime, action: 'ENTER', gates: gateStr,
+          entryPremium: sim.entryPremium, atr,
         });
-      }
-    } else {
-      // Check for exit — three exit layers (first one to fire wins):
-      //   1. Stop-loss:   premium dropped ≤ -30% from entry
-      //   2. Take-profit: premium gained ≥ +80% from entry
-      //   3. Topology:    regime break, flow reversal, IV opposition
-      const chain = entrySide === 'call' ? simCalls : simPuts;
-      const currentContract = chain.find(c => c.strike === entryStrike);
-      const currentPremium = currentContract?.mid ?? 0;
-      const currentDelta = currentContract?.delta ?? entryDelta;
 
-      const premiumPnl = currentPremium - entryPremium;
-      const pnlPct = entryPremium > 0 ? (premiumPnl / entryPremium) * 100 : 0;
+        // Record exit from sim result
+        const exitTs = ts + sim.holdMinutes * 60_000;
+        const exitTime = timeET(new Date(exitTs).toISOString());
+        const exitPremium = sim.exitPremium ?? (sim.entryPremium ? sim.entryPremium * (1 + sim.pnlPct / 100) : 0);
 
-      let shouldExit = false;
-      let exitGateStr = '';
-      let exitConviction = 0;
-
-      // Layer 1: Stop-loss at -30%
-      if (pnlPct <= -30) {
-        shouldExit = true;
-        exitGateStr = `STOP_LOSS(${pnlPct.toFixed(0)}%)`;
-        exitConviction = 1.0;
-        consecutiveStops++;
-      }
-
-      // Layer 2: Take-profit at +80%
-      if (!shouldExit && pnlPct >= 80) {
-        shouldExit = true;
-        exitGateStr = `TAKE_PROFIT(${pnlPct.toFixed(0)}%)`;
-        exitConviction = 1.0;
-        consecutiveStops = 0; // win resets the stop counter
-      }
-
-      // Layer 3: Topology exit (regime break, flow reversal, IV opposition)
-      if (!shouldExit) {
-        const exit = computeTopologyExit(topoSignal, posDir, entryRegime);
-        if (exit.action === 'EXIT' && exit.conviction > 0.4) {
-          shouldExit = true;
-          exitGateStr = exit.gates.filter(g => g.passed).map(g => `${g.name}(${g.strength.toFixed(2)})`).join(' + ');
-          exitConviction = exit.conviction;
-        }
-      }
-
-      if (shouldExit) {
-        const holdBars = barIdx - entryBarIdx;
         trades.push({
-          time, dir: posDir, underlying: price, strike: entryStrike,
-          side: entrySide, premium: currentPremium, delta: currentDelta,
-          conviction: exitConviction, regime: priceTopo.regime, action: 'EXIT',
-          gates: exitGateStr, pnl: premiumPnl, pnlPct, holdBars,
+          time: exitTime, dir: posDir, underlying: sim.exitPrice,
+          conviction: 1.0, regime: entry.regime, action: 'EXIT',
+          gates: sim.exitReason, exitReason: sim.exitReason,
+          pnl: sim.entryPremium ? exitPremium - sim.entryPremium : undefined,
+          pnlPct: sim.pnlPct, holdBars: sim.holdMinutes, peakPnlPct: sim.peakPnlPct,
+          entryPremium: sim.entryPremium, exitPremium,
         });
-        inPosition = false;
+
+        // Track consecutive stops for topology entry model
+        if (sim.exitReason === 'STOP' || sim.exitReason === 'BAD_ENTRY' || sim.exitReason === 'EARLY_EXIT') {
+          consecutiveStops++;
+        } else if (sim.pnlPct > 0) {
+          consecutiveStops = 0;
+        }
+
+        // Skip ahead past the sim hold period + cooldown (matches live 3-min scheduler cycle)
+        skipUntilTs = exitTs + ENTRY_COOLDOWN_MS;
       }
     }
   }
@@ -544,37 +548,23 @@ async function main() {
   const entryTrades = trades.filter(t => t.action === 'ENTER');
   const exitTrades = trades.filter(t => t.action === 'EXIT');
 
-  console.log(`\n  ENTRIES (${entryTrades.length}):`);
+  console.log(`\n  ENTRIES & EXITS (${entryTrades.length} round-trips):`);
   if (entryTrades.length === 0) console.log(`    No entries fired.`);
-  for (const t of entryTrades) {
-    console.log(`    ${t.time} ET  ${t.dir.toUpperCase().padEnd(7)}  ${TICKER} $${t.underlying.toFixed(2)} → ${t.side.toUpperCase()} $${t.strike} @ $${t.premium.toFixed(2)}  δ=${t.delta.toFixed(3)}  conv=${t.conviction.toFixed(3)}  [${t.regime}]`);
-    console.log(`      Gates: ${t.gates}`);
-  }
-
-  console.log(`\n  EXITS (${exitTrades.length}):`);
-  if (exitTrades.length === 0) console.log(`    No exits fired.`);
-  for (const t of exitTrades) {
-    const pnlStr = t.pnl! >= 0 ? `+$${t.pnl!.toFixed(2)}` : `-$${Math.abs(t.pnl!).toFixed(2)}`;
-    const pctStr = t.pnlPct! >= 0 ? `+${t.pnlPct!.toFixed(1)}%` : `${t.pnlPct!.toFixed(1)}%`;
-    console.log(`    ${t.time} ET  ${TICKER} $${t.underlying.toFixed(2)} → ${t.side.toUpperCase()} $${t.strike} @ $${t.premium.toFixed(2)}  δ=${t.delta.toFixed(3)}  P&L: ${pnlStr} (${pctStr})  held ${t.holdBars} bars  [${t.gates}]`);
-  }
-
-  // Mark-to-market if still in position
-  if (inPosition) {
-    const lastWindow = bars1m.filter(b => new Date(b.timestamp).getTime() <= lastTs).slice(-200);
-    const lastExpiry = new Date(TARGET_DATE); lastExpiry.setDate(lastExpiry.getDate() + 1);
-    const { callChain: lastCalls, putChain: lastPuts } = simulateChain(lastWindow, TICKER, lastExpiry.toISOString().slice(0, 10));
-    const lastChain = entrySide === 'call' ? lastCalls : lastPuts;
-    const lastContract = lastChain.find(c => c.strike === entryStrike);
-    const lastPremium = lastContract?.mid ?? 0;
-    const mtmPnl = lastPremium - entryPremium;
-    const mtmPct = entryPremium > 0 ? (mtmPnl / entryPremium) * 100 : 0;
-    const pnlStr = mtmPnl >= 0 ? `+$${mtmPnl.toFixed(2)}` : `-$${Math.abs(mtmPnl).toFixed(2)}`;
-    console.log(`\n  OPEN POSITION (mark-to-market):`);
-    console.log(`    Entered: ${entryTime} ET  ${entrySide.toUpperCase()} $${entryStrike} @ $${entryPremium.toFixed(2)}`);
-    console.log(`    Current: $${lastPremium.toFixed(2)}  ${TICKER}=$${dayClose.toFixed(2)}`);
-    console.log(`    M2M P&L: ${pnlStr} (${mtmPct >= 0 ? '+' : ''}${mtmPct.toFixed(1)}%) per contract`);
-    console.log(`    Per 1 contract (×100 shares): ${mtmPnl >= 0 ? '+' : ''}$${(mtmPnl * 100).toFixed(0)}`);
+  for (let i = 0; i < entryTrades.length; i++) {
+    const e = entryTrades[i]!;
+    const x = exitTrades[i];
+    const atrStr = e.atr ? `ATR=$${e.atr.toFixed(3)}` : '';
+    const premStr = e.entryPremium ? `Prem=$${e.entryPremium.toFixed(2)}` : '';
+    console.log(`    Entry #${i + 1}: ${e.time} ET  ${e.dir.toUpperCase().padEnd(7)}  ${TICKER} $${e.underlying.toFixed(2)}  ${atrStr}  ${premStr}  conv=${e.conviction.toFixed(3)}  [${e.regime}]`);
+    console.log(`      Gates: ${e.gates}`);
+    if (x) {
+      const icon = (x.pnlPct ?? 0) >= 0 ? '📈' : '📉';
+      const pctStr = (x.pnlPct ?? 0) >= 0 ? `+${(x.pnlPct ?? 0).toFixed(1)}%` : `${(x.pnlPct ?? 0).toFixed(1)}%`;
+      const peakStr = x.peakPnlPct != null ? `Peak: +${x.peakPnlPct.toFixed(1)}%` : '';
+      const ePrem = e.entryPremium?.toFixed(2) ?? '?';
+      const xPrem = x.exitPremium?.toFixed(2) ?? '?';
+      console.log(`      Sim: ${icon} P&L ${pctStr} | Exit: ${x.exitReason} after ${x.holdBars}m | ${peakStr} | Prem: $${ePrem}→$${xPrem}`);
+    }
   }
 
   // Summary
@@ -582,8 +572,14 @@ async function main() {
   console.log(`\n  TRADE SUMMARY:`);
   console.log(`    Round-trips: ${exitTrades.length}   Win: ${exitTrades.filter(t => (t.pnl ?? 0) > 0).length}   Loss: ${exitTrades.filter(t => (t.pnl ?? 0) <= 0).length}`);
   if (exitTrades.length > 0) {
+    const avgPnlPct = exitTrades.reduce((s, t) => s + (t.pnlPct ?? 0), 0) / exitTrades.length;
     console.log(`    Closed premium P&L: ${totalPremiumPnl >= 0 ? '+' : ''}$${totalPremiumPnl.toFixed(2)} per contract`);
     console.log(`    Per 1 contract (×100): ${totalPremiumPnl >= 0 ? '+' : ''}$${(totalPremiumPnl * 100).toFixed(0)}`);
+    console.log(`    Avg P&L%: ${avgPnlPct >= 0 ? '+' : ''}${avgPnlPct.toFixed(1)}%`);
+    // Exit reason breakdown
+    const reasons: Record<string, number> = {};
+    for (const t of exitTrades) reasons[t.exitReason ?? '?'] = (reasons[t.exitReason ?? '?'] ?? 0) + 1;
+    console.log(`    Exit reasons: ${Object.entries(reasons).map(([r, n]) => `${r}=${n}`).join('  ')}`);
   }
 
   // ────────────────────────────────────────────────────────────────────────────
@@ -645,7 +641,7 @@ async function main() {
   const b1changes = snaps.filter((s, i) => i > 0 && s.t.diagram.betti[1] !== snaps[i - 1]!.t.diagram.betti[1]).length;
   console.log(`\n  Betti changes:  β₀ changed ${b0changes}x   β₁ changed ${b1changes}x`);
 
-  console.log(`\n  Entry model results:`);
+  console.log(`\n  Entry model results (order sim: simulateOrderAgentSpy):`);
   console.log(`    Entries: ${entryTrades.length}   Exits: ${exitTrades.length}`);
   const closedPnl = exitTrades.reduce((s, t) => s + (t.pnl ?? 0), 0);
   console.log(`    Closed premium P&L: ${closedPnl >= 0 ? '+' : ''}$${closedPnl.toFixed(2)} per contract`);
