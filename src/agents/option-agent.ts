@@ -40,6 +40,29 @@ interface AlpacaOptionSnapshot {
   openInterest?: number;
 }
 
+// ── Fill-failure blacklist ────────────────────────────────────────────────────
+// Symbols that timed out waiting for fill are blacklisted for the session.
+// Prevents the selector from re-picking a contract whose OPRA quote is stale
+// (limit price consistently below the real ask → never fills).
+const _fillBlacklist = new Map<string, number>(); // symbol → timestamp
+
+/** Blacklist a symbol after fill timeout. Expires after 30 min. */
+export function blacklistSymbol(symbol: string): void {
+  _fillBlacklist.set(symbol, Date.now());
+  console.log(`[OptionAgent] Blacklisted ${symbol} after fill timeout (30 min cooldown)`);
+}
+
+/** Check if a symbol is currently blacklisted. */
+export function isBlacklisted(symbol: string): boolean {
+  const ts = _fillBlacklist.get(symbol);
+  if (!ts) return false;
+  if (Date.now() - ts > 30 * 60_000) {
+    _fillBlacklist.delete(symbol);
+    return false;
+  }
+  return true;
+}
+
 /** Fetch next-business-day date */
 function getNextBusinessDay(): string {
   const d = new Date();
@@ -325,9 +348,11 @@ export class OptionAgent {
     signal: SignalPayload,
     desiredSide: OptionSide
   ): OptionCandidate | null {
-    if (contracts.length === 0) return null;
+    // Filter out blacklisted symbols (fill timeout → stale OPRA data)
+    const eligible = contracts.filter(c => !isBlacklisted(c.symbol));
+    if (eligible.length === 0) return null;
 
-    const scored = contracts.map(c => {
+    const scored = eligible.map(c => {
       const score = this.scoreContract(c, signal, desiredSide);
       return this.buildCandidate(c, score, signal);
     });
