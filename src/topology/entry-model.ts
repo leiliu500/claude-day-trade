@@ -485,9 +485,8 @@ export function computeTopologyEntry(
   // Each stop-loss is evidence that the topology isn't predicting well.
   // Rather than an arbitrary cooldown, we require progressively stronger
   // topological confirmation:
-  //   1 stop:  need bottleneck > 0.20 (mild structural break)
-  //   2 stops: need bottleneck > 0.40 (significant break)
-  //   3+ stops: BLOCKED — topology has failed for this session, stop trading
+  //   1 stop:  need bottleneck > 0.25 (clear structural change)
+  //   2+ stops: BLOCKED — topology has failed for this session, stop trading
   //
   // This uses the topology's own signal (bottleneck) to gate re-entry,
   // not an arbitrary timer.  A strong structural break resets the count
@@ -495,13 +494,12 @@ export function computeTopologyEntry(
   // Gate 2b: CHOP GUARD — after consecutive stop-losses, require
   // progressively stronger topology confirmation before re-entering.
   //
-  //   1 stop:  require bottleneck > 0.10 (any structural change)
-  //   2 stops: require bottleneck > 0.20 (moderate break)
-  //   3+ stops: HALT — topology not predictive, stop entering
+  //   1 stop:  require bottleneck > 0.25 (clear structural change)
+  //   2+ stops: HALT — topology not predictive, stop entering
   //
   // A winning trade resets the counter (the topology worked).
   if (consecutiveStops > 0) {
-    if (consecutiveStops >= 3) {
+    if (consecutiveStops >= 2) {
       const chopGate: GateResult = {
         name: 'CHOP_GUARD',
         passed: false,
@@ -520,7 +518,7 @@ export function computeTopologyEntry(
       };
     }
 
-    const requiredBn = 0.10 * consecutiveStops;
+    const requiredBn = 0.25;
     if (topology.price.bottleneckDistance < requiredBn) {
       const chopGate: GateResult = {
         name: 'CHOP_GUARD',
@@ -552,6 +550,21 @@ export function computeTopologyEntry(
       gates,
       supportingActions: [],
       reasoning: 'No directional consensus from topology — flow, IV, and price signals conflict',
+    };
+  }
+
+  // Direction conflict gate: if topology infers a different direction than
+  // price momentum, that's a conflict — don't enter.  On reversal days the
+  // simulated flow lags the price turn, causing whipsaw entries.
+  if (priceDirection !== 'neutral' && direction !== priceDirection) {
+    return {
+      action: 'WAIT',
+      direction: 'neutral',
+      conviction: 0,
+      regime: topology.price.regime,
+      gates,
+      supportingActions: [],
+      reasoning: `Direction conflict: price=${priceDirection} vs topology=${direction} — waiting for alignment`,
     };
   }
 

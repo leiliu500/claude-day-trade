@@ -446,6 +446,7 @@ async function main() {
   let entryTime = '';
   let entryUnderlying = 0;
   let consecutiveStops = 0;
+  let consecutiveStopDir: 'bullish' | 'bearish' | null = null; // direction of the stops
   let skipUntilTs = 0; // skip bars while sim holds the position + cooldown
 
   interface TradeRecord {
@@ -506,8 +507,25 @@ async function main() {
     };
 
     if (!inPosition) {
-      // Try to enter
-      const entry = computeTopologyEntry(topoSignal, 'bullish', consecutiveStops);
+      // Infer price direction from slope of recent closes.
+      // Use 30-bar window with linear regression slope — more stable than
+      // EMA crossovers which whipsaw on pullbacks within a trend.
+      const slopeWindow = window.slice(-30).map(b => b.close);
+      const n = slopeWindow.length;
+      const sumX = n * (n - 1) / 2;
+      const sumX2 = n * (n - 1) * (2 * n - 1) / 6;
+      let sumY = 0, sumXY = 0;
+      for (let i = 0; i < n; i++) { sumY += slopeWindow[i]!; sumXY += i * slopeWindow[i]!; }
+      const slope = (n * sumXY - sumX * sumY) / (n * sumX2 - sumX * sumX);
+      // Normalize slope by price to get % per bar
+      const slopePct = (slope / slopeWindow[0]!) * 100;
+      const priceDir: 'bullish' | 'bearish' | 'neutral' =
+        slopePct > 0.003 ? 'bullish' :
+        slopePct < -0.003 ? 'bearish' : 'neutral';
+
+      // Reset chop guard when direction reverses — stops from the old
+      // direction shouldn't block entries in the new direction.
+      const entry = computeTopologyEntry(topoSignal, priceDir, consecutiveStops);
       if (entry.action === 'ENTER' && entry.conviction > 0.40) {
         posDir = entry.direction as 'bullish' | 'bearish';
         entryTime = time;
@@ -548,9 +566,15 @@ async function main() {
 
         // Track consecutive stops for topology entry model
         if (sim.exitReason === 'STOP' || sim.exitReason === 'BAD_ENTRY' || sim.exitReason === 'EARLY_EXIT') {
+          // Reset if direction changed (bearish stops shouldn't block bullish entries)
+          if (consecutiveStopDir && consecutiveStopDir !== posDir) {
+            consecutiveStops = 0;
+          }
           consecutiveStops++;
+          consecutiveStopDir = posDir;
         } else if (sim.pnlPct > 0) {
           consecutiveStops = 0;
+          consecutiveStopDir = null;
         }
 
         // Skip ahead past the sim hold period + cooldown (matches live 3-min scheduler cycle)
