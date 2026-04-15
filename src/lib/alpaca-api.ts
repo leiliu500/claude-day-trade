@@ -322,13 +322,33 @@ export async function fetchOptionMid(symbol: string): Promise<number | null> {
     });
     if (!res.ok) return null;
     const data = (await res.json()) as {
-      snapshots?: Record<string, { latestQuote?: { bp?: number; ap?: number } }>;
+      snapshots?: Record<string, {
+        latestQuote?: { bp?: number; ap?: number; t?: string };
+        latestTrade?: { p?: number; t?: string };
+      }>;
     };
     const snap = data.snapshots?.[symbol];
     const bid = snap?.latestQuote?.bp ?? 0;
     const ask = snap?.latestQuote?.ap ?? 0;
-    if (bid <= 0 || ask <= 0) return null;
-    return (bid + ask) / 2;
+    const quoteMid = bid > 0 && ask > 0 ? (bid + ask) / 2 : 0;
+
+    // Use lastTrade price when it's fresher than the quote and within the spread.
+    // OPRA quotes can lag by seconds; the last trade price reflects actual execution.
+    const tradePrice = snap?.latestTrade?.p ?? 0;
+    const quoteTime = snap?.latestQuote?.t ? new Date(snap.latestQuote.t).getTime() : 0;
+    const tradeTime = snap?.latestTrade?.t ? new Date(snap.latestTrade.t).getTime() : 0;
+
+    if (tradePrice > 0 && tradeTime > quoteTime && quoteMid > 0) {
+      // Trade is newer — use it if it's within reasonable range of the quote
+      // (between bid and ask + 10% buffer to account for spread crossing)
+      const spreadBuffer = (ask - bid) * 0.10;
+      if (tradePrice >= bid - spreadBuffer && tradePrice <= ask + spreadBuffer) {
+        return tradePrice;
+      }
+    }
+
+    if (quoteMid <= 0) return null;
+    return quoteMid;
   } catch {
     return null;
   }

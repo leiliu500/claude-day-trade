@@ -76,7 +76,7 @@ function computeSizing(
     baseRiskUsd:      baseRisk,
     effectiveRiskUsd: effectiveRisk,
     riskPerContract,
-    limitPrice:       Math.round((entryPremium + 0.30 * spread) * 100) / 100,
+    limitPrice:       Math.round((entryPremium + 0.50 * spread) * 100) / 100,
   };
 }
 

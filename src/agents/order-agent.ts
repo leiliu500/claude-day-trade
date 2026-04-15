@@ -140,8 +140,8 @@ const FILL_TIMEOUT_MS           = 90_000;   // cancel unfilled limit order after
 const FILL_STALE_CHECK_MS    = 20_000; // first stale check at 20 s (was 45 s — too late to catch reversals)
 const FILL_STALE_ABORT_PCT   = 0.10;  // cancel if current mid dropped > 10% below limit price (was 15%)
 const UNDERLYING_DRIFT_PCT   = 0.0025; // 0.25% underlying move against signal direction → stale signal exit
-const REPRICE_AFTER_MS       = 15_000; // reprice unfilled limit order after 15 s
-const REPRICE_INTERVAL_MS    = 15_000; // re-check and reprice every 15 s thereafter
+const REPRICE_AFTER_MS       = 8_000;  // reprice unfilled limit order after 8 s (was 15 s — too slow for 0DTE gamma)
+const REPRICE_INTERVAL_MS    = 10_000; // re-check and reprice every 10 s thereafter (was 15 s)
 const REPRICE_MAX_DRIFT_PCT  = 0.05;   // abandon (don't reprice) if mid moved > 5% from original limit
 
 const openai            = new OpenAI({ apiKey: config.OPENAI_API_KEY });
@@ -248,7 +248,7 @@ export class OrderAgent {
 
         // Recalculate limit price from fresh mid when drift is meaningful (>1%)
         if (driftPct > 0.01) {
-          const freshLimitPrice = Math.round((currentMid + 0.30 * candidate.contract.spread) * 100) / 100;
+          const freshLimitPrice = Math.round((currentMid + 0.50 * candidate.contract.spread) * 100) / 100;
           console.log(
             `[OrderAgent ${ticker}] Limit price refreshed: ` +
             `old=$${sizing.limitPrice.toFixed(2)} (mid=$${candidate.entryPremium.toFixed(2)}), ` +
@@ -805,7 +805,7 @@ export class OrderAgent {
         const driftPct = (currentMid - originalLimit) / originalLimit;
         // Only reprice upward (ask moved away) within the drift cap
         if (driftPct > 0.005 && driftPct <= REPRICE_MAX_DRIFT_PCT) {
-          const newLimit = Math.round((currentMid + 0.30 * candidate.contract.spread) * 100) / 100;
+          const newLimit = Math.round((currentMid + 0.50 * candidate.contract.spread) * 100) / 100;
           const replaced = await replaceOrderPrice(this.alpacaOrderId, newLimit);
           if (replaced) {
             // Alpaca PATCH returns a new order ID
