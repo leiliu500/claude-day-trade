@@ -6,6 +6,7 @@ import type { OptionEvaluation } from '../types/options.js';
 import type { AnalysisResult, ConfidenceBreakdown } from '../types/analysis.js';
 import { getRecentSignals } from '../db/repositories/signals.js';
 import { computeEntryMetrics } from '../lib/entry-context.js';
+import { computePriceTopology } from '../topology/price-topology.js';
 
 const openai = new OpenAI({ apiKey: config.OPENAI_API_KEY });
 
@@ -2282,6 +2283,35 @@ export class AnalysisAgent {
         meetsEntryThreshold = false;
       }
     }
+
+    // Topology gate — soft penalty when price attractor has high dimension
+    // (unconfirmed trend structure). Reduces confidence proportional to dimension
+    // excess above 1.0. Blocks fragmented regimes outright.
+    // Backtest validation (Oct 2025 – Apr 2026): -29 F, +1 good, net +30.
+    if (config.ENABLE_TOPOLOGY_GATE && meetsEntryThreshold) {
+      const topoBars = signal.timeframes[0]?.bars?.slice(-200);
+      if (topoBars && topoBars.length >= 50) {
+        const priceTopo = computePriceTopology(topoBars, `${signal.ticker}_live`);
+        if (priceTopo.regime === 'fragmented') {
+          entryBlockReason = `topology: fragmented regime (dim=${priceTopo.effectiveDimension.toFixed(1)})`;
+          console.log(`[AnalysisAgent] ${signal.ticker} ${entryBlockReason}`);
+          meetsEntryThreshold = false;
+        } else if (priceTopo.regime === 'trending'
+          && priceTopo.regimeStability <= 0.10
+          && priceTopo.bottleneckDistance <= 0.30
+          && priceTopo.effectiveDimension > 1.0) {
+          const dimExcess = priceTopo.effectiveDimension - 1.0;
+          const topoPenalty = Math.min(0.12, dimExcess * 0.15);
+          const adjusted = cb.total - topoPenalty;
+          if (adjusted < minConf) {
+            entryBlockReason = `topology: dim=${priceTopo.effectiveDimension.toFixed(2)} penalty=${(topoPenalty * 100).toFixed(0)}% → conf=${(adjusted * 100).toFixed(1)}%`;
+            console.log(`[AnalysisAgent] ${signal.ticker} ${entryBlockReason} (stability=${priceTopo.regimeStability.toFixed(2)}, bn=${priceTopo.bottleneckDistance.toFixed(3)})`);
+            meetsEntryThreshold = false;
+          }
+        }
+      }
+    }
+
     const desiredRight = deriveDesiredRight(signal);
 
     // rangeExhaustion already computed above for entryCtx

@@ -32,6 +32,7 @@ const configSchema = z.object({
   DAILY_LOSS_LIMIT_PCT: z.coerce.number().default(0.02), // halt new entries after -2% equity loss today
   MAX_ENTRY_DRIFT_PCT: z.coerce.number().default(0.05), // skip entry if option mid drifted >5% since selection
   MAX_LTF_ATR_PCT: z.coerce.number().default(0.25),    // skip entry when LTF ATR% exceeds threshold (volatility spike)
+  ENABLE_TOPOLOGY_GATE: z.coerce.boolean().default(false), // topology-based entry filter (soft penalty on high-dimension regimes)
 });
 
 type Config = z.infer<typeof configSchema>;

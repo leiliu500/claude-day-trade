@@ -32,10 +32,14 @@ import { computeEntryMetrics } from '../lib/entry-context.js';
 import { getTickerConfig } from '../ticker-configs.js';
 import { detectDirection } from '../lib/direction-detector.js';
 import { writeVisualizerHTML, type VisEntry, type VisBar } from './backtest-visualizer.js';
+import { computePriceTopology } from '../topology/price-topology.js';
+import { computeTopologyEntry } from '../topology/entry-model.js';
+import type { TopologySignal } from '../topology/types.js';
 
 // ── Config ────────────────────────────────────────────────────────────────────
 
 const USE_AI = process.argv.includes('--ai');
+const USE_TOPO = process.argv.includes('--topo');
 const JSON_OUTPUT = process.argv.includes('--json');
 const HTML_OUTPUT = process.argv.includes('--html');
 const TARGET_DATE = process.argv.filter(a => !a.startsWith('--'))[2] || '2026-03-18';
@@ -299,7 +303,7 @@ function utcToET(utcTime: string): string {
 
 async function main() {
   console.log(`\n${'='.repeat(80)}`);
-  console.log(`  BACKTEST: ${TICKER} on ${TARGET_DATE} (Profile: ${PROFILE}, Threshold: ${MIN_CONFIDENCE}${USE_AI ? ', AI ORCHESTRATOR' : ', deterministic'})`);
+  console.log(`  BACKTEST: ${TICKER} on ${TARGET_DATE} (Profile: ${PROFILE}, Threshold: ${MIN_CONFIDENCE}${USE_AI ? ', AI ORCHESTRATOR' : ', deterministic'}${USE_TOPO ? ', TOPOLOGY GATE' : ''})`);
   console.log(`  Walking market hours ${MARKET_OPEN_UTC}–${MARKET_CLOSE_UTC} UTC in 1-min intervals`);
   console.log(`${'='.repeat(80)}\n`);
 
@@ -1100,6 +1104,42 @@ async function main() {
       if (meetsThreshold && !inEntryWindow) {
         pushFilterBlocked(`entry_window: ${minutesSinceOpenForWindow.toFixed(0)}m outside [${TCFG.entryWindowStartMin}-${TCFG.entryWindowEndMin}]`);
         meetsThreshold = false; // hard block — matches live AnalysisAgent
+      }
+
+      // ── Topology gate (when --topo flag is set) ──────────────────────────
+      // Uses price topology to filter entries based on attractor structure.
+      //
+      // Hard block: fragmented regime (dim > 1.5) — no identifiable structure.
+      // Soft penalty: unconfirmed structure — reduces confidence by the gap
+      //   between the current dimension and the clean-trend threshold.
+      //   This pushes marginal signals (65-70%) below threshold while
+      //   preserving strong signals (80%+) on borderline days.
+      if (USE_TOPO && meetsThreshold && direction !== 'neutral') {
+        const topoWindow = ltfBars.slice(-200);
+        if (topoWindow.length >= 50) {
+          const priceTopo = computePriceTopology(topoWindow, `${TICKER}_bt`);
+
+          // Hard block: fragmented regime (very high dimension, no structure)
+          if (priceTopo.regime === 'fragmented') {
+            pushFilterBlocked(`topology: REGIME fragmented (dim=${priceTopo.effectiveDimension.toFixed(1)})`);
+            meetsThreshold = false;
+          }
+          // Soft penalty: unconfirmed trend structure
+          // Three conditions pass the gate: stability > 0.10, bn > 0.30, or dim <= 1.0
+          // When none pass, apply a confidence penalty proportional to dimension excess.
+          else if (priceTopo.regime === 'trending'
+            && priceTopo.regimeStability <= 0.10
+            && priceTopo.bottleneckDistance <= 0.30
+            && priceTopo.effectiveDimension > 1.0) {
+            const dimExcess = priceTopo.effectiveDimension - 1.0;
+            const topoPenalty = Math.min(0.12, dimExcess * 0.15);
+            cb = { ...cb, total: Math.max(0, cb.total - topoPenalty) };
+            if (cb.total < effectiveThreshold) {
+              pushFilterBlocked(`topology: dim=${priceTopo.effectiveDimension.toFixed(2)} penalty=${(topoPenalty * 100).toFixed(0)}% → conf=${(cb.total * 100).toFixed(1)}%`);
+              meetsThreshold = false;
+            }
+          }
+        }
       }
 
       if (meetsThreshold && direction !== 'neutral') {

@@ -145,10 +145,10 @@ function structureGate(price: PriceTopology): GateResult {
       //      dim < 1.0 is strong directional evidence even when stability is low
       const isNewTrend = bn > 0.3;
       const isConfirmed = regimeStability > 0.10;
-      const isLowDim = price.effectiveDimension < 0.9;
+      const isLowDim = price.effectiveDimension <= 1.0;
       if (!isNewTrend && !isConfirmed && !isLowDim) {
         return { name: 'STRUCTURE', passed: false, strength: 0,
-          reason: `Trend not confirmed (stability=${regimeStability.toFixed(2)} < 0.10, bn=${bn.toFixed(3)} < 0.30, dim=${price.effectiveDimension.toFixed(1)} >= 0.9)` };
+          reason: `Trend not confirmed (stability=${regimeStability.toFixed(2)} < 0.10, bn=${bn.toFixed(3)} < 0.30, dim=${price.effectiveDimension.toFixed(1)} > 1.0)` };
       }
       // Compute strength based on which condition fired
       let strength: number;
@@ -158,7 +158,7 @@ function structureGate(price: PriceTopology): GateResult {
         reason = `Structural break (bn=${bn.toFixed(3)}) — new trend forming`;
       } else if (isLowDim) {
         // Lower dimension = cleaner trend → higher strength
-        strength = 0.5 + Math.min(0.4, (0.9 - price.effectiveDimension) * 4);
+        strength = 0.5 + Math.min(0.4, (1.0 - price.effectiveDimension) * 4);
         reason = `Low-dimensional trend (dim=${price.effectiveDimension.toFixed(2)}, stability=${regimeStability.toFixed(2)})`;
       } else {
         strength = 0.4 + Math.min(0.5, regimeStability * 2);
