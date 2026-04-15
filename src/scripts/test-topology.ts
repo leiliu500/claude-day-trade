@@ -25,6 +25,9 @@ import type { ChainContract, PriceTopology, TopologySignal } from '../topology/t
 
 // ── Alpaca fetch (inline, no shared helpers) ─────────────────────────────────
 
+const TARGET_DATE = process.argv[2] || '2026-04-14';
+const TICKER = process.argv[3] || 'SPY';
+
 const API_KEY = process.env.ALPACA_API_KEY!;
 const SECRET  = process.env.ALPACA_SECRET_KEY!;
 const DATA_URL = process.env.ALPACA_DATA_URL || 'https://data.alpaca.markets';
@@ -99,12 +102,14 @@ function hbar(val: number, max: number, w = 25): string {
 
 async function main() {
   console.log(`\n${'═'.repeat(62)}`);
-  console.log(`  TOPOLOGY ENGINE TEST — SPY 2026-04-14`);
+  console.log(`  TOPOLOGY ENGINE TEST — ${TICKER} ${TARGET_DATE}`);
   console.log(`${'═'.repeat(62)}\n`);
 
-  // Fetch bars: 2 warmup days + target
-  const bars1m = await fetchBars('SPY', '2026-04-10T00:00:00Z', '2026-04-14T23:59:59Z');
-  const target = bars1m.filter(b => b.timestamp.startsWith('2026-04-14'));
+  // Fetch bars: 3 warmup days + target
+  const warmupStart = new Date(TARGET_DATE);
+  warmupStart.setDate(warmupStart.getDate() - 4);
+  const bars1m = await fetchBars(TICKER, warmupStart.toISOString(), `${TARGET_DATE}T23:59:59Z`);
+  const target = bars1m.filter(b => b.timestamp.startsWith(TARGET_DATE));
   console.log(`  Fetched ${bars1m.length} total 1m bars, ${target.length} on target date`);
   if (target.length === 0) { console.error('  No bars on target date'); process.exit(1); }
 
@@ -187,7 +192,7 @@ async function main() {
     const window = bars1m.filter(b => new Date(b.timestamp).getTime() <= ts).slice(-200);
     if (window.length < 50) continue;
     const price = window[window.length - 1]!.close;
-    const t = computePriceTopology(window, 'SPY');
+    const t = computePriceTopology(window, TICKER);
     snaps.push({ time: timeET(new Date(ts).toISOString()), price, t });
   }
 
@@ -397,7 +402,7 @@ async function main() {
   let entryBarIdx = 0;
   let barIdx = 0;
 
-  resetSessionOI('SPY');
+  resetSessionOI(TICKER);
 
   for (let ts = firstTs + 30 * 60_000; ts <= lastTs; ts += entryStepMs) {
     const window = bars1m.filter(b => new Date(b.timestamp).getTime() <= ts).slice(-200);
@@ -410,7 +415,9 @@ async function main() {
     const priceTopo = computePriceTopology(window, 'SPY_entry');
 
     // Option chain from Black-Scholes + price dynamics
-    const { callChain: simCalls, putChain: simPuts } = simulateChain(window, 'SPY', '2026-04-15');
+    const nextDay = new Date(TARGET_DATE); nextDay.setDate(nextDay.getDate() + 1);
+    const expiry = nextDay.toISOString().slice(0, 10);
+    const { callChain: simCalls, putChain: simPuts } = simulateChain(window, TICKER, expiry);
 
     const chainTopo = computeChainTopology(simCalls, simPuts, price);
     const ivTopo = computeIVTopology(simCalls, simPuts, price);
@@ -439,7 +446,7 @@ async function main() {
     }
 
     const topoSignal: TopologySignal = {
-      ticker: 'SPY', timestamp: new Date(ts).toISOString(),
+      ticker: TICKER, timestamp: new Date(ts).toISOString(),
       price: priceTopo, chain: chainTopo, iv: ivTopo, actions, anomalyScore: 0,
     };
 
@@ -540,7 +547,7 @@ async function main() {
   console.log(`\n  ENTRIES (${entryTrades.length}):`);
   if (entryTrades.length === 0) console.log(`    No entries fired.`);
   for (const t of entryTrades) {
-    console.log(`    ${t.time} ET  ${t.dir.toUpperCase().padEnd(7)}  SPY $${t.underlying.toFixed(2)} → ${t.side.toUpperCase()} $${t.strike} @ $${t.premium.toFixed(2)}  δ=${t.delta.toFixed(3)}  conv=${t.conviction.toFixed(3)}  [${t.regime}]`);
+    console.log(`    ${t.time} ET  ${t.dir.toUpperCase().padEnd(7)}  ${TICKER} $${t.underlying.toFixed(2)} → ${t.side.toUpperCase()} $${t.strike} @ $${t.premium.toFixed(2)}  δ=${t.delta.toFixed(3)}  conv=${t.conviction.toFixed(3)}  [${t.regime}]`);
     console.log(`      Gates: ${t.gates}`);
   }
 
@@ -549,13 +556,14 @@ async function main() {
   for (const t of exitTrades) {
     const pnlStr = t.pnl! >= 0 ? `+$${t.pnl!.toFixed(2)}` : `-$${Math.abs(t.pnl!).toFixed(2)}`;
     const pctStr = t.pnlPct! >= 0 ? `+${t.pnlPct!.toFixed(1)}%` : `${t.pnlPct!.toFixed(1)}%`;
-    console.log(`    ${t.time} ET  SPY $${t.underlying.toFixed(2)} → ${t.side.toUpperCase()} $${t.strike} @ $${t.premium.toFixed(2)}  δ=${t.delta.toFixed(3)}  P&L: ${pnlStr} (${pctStr})  held ${t.holdBars} bars  [${t.gates}]`);
+    console.log(`    ${t.time} ET  ${TICKER} $${t.underlying.toFixed(2)} → ${t.side.toUpperCase()} $${t.strike} @ $${t.premium.toFixed(2)}  δ=${t.delta.toFixed(3)}  P&L: ${pnlStr} (${pctStr})  held ${t.holdBars} bars  [${t.gates}]`);
   }
 
   // Mark-to-market if still in position
   if (inPosition) {
     const lastWindow = bars1m.filter(b => new Date(b.timestamp).getTime() <= lastTs).slice(-200);
-    const { callChain: lastCalls, putChain: lastPuts } = simulateChain(lastWindow, 'SPY', '2026-04-15');
+    const lastExpiry = new Date(TARGET_DATE); lastExpiry.setDate(lastExpiry.getDate() + 1);
+    const { callChain: lastCalls, putChain: lastPuts } = simulateChain(lastWindow, TICKER, lastExpiry.toISOString().slice(0, 10));
     const lastChain = entrySide === 'call' ? lastCalls : lastPuts;
     const lastContract = lastChain.find(c => c.strike === entryStrike);
     const lastPremium = lastContract?.mid ?? 0;
@@ -564,7 +572,7 @@ async function main() {
     const pnlStr = mtmPnl >= 0 ? `+$${mtmPnl.toFixed(2)}` : `-$${Math.abs(mtmPnl).toFixed(2)}`;
     console.log(`\n  OPEN POSITION (mark-to-market):`);
     console.log(`    Entered: ${entryTime} ET  ${entrySide.toUpperCase()} $${entryStrike} @ $${entryPremium.toFixed(2)}`);
-    console.log(`    Current: $${lastPremium.toFixed(2)}  SPY=$${dayClose.toFixed(2)}`);
+    console.log(`    Current: $${lastPremium.toFixed(2)}  ${TICKER}=$${dayClose.toFixed(2)}`);
     console.log(`    M2M P&L: ${pnlStr} (${mtmPct >= 0 ? '+' : ''}${mtmPct.toFixed(1)}%) per contract`);
     console.log(`    Per 1 contract (×100 shares): ${mtmPnl >= 0 ? '+' : ''}$${(mtmPnl * 100).toFixed(0)}`);
   }
@@ -596,7 +604,7 @@ async function main() {
 
   for (const s of keyMoments) {
     const topoSig: TopologySignal = {
-      ticker: 'SPY', timestamp: '', price: s.t, chain: null, iv: null,
+      ticker: TICKER, timestamp: '', price: s.t, chain: null, iv: null,
       actions: [], anomalyScore: 0,
     };
     const entry = computeTopologyEntry(topoSig, 'bullish');
