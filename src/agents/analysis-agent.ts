@@ -212,7 +212,11 @@ function computeConfidence(signal: SignalPayload, option: OptionEvaluation): Con
         (signal.direction === 'bearish' && tf.obv.divergence === 'bullish');
       if (badDivergence) obvBonus -= 0.02;
     }
-    obvBonus = Math.max(-0.04, Math.min(0.08, obvBonus));
+    // Cap at 0.06 for trend mode: OBVM crossover/alignment features can push to 0.10+
+    // but the extra confirmation is largely redundant with DI spread in trending markets.
+    // Raising to 0.08 created false positives on low-displacement days (Apr 10: dvel=0.021,
+    // OBV=0.08 pushed F-grade entry over threshold).
+    obvBonus = Math.max(-0.04, Math.min(0.06, obvBonus));
   }
 
   // VWAP bonus — HTF and MTF direction alignment + HTF band extension penalty.
