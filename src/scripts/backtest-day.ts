@@ -1139,6 +1139,19 @@ async function main() {
               meetsThreshold = false;
             }
           }
+
+          // Trajectory penalty: dimension increasing = topology deteriorating.
+          // Even if the current snapshot passes, a rising dimension trajectory
+          // means the trend structure is breaking down — penalize.
+          if (meetsThreshold && priceTopo.dimensionSlope !== null && priceTopo.dimensionSlope > 0.05) {
+            const trajPenalty = Math.min(0.08, (priceTopo.dimensionSlope - 0.05) * 0.5);
+            const adjusted = cb.total - trajPenalty;
+            if (adjusted < effectiveThreshold) {
+              pushFilterBlocked(`topology_trajectory: dimSlope=${priceTopo.dimensionSlope.toFixed(3)} penalty=${(trajPenalty * 100).toFixed(0)}% → conf=${(adjusted * 100).toFixed(1)}%`);
+              cb = { ...cb, total: adjusted };
+              meetsThreshold = false;
+            }
+          }
         }
       }
 

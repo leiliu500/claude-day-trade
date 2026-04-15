@@ -39,6 +39,7 @@ services:
       TELEGRAM_CHAT_ID: ${TELEGRAM_CHAT_ID}
       PORT: 3001
       NODE_ENV: ${NODE_ENV:-production}
+      ENABLE_TOPOLOGY_GATE: ${ENABLE_TOPOLOGY_GATE:-false}
     ports:
       - '3001:3001'
       - '3000:3000'

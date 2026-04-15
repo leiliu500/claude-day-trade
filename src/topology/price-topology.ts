@@ -268,6 +268,10 @@ function computeRegimeStability(
 let _prevDiagram: PersistenceDiagram | null = null;
 const _prevDiagrams = new Map<string, PersistenceDiagram>();
 
+/** Rolling history of effective dimension for trajectory slope computation. */
+const _dimHistory = new Map<string, number[]>();
+const DIM_HISTORY_SIZE = 6; // track last 6 computations (~6 min at 1-min ticks)
+
 /**
  * Compute the full price topology from OHLCV bars.
  *
@@ -325,6 +329,23 @@ export function computePriceTopology(
     : 0;
   _prevDiagrams.set(ticker, diagram);
 
+  // Track dimension trajectory for slope computation
+  let history = _dimHistory.get(ticker);
+  if (!history) { history = []; _dimHistory.set(ticker, history); }
+  history.push(effectiveDimension);
+  if (history.length > DIM_HISTORY_SIZE) history.shift();
+
+  // Compute slope via linear regression on dimension history
+  let dimensionSlope: number | null = null;
+  if (history.length >= 3) {
+    const n = history.length;
+    const sumX = n * (n - 1) / 2;
+    const sumX2 = n * (n - 1) * (2 * n - 1) / 6;
+    let sumY = 0, sumXY = 0;
+    for (let i = 0; i < n; i++) { sumY += history[i]!; sumXY += i * history[i]!; }
+    dimensionSlope = (n * sumXY - sumX * sumY) / (n * sumX2 - sumX * sumX);
+  }
+
   return {
     diagram,
     regime,
@@ -332,5 +353,6 @@ export function computePriceTopology(
     bottleneckDistance: bDist,
     cyclicalStrength,
     effectiveDimension,
+    dimensionSlope,
   };
 }

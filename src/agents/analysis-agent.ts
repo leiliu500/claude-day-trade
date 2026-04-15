@@ -2309,6 +2309,17 @@ export class AnalysisAgent {
             meetsEntryThreshold = false;
           }
         }
+
+        // Trajectory penalty: dimension increasing = topology deteriorating
+        if (meetsEntryThreshold && priceTopo.dimensionSlope !== null && priceTopo.dimensionSlope > 0.05) {
+          const trajPenalty = Math.min(0.08, (priceTopo.dimensionSlope - 0.05) * 0.5);
+          const adjusted = cb.total - trajPenalty;
+          if (adjusted < minConf) {
+            entryBlockReason = `topology_trajectory: dimSlope=${priceTopo.dimensionSlope.toFixed(3)} penalty=${(trajPenalty * 100).toFixed(0)}% → conf=${(adjusted * 100).toFixed(1)}%`;
+            console.log(`[AnalysisAgent] ${signal.ticker} ${entryBlockReason}`);
+            meetsEntryThreshold = false;
+          }
+        }
       }
     }
 

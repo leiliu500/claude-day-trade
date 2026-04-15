@@ -53,6 +53,11 @@ export interface PriceTopology {
   cyclicalStrength: number;
   /** Effective dimensionality of the price attractor (correlation dimension estimate). */
   effectiveDimension: number;
+  /** Slope of effective dimension over recent computations (per cycle).
+   *  Positive = dimension increasing (topology deteriorating).
+   *  Negative = dimension decreasing (topology improving).
+   *  null = insufficient history. */
+  dimensionSlope: number | null;
 }
 
 // ── Option Chain Topology ────────────────────────────────────────────────────
