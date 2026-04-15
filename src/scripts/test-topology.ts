@@ -390,7 +390,7 @@ async function main() {
   let entryDelta = 0;
   let entrySide: 'call' | 'put' = 'call';
   let contractQty = 1;
-  let lastExitWasStop = false;
+  let consecutiveStops = 0;
 
   interface TradeRecord {
     time: string; dir: string; underlying: number; strike: number;
@@ -452,9 +452,8 @@ async function main() {
 
     if (!inPosition) {
       // Try to enter
-      const entry = computeTopologyEntry(topoSignal, 'bullish', lastExitWasStop);
+      const entry = computeTopologyEntry(topoSignal, 'bullish', consecutiveStops);
       if (entry.action === 'ENTER' && entry.conviction > 0.02) {
-        lastExitWasStop = false; // reset on successful entry
         inPosition = true;
         posDir = entry.direction as 'bullish' | 'bearish';
         entryRegime = entry.regime;
@@ -507,7 +506,7 @@ async function main() {
         shouldExit = true;
         exitGateStr = `STOP_LOSS(${pnlPct.toFixed(0)}%)`;
         exitConviction = 1.0;
-        lastExitWasStop = true;
+        consecutiveStops++;
       }
 
       // Layer 2: Take-profit at +80%
@@ -515,6 +514,7 @@ async function main() {
         shouldExit = true;
         exitGateStr = `TAKE_PROFIT(${pnlPct.toFixed(0)}%)`;
         exitConviction = 1.0;
+        consecutiveStops = 0; // win resets the stop counter
       }
 
       // Layer 3: Topology exit (regime break, flow reversal, IV opposition)

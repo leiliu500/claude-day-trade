@@ -416,7 +416,7 @@ function timeGate(timestamp: string): GateResult {
 export function computeTopologyEntry(
   topology: TopologySignal,
   priceDirection: 'bullish' | 'bearish' | 'neutral' = 'neutral',
-  lastExitWasStop = false,
+  consecutiveStops = 0,
 ): TopologyEntrySignal {
   const gates: GateResult[] = [];
 
@@ -465,27 +465,65 @@ export function computeTopologyEntry(
     };
   }
 
-  // Gate 2b: After a stop-loss, require a FRESH structural break.
-  // The previous trade failed on this same structure — re-entering on
-  // stale topology is chasing.  The attractor must show a new shape
-  // (bottleneck spike) proving a fresh move has started.
-  if (lastExitWasStop && topology.price.bottleneckDistance < 0.20) {
-    const freshGate: GateResult = {
-      name: 'FRESH_SIGNAL',
-      passed: false,
-      strength: 0,
-      reason: `Prior trade stopped out — need fresh structural break (bn=${topology.price.bottleneckDistance.toFixed(3)} < 0.20)`,
-    };
-    gates.push(freshGate);
-    return {
-      action: 'WAIT',
-      direction: 'neutral',
-      conviction: 0,
-      regime: topology.price.regime,
-      gates,
-      supportingActions: [],
-      reasoning: `BLOCKED by ${freshGate.name}: ${freshGate.reason}`,
-    };
+  // Gate 2b: CHOP GUARD — escalating re-entry bar after consecutive stops.
+  //
+  // Each stop-loss is evidence that the topology isn't predicting well.
+  // Rather than an arbitrary cooldown, we require progressively stronger
+  // topological confirmation:
+  //   1 stop:  need bottleneck > 0.20 (mild structural break)
+  //   2 stops: need bottleneck > 0.40 (significant break)
+  //   3+ stops: BLOCKED — topology has failed for this session, stop trading
+  //
+  // This uses the topology's own signal (bottleneck) to gate re-entry,
+  // not an arbitrary timer.  A strong structural break resets the count
+  // because it means the attractor genuinely changed.
+  // Gate 2b: CHOP GUARD — after consecutive stop-losses, require
+  // progressively stronger topology confirmation before re-entering.
+  //
+  //   1 stop:  require bottleneck > 0.10 (any structural change)
+  //   2 stops: require bottleneck > 0.20 (moderate break)
+  //   3+ stops: HALT — topology not predictive, stop entering
+  //
+  // A winning trade resets the counter (the topology worked).
+  if (consecutiveStops > 0) {
+    if (consecutiveStops >= 3) {
+      const chopGate: GateResult = {
+        name: 'CHOP_GUARD',
+        passed: false,
+        strength: 0,
+        reason: `${consecutiveStops} consecutive stops — halting entries for session`,
+      };
+      gates.push(chopGate);
+      return {
+        action: 'WAIT',
+        direction: 'neutral',
+        conviction: 0,
+        regime: topology.price.regime,
+        gates,
+        supportingActions: [],
+        reasoning: `BLOCKED by ${chopGate.name}: ${chopGate.reason}`,
+      };
+    }
+
+    const requiredBn = 0.10 * consecutiveStops;
+    if (topology.price.bottleneckDistance < requiredBn) {
+      const chopGate: GateResult = {
+        name: 'CHOP_GUARD',
+        passed: false,
+        strength: 0,
+        reason: `${consecutiveStops} stop(s) — need bn > ${requiredBn.toFixed(2)} (got ${topology.price.bottleneckDistance.toFixed(3)})`,
+      };
+      gates.push(chopGate);
+      return {
+        action: 'WAIT',
+        direction: 'neutral',
+        conviction: 0,
+        regime: topology.price.regime,
+        gates,
+        supportingActions: [],
+        reasoning: `BLOCKED by ${chopGate.name}: ${chopGate.reason}`,
+      };
+    }
   }
 
   // Infer direction before flow/IV gates need it
