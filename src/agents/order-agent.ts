@@ -826,6 +826,22 @@ export class OrderAgent {
             this.cfg.sizing.limitPrice = newLimit;
             this.lastRepriceMs = Date.now();
           }
+        } else if (driftPct > REPRICE_MAX_DRIFT_PCT) {
+          // Mid ran away beyond the drift cap — cancel immediately.
+          // Without this, the order sits unfillable until the 90s timeout.
+          console.warn(
+            `[OrderAgent ${decision.ticker} ${candidate.contract.symbol}] ` +
+            `REPRICE_RUNAWAY — mid $${currentMid.toFixed(2)} ran +${(driftPct * 100).toFixed(1)}% ` +
+            `above limit $${originalLimit.toFixed(2)} (cap=${(REPRICE_MAX_DRIFT_PCT * 100).toFixed(0)}%), ` +
+            `cancelling unfilled order`,
+          );
+          if (this.alpacaOrderId) AlpacaStreamManager.getInstance().unwatchOrder(this.alpacaOrderId);
+          await cancelOpenOrdersForSymbol(candidate.contract.symbol);
+          await this._voidPosition('reprice_runaway');
+          this.phase = 'FAILED';
+          this._stopTick();
+          this._selfRemove();
+          return;
         }
       }
     }
