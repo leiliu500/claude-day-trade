@@ -1309,7 +1309,10 @@ async function main() {
   // Deduplicate and enforce cooldowns — matches live system behavior.
   // Live scheduler runs every ~3 min, so entries < 3 min apart can't happen in production.
   // Within a cooldown window: keep the first confirmed entry, skip duplicates.
-  // Between modes: each mode has its own cooldown timer (trend=3m, range=20m, breakout=30m).
+  // Position-aware: after a confirmed entry, skip re-entries until the sim position
+  // would have exited. This matches live behavior where the OrderAgent holds the
+  // position and subsequent signals become CONFIRM_HOLD, not NEW_ENTRY.
+  // Fallback to mode-based cooldown when sim hold duration is unavailable.
   const isConfirmed = (e: EntryRecord) => e.gateResult === 'PASSED' || e.gateResult === 'HIGH_CONV_OVERRIDE' || e.gateResult === 'PHASE_CHANGE_OVERRIDE';
   const cooldownByMode: Record<string, number> = {
     trend: TREND_COOLDOWN_MIN * 60_000,
@@ -1317,7 +1320,8 @@ async function main() {
     breakout: BREAKOUT_COOLDOWN_MIN * 60_000,
     vwap_reversion: RANGE_COOLDOWN_MIN * 60_000,
   };
-  // Track last confirmed entry time per mode for cooldown enforcement
+  // Track when the current simulated position exits (position-aware cooldown)
+  let positionExitTs = 0;
   const lastConfirmedByMode = new Map<string, number>();
   const dedupedEntries: EntryRecord[] = [];
   for (const entry of entries) {
@@ -1329,20 +1333,28 @@ async function main() {
       if (currTs - prevTs < 1 * 60_000) {
         if (isConfirmed(entry) && !isConfirmed(prev)) {
           dedupedEntries[dedupedEntries.length - 1] = entry;
-          if (isConfirmed(entry)) lastConfirmedByMode.set(entry.signalMode, currTs);
+          if (isConfirmed(entry)) {
+            lastConfirmedByMode.set(entry.signalMode, currTs);
+            positionExitTs = currTs + entry.sim.holdMinutes * 60_000;
+          }
         }
         continue;
       }
     }
-    // Cooldown enforcement: skip confirmed entries within cooldown of last confirmed
-    // entry of the same mode. Blocked entries pass through (they're not real entries).
+    // Position-aware cooldown: skip entries while a simulated position is still open.
+    // Matches live behavior where OrderAgent owns the position lifecycle.
+    if (isConfirmed(entry) && positionExitTs > 0 && currTs < positionExitTs) {
+      continue; // position still open — live would send CONFIRM_HOLD, not NEW_ENTRY
+    }
+    // Fallback: mode-based cooldown when no position is active
     if (isConfirmed(entry)) {
       const lastTs = lastConfirmedByMode.get(entry.signalMode) ?? 0;
       const cooldown = cooldownByMode[entry.signalMode] ?? 0;
       if (cooldown > 0 && lastTs > 0 && currTs - lastTs < cooldown) {
-        continue; // skip — within cooldown of previous confirmed entry
+        continue;
       }
       lastConfirmedByMode.set(entry.signalMode, currTs);
+      positionExitTs = currTs + entry.sim.holdMinutes * 60_000;
     }
     dedupedEntries.push(entry);
   }
