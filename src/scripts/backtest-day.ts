@@ -727,8 +727,11 @@ async function main() {
     };
     // Use live strategy's adjustConfidence — same code that runs in production
     let cb = LIVE_TICKER_CFG.strategy.adjustConfidence(cbRaw, entryCtx);
+    // Update entryCtx.confidence after adjustConfidence (matches live analysis-agent.ts line 2166)
+    entryCtx.confidence = cb.total;
+    entryCtx.breakdown = cb;
 
-    // ── Trend persistence bonus (mirrors live AnalysisAgent logic) ─────────────
+    // ── Trend persistence bonus (mirrors live AnalysisAgent logic) ──────��──────
     // Count consecutive same-direction aligned signals from history, apply +0.03/bar (cap +0.06)
     // Only for trend/breakout modes — range/vwap_reversion are mean-reversion, not trend continuation.
     // Require structure support (structureBonus > 0) — persistence can overcome additive penalties
@@ -1810,26 +1813,36 @@ async function main() {
         }
       }
 
-      // Check if a confirmed entry covers this move
+      // Check if a confirmed entry covers this move.
+      // An entry "catches" a move if it occurs between the move start and peak time
+      // (i.e., the entry happened while the move was still running).
+      // Also allow entries up to 5 min before the move start (early entry).
+      const mvPeakTs = new Date(mv.peakTime).getTime();
       const caughtByEntry = confirmedEntries.some(e => {
         const eTs = new Date(e.time).getTime();
-        return Math.abs(eTs - mvTs) <= 5 * 60_000 && e.direction === mv.direction;
+        return e.direction === mv.direction && eTs >= mvTs - 5 * 60_000 && eTs <= mvPeakTs;
       });
 
       if (caughtByEntry) {
+        // Find the earliest matching entry to report delay
+        const matchingEntry = confirmedEntries
+          .filter(e => e.direction === mv.direction && new Date(e.time).getTime() >= mvTs - 5 * 60_000 && new Date(e.time).getTime() <= mvPeakTs)
+          .sort((a, b) => new Date(a.time).getTime() - new Date(b.time).getTime())[0];
+        const entryDelay = matchingEntry ? Math.round((new Date(matchingEntry.time).getTime() - mvTs) / 60_000) : 0;
         awareness.push({
           move: mv, status: 'CAUGHT',
           systemDirection: tick?.direction ?? null,
-          systemConf: tick?.confidence ?? null,
+          systemConf: matchingEntry?.confidence ?? tick?.confidence ?? null,
           systemMode: tick?.signalMode ?? null,
+          filterRule: matchingEntry ? `entry@${utcToET(matchingEntry.time)} delay=${entryDelay}m` : undefined,
         });
         continue;
       }
 
-      // Check if filter-blocked
+      // Check if filter-blocked (signal existed during the move but was blocked by a filter)
       const filteredMatch = filterBlockedEntries.find(fb => {
         const fbTs = new Date(fb.time).getTime();
-        return Math.abs(fbTs - mvTs) <= 5 * 60_000 && fb.direction === mv.direction;
+        return fb.direction === mv.direction && fbTs >= mvTs - 5 * 60_000 && fbTs <= mvPeakTs;
       });
       if (filteredMatch) {
         awareness.push({
@@ -1842,10 +1855,10 @@ async function main() {
         continue;
       }
 
-      // Check if blocked by confirmation gate
+      // Check if blocked by confirmation gate (signal existed during move but gate blocked)
       const gateBlocked = blockedEntries.some(e => {
         const eTs = new Date(e.time).getTime();
-        return Math.abs(eTs - mvTs) <= 5 * 60_000 && e.direction === mv.direction;
+        return e.direction === mv.direction && eTs >= mvTs - 5 * 60_000 && eTs <= mvPeakTs;
       });
       if (gateBlocked) {
         awareness.push({
@@ -1896,7 +1909,7 @@ async function main() {
       const mfeOverMae = mv.maePct > 0.01 ? (mv.mfePct / mv.maePct).toFixed(1) : '∞';
       let statusLabel = '';
       switch (a.status) {
-        case 'CAUGHT': statusLabel = '✅ CAUGHT'; break;
+        case 'CAUGHT': statusLabel = `✅ CAUGHT${a.filterRule ? ` (${a.filterRule})` : ''}`; break;
         case 'LOW_CONFIDENCE': statusLabel = `❌ low conf (${((a.systemConf ?? 0) * 100).toFixed(0)}%)`; break;
         case 'WRONG_DIRECTION': statusLabel = `❌ wrong dir`; break;
         case 'NO_SIGNAL': statusLabel = '❌ no signal'; break;

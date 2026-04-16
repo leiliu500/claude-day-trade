@@ -255,9 +255,16 @@ function spyShouldAllowEntry(ctx: EntryContext): true | string {
   // → 4F+1D, all DECLINING_SINCE_FILL. rExh >= 8.0 alone is too broad (blocks
   // strong trending days where dvel is still high). Adding dvel < 0.05 ensures we
   // only block entries where the move has genuinely stalled.
+  //
+  // All-aligned bypass: when all timeframes confirm the direction, the trend is
+  // genuinely continuing despite high exhaustion + low velocity — this is a smooth
+  // grind, not a stalled move. Apr 15: this filter blocked 2 B-grade entries at
+  // 14:14 and 14:23 (all_aligned) on a steady grind-up day worth 0.27% MFE each.
+  // Apr 9 F-grade entries were mixed alignment — still blocked.
   if (signalMode === 'trend'
       && ctx.rangeExhaustion !== undefined && ctx.rangeExhaustion >= 8.0
-      && ctx.displacementVelocity !== undefined && ctx.displacementVelocity < 0.04) return `trend exhausted+fading rExh=${ctx.rangeExhaustion.toFixed(1)} dvel=${ctx.displacementVelocity.toFixed(4)} (stalled)`;
+      && ctx.displacementVelocity !== undefined && ctx.displacementVelocity < 0.04
+      && ctx.alignment !== 'all_aligned') return `trend exhausted+fading rExh=${ctx.rangeExhaustion.toFixed(1)} dvel=${ctx.displacementVelocity.toFixed(4)} (stalled)`;
 
   // bullish rangeExhaustion >= 6.0 removed for trends: Q1 counterfactual net costly —
   // exhausted+choppy (chop >= 2.0) now handles the high-risk cases
