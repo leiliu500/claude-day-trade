@@ -1152,10 +1152,16 @@ export class OrderAgent {
         return;
       }
     }
-    // Last resort for any profitable position turning negative — exit immediately at breakeven
-    if (this.peakPnlPct >= 1.0 && pnlPct <= 0 && (this.tickCount >= 4 || this.peakPnlPct >= 5)) {
-      await this._executeExit(`PROFIT_REVERSED [stream]: peak=+${this.peakPnlPct.toFixed(1)}%, now=${pnlPct.toFixed(1)}% — exiting at breakeven`);
-      return;
+    // Last resort for any profitable position turning negative — exit immediately at breakeven.
+    // Deep ITM options have tiny % moves, so a 1% peak is bid-ask noise — raise threshold
+    // to 3%. ATM/OTM options keep the original 1% threshold since % moves are meaningful.
+    {
+      const absDelta = Math.abs(this.cfg.candidate.contract.delta ?? 0.5);
+      const peakFloor = absDelta >= 0.75 ? 3.0 : 1.0;
+      if (this.peakPnlPct >= peakFloor && pnlPct <= 0 && (this.tickCount >= 4 || this.peakPnlPct >= 5)) {
+        await this._executeExit(`PROFIT_REVERSED [stream]: peak=+${this.peakPnlPct.toFixed(1)}%, now=${pnlPct.toFixed(1)}% — exiting at breakeven`);
+        return;
+      }
     }
     if (pnlPct <= -10 && this.tickCount >= 9) {
       await this._executeExit(`PRE_EMPTIVE_LOSS [stream]: pnl=${pnlPct.toFixed(1)}%`);
@@ -1217,11 +1223,38 @@ export class OrderAgent {
     // Declining since fill: price has dropped on every stream tick since fill AND never reached +1%.
     // Catches the pattern where price slowly slides from fill without ever truly confirming,
     // eventually leading to a velocity crash. A brief wick to +0.5% doesn't count as confirmation.
-    // Exits at 3 consecutive stream declines (~15s) before the crash materializes.
-    // Minimum -1% loss to avoid triggering on fill-bar noise.
-    if (this.peakPnlPct < 1.0 && pnlPct <= -1.0 && this.streamConsecutiveDeclines >= 3 && this.tickCount >= 2) {
-      await this._executeExit(`DECLINING_SINCE_FILL [stream]: peak=+${this.peakPnlPct.toFixed(1)}%, now=${pnlPct.toFixed(1)}%, ${this.streamConsecutiveDeclines} consecutive stream drops — never confirmed, cutting`);
-      return;
+    //
+    // Thresholds scale by delta (moneyness proxy). Deep ITM options (high delta) have
+    // tiny percentage moves per underlying tick — bid-ask noise easily creates 3+
+    // consecutive drops. Near-ATM/OTM options (lower delta) move faster in % terms.
+    //   Deep ITM (|delta| >= 0.75): require -2% decline, 10+ drops (~50s), tickCount >= 6
+    //   Mid ITM  (|delta| 0.55-0.75): require -1.5% decline, 6+ drops (~30s), tickCount >= 4
+    //   ATM/OTM  (|delta| < 0.55): require -1% decline, 4+ drops (~20s), tickCount >= 3
+    {
+      const absDelta = Math.abs(this.cfg.candidate.contract.delta ?? 0.5);
+      let declineThreshold: number;
+      let dropsRequired: number;
+      let ticksRequired: number;
+      if (absDelta >= 0.75) {
+        // Deep ITM: tiny percentage moves, bid-ask noise dominates
+        declineThreshold = -2.0;
+        dropsRequired = 10;
+        ticksRequired = 6;
+      } else if (absDelta >= 0.55) {
+        // Mid ITM: moderate leverage
+        declineThreshold = -1.5;
+        dropsRequired = 6;
+        ticksRequired = 4;
+      } else {
+        // ATM/OTM: fast percentage moves, still looser than old 3-drop/2-tick
+        declineThreshold = -1.0;
+        dropsRequired = 4;
+        ticksRequired = 3;
+      }
+      if (this.peakPnlPct < 1.0 && pnlPct <= declineThreshold && this.streamConsecutiveDeclines >= dropsRequired && this.tickCount >= ticksRequired) {
+        await this._executeExit(`DECLINING_SINCE_FILL [stream]: peak=+${this.peakPnlPct.toFixed(1)}%, now=${pnlPct.toFixed(1)}%, ${this.streamConsecutiveDeclines} consecutive stream drops (|delta|=${absDelta.toFixed(2)}, need ${dropsRequired} drops) — never confirmed, cutting`);
+        return;
+      }
     }
 
     // Never confirmed: position never went positive within first 3 stream ticks (~30s) and already -1.5%.
