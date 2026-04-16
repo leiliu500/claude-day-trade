@@ -1275,25 +1275,43 @@ async function main() {
   console.log(`  RESULTS: ${tickCount} ticks processed, ${entries.length} potential entries found`);
   console.log(`${'='.repeat(80)}\n`);
 
-  // Deduplicate consecutive entries (same direction within 1 min = same signal).
-  // Live pipeline triggers on every 1-min stream bar and can enter every 2 minutes
-  // (STAGE-1 → NEW_ENTRY pattern). Use 1-min window to avoid same-bar duplicates
-  // while allowing the rapid re-entry that matches live behavior.
-  // Within each window, prefer confirmed entries over blocked ones.
+  // Deduplicate and enforce cooldowns — matches live system behavior.
+  // Live scheduler runs every ~3 min, so entries < 3 min apart can't happen in production.
+  // Within a cooldown window: keep the first confirmed entry, skip duplicates.
+  // Between modes: each mode has its own cooldown timer (trend=3m, range=20m, breakout=30m).
   const isConfirmed = (e: EntryRecord) => e.gateResult === 'PASSED' || e.gateResult === 'HIGH_CONV_OVERRIDE' || e.gateResult === 'PHASE_CHANGE_OVERRIDE';
+  const cooldownByMode: Record<string, number> = {
+    trend: TREND_COOLDOWN_MIN * 60_000,
+    range: RANGE_COOLDOWN_MIN * 60_000,
+    breakout: BREAKOUT_COOLDOWN_MIN * 60_000,
+    vwap_reversion: RANGE_COOLDOWN_MIN * 60_000,
+  };
+  // Track last confirmed entry time per mode for cooldown enforcement
+  const lastConfirmedByMode = new Map<string, number>();
   const dedupedEntries: EntryRecord[] = [];
   for (const entry of entries) {
+    const currTs = new Date(entry.time).getTime();
+    // Same-bar dedup: within 1 min of previous entry with same direction, keep best
     const prev = dedupedEntries[dedupedEntries.length - 1];
     if (prev && prev.direction === entry.direction) {
       const prevTs = new Date(prev.time).getTime();
-      const currTs = new Date(entry.time).getTime();
       if (currTs - prevTs < 1 * 60_000) {
-        // Within same window: upgrade if current is confirmed but prev was blocked
         if (isConfirmed(entry) && !isConfirmed(prev)) {
           dedupedEntries[dedupedEntries.length - 1] = entry;
+          if (isConfirmed(entry)) lastConfirmedByMode.set(entry.signalMode, currTs);
         }
         continue;
       }
+    }
+    // Cooldown enforcement: skip confirmed entries within cooldown of last confirmed
+    // entry of the same mode. Blocked entries pass through (they're not real entries).
+    if (isConfirmed(entry)) {
+      const lastTs = lastConfirmedByMode.get(entry.signalMode) ?? 0;
+      const cooldown = cooldownByMode[entry.signalMode] ?? 0;
+      if (cooldown > 0 && lastTs > 0 && currTs - lastTs < cooldown) {
+        continue; // skip — within cooldown of previous confirmed entry
+      }
+      lastConfirmedByMode.set(entry.signalMode, currTs);
     }
     dedupedEntries.push(entry);
   }
