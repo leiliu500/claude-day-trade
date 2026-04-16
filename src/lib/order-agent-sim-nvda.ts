@@ -64,11 +64,6 @@ export function simulateOrderAgentNvda(
     const bestPremium = entryPremium + bestUnderlying * delta;
     const worstPremium = entryPremium + worstUnderlying * delta;
 
-    if (i === 0 && currentPnl < -1.5) {
-      const earlyExitPremium = entryPremium + (currentPremium - entryPremium) * 0.35;
-      return mkResult(0, 'EARLY_EXIT', earlyExitPremium);
-    }
-
     if (i < 3 && peakPnlPct_ < 3) {
       const checkPrice = i === 0 ? currentPremium : worstPremium;
       if (checkPrice <= currentStop) {

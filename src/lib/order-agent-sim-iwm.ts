@@ -67,12 +67,6 @@ export function simulateOrderAgentIwm(
     const bestPremium = entryPremium + bestUnderlying * delta;
     const worstPremium = entryPremium + worstUnderlying * delta;
 
-    // Bar-0 early exit on adverse moves (same as SPY)
-    if (i === 0 && currentPnl < -1.5) {
-      const earlyExitPremium = entryPremium + (currentPremium - entryPremium) * 0.35;
-      return mkResult(0, 'EARLY_EXIT', earlyExitPremium);
-    }
-
     // Rule 1: Initial hard stop (first 3 bars)
     if (i < 3 && peakPnlPct_ < 3) {
       const checkPrice = i === 0 ? currentPremium : worstPremium;

@@ -15,12 +15,7 @@
  *   2. Trailing stop floor: stop = max(atrStop, entry*0.87), matching the live
  *      option-agent's trailing stop floor. The shared sim omits this.
  *
- *   3. Bar-0 early exit on adverse moves: the live order-agent polls option quotes
- *      every 5 seconds. On bar 0, if the bar closes adverse (stock reversed from
- *      entry), the live system would have exited partway through the bar — not at
- *      the full close loss. We model this by exiting at 35% of the decline.
- *
- *   4. Dynamic delta simulation: delta shifts with underlying move via gamma.
+ *   3. Dynamic delta simulation: delta shifts with underlying move via gamma.
  *      Entry delta configurable (0.30–0.50), gamma models delta acceleration.
  *      Theta decay erodes premium over hold time.
  */
@@ -151,12 +146,6 @@ export function simulateOrderAgentSpy(
         underlying: bar.close, premium: currentPremium,
         pnlPct: currentPnl, delta: currentDelta, stop: currentStop,
       });
-    }
-
-    // ── SPY Bar-0 early exit on adverse close ───────────────────────────────
-    if (i === 0 && currentPnl < -1.5) {
-      const earlyExitPremium = entryPremium + (currentPremium - entryPremium) * 0.35;
-      return mkResult(0, 'EARLY_EXIT', earlyExitPremium);
     }
 
     // ── Rule 1: Initial hard stop (first 3 bars) ──

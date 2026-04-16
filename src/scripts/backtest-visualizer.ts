@@ -354,7 +354,7 @@ function fmtDollar(v) { return '$' + v.toFixed(2); }
     // Exit marker — circle
     if (e.sim) {
       const exitColor = e.sim.exitReason === 'TP' ? '#d2a8ff'
-        : ['STOP', 'BAD_ENTRY', 'PRE_EMPTIVE', 'RAPID_DECLINE', 'EARLY_EXIT'].includes(e.sim.exitReason) ? '#f0883e'
+        : ['STOP', 'BAD_ENTRY', 'PRE_EMPTIVE', 'RAPID_DECLINE'].includes(e.sim.exitReason) ? '#f0883e'
         : '#8b949e';
       ctx.beginPath(); ctx.arc(exx, exy, 5, 0, Math.PI * 2); ctx.closePath();
       ctx.fillStyle = exitColor; ctx.fill();
