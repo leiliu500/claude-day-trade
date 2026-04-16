@@ -125,7 +125,7 @@ export const DEFAULT_BT_CONFIG: TickerBacktestConfig = {
   trendStrongSignalMinConf: 0.75,
   entryWindowStartMin: 0,
   entryWindowEndMin: 390,
-  trendCooldownMin: 3,  // 3 min = matches live scheduler cycle (live has no explicit cooldown but runs every 3 min)
+  trendCooldownMin: 0,  // no cooldown — live runs every 1 min via stream data feed
   shouldAllowEntry: () => true,
   adjustConfidence: (cb) => cb,
   simulate: simulateOrderAgent,
