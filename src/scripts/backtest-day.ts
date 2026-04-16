@@ -878,8 +878,15 @@ async function main() {
       // Walk 1m bar OPENS only — opens are the first price in each bar,
       // so the sequence is unambiguous (unlike high/low within a bar).
       // Grade is based on how much favorable move is reached BEFORE the
-      // adverse move hits the stop threshold (ATR-based).
-      const stopThresholdPct = (atr / currentPrice) * 100 * 0.40; // 40% of ATR as stop
+      // adverse move hits the stop threshold.
+      //
+      // Stop = 1.0x ATR as stock-price stop. This matches the live order-agent's
+      // effective stop: 13% trailing floor on option premium with ~0.40 delta
+      // → ~$0.975 stock move on a $3 SPY option → ~0.14% on $696 SPY.
+      // At ATR=$0.65, 1.0x ATR = 0.093% which is close to the live stop.
+      // Previous 0.40x ATR (0.037%) was too tight — normal 1-min noise triggered
+      // stops on every entry, grading everything as F even when direction was correct.
+      const stopThresholdPct = (atr / currentPrice) * 100 * 1.0; // 1.0x ATR as stop
       let seqMfePct = 0;   // running max favorable excursion (%)
       let seqMaePct = 0;   // running max adverse excursion (%)
       let stoppedOut = false;
