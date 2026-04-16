@@ -305,7 +305,7 @@ async function main() {
   console.log(`\n${'='.repeat(80)}`);
   console.log(`  BACKTEST: ${TICKER} on ${TARGET_DATE} (Profile: ${PROFILE}, Threshold: ${MIN_CONFIDENCE}${USE_AI ? ', AI ORCHESTRATOR' : ', deterministic'}${USE_TOPO ? ', TOPOLOGY GATE' : ''})`);
   console.log(`  Walking market hours ${MARKET_OPEN_UTC}–${MARKET_CLOSE_UTC} UTC in 1-min intervals`);
-  console.log(`  ⚠ No order flow data — live confidence may differ by ±25% (orderFlowBonus unavailable in backtest)`);
+  console.log(`  📊 Order flow: replayed from live DB snapshots when available`);
   console.log(`${'='.repeat(80)}\n`);
 
   // ── Step 1: Fetch historical bars ──────────────────────────────────────────
@@ -361,6 +361,36 @@ async function main() {
     ? recentDailyBars.reduce((s, b) => s + (b.high - b.low) / b.close * 100, 0) / recentDailyBars.length
     : 0;
   console.log(`  Recent daily volatility: ${avgDailyRangePct.toFixed(2)}% avg range (${recentDailyBars.length} days)\n`);
+
+  // ── Load historical order flow from live signal snapshots (if available) ──
+  // Replays the exact order flow data the live system used, keyed by minute.
+  // Falls back to no-flow when snapshots aren't available for this date.
+  const orderFlowByMinute = new Map<string, import('../types/indicators.js').OrderFlowResult>();
+  try {
+    const { getPool } = await import('../db/client.js');
+    const pool = getPool();
+    const { rows } = await pool.query<{ created_at: string; order_flow: unknown }>(
+      `SELECT created_at, signal_payload->'orderFlow' as order_flow
+       FROM trading.signal_snapshots
+       WHERE trade_date = $1 AND ticker = $2 AND signal_payload->'orderFlow' IS NOT NULL
+       ORDER BY created_at`,
+      [TARGET_DATE, TICKER]
+    );
+    for (const row of rows) {
+      if (!row.order_flow) continue;
+      // Key by HH:MM UTC for minute-level lookup
+      const minuteKey = new Date(row.created_at).toISOString().slice(11, 16);
+      orderFlowByMinute.set(minuteKey, row.order_flow as import('../types/indicators.js').OrderFlowResult);
+    }
+    if (orderFlowByMinute.size > 0) {
+      console.log(`  📊 Loaded ${orderFlowByMinute.size} order flow snapshots from live DB`);
+    } else {
+      console.log(`  ⚠ No order flow snapshots found for ${TARGET_DATE} — orderFlowBonus will be 0`);
+    }
+    await (await import('../db/client.js')).closePool();
+  } catch {
+    console.log(`  ⚠ Could not load order flow from DB — orderFlowBonus will be 0`);
+  }
 
   // ── Step 2: Walk through market hours in 1-min intervals ──────────────────
   const entries: EntryRecord[] = [];
@@ -588,6 +618,7 @@ async function main() {
       reversalOverride: reversalOverride || undefined,
       leadingSignalOverride: leadingSignalOverride || undefined,
       triggeredBy: 'AUTO', createdAt: timeStr,
+      orderFlow: orderFlowByMinute.get(timeStr.slice(11, 16)) ?? undefined,
     };
 
     // ── Mode detection (parallel range + breakout) ────────────────────────────
