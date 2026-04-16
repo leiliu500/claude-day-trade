@@ -300,16 +300,27 @@ export class OptionAgent {
       if (contract.mid - stopDist <= 0) rrRatio = 0;
     }
 
+    // Leverage penalty: deep ITM options have high premium but low percentage moves,
+    // making them poor day-trading candidates. Measure leverage as expected TP move
+    // relative to premium paid — near-ATM options score much higher.
+    // A $0.80 option with $0.40 expected move = 50% leverage; a $9.30 option with
+    // $0.72 expected move = 7.7% leverage. Penalize low-leverage contracts heavily.
+    const tpMove = tpMult * optionAtr;
+    const leveragePct = contract.mid > 0 ? (tpMove / contract.mid) * 100 : 0;
+    // Scale: 0-100 rank. Near-ATM with 30%+ leverage gets full marks; deep ITM <10% gets near-zero.
+    const leverageRank = Math.min(Math.round(leveragePct * 3), 100);
+
     // Rank scores (lower raw value = higher rank score for spread/OI)
     const rrRank = Math.min(Math.round(rrRatio * 100), 9999);
     const spreadRank = Math.max(0, 100 - Math.round(contract.spreadPct * 10));
     const oiRank = Math.min(contract.openInterest, 9999);
 
-    // Lexicographic composite score
+    // Lexicographic composite score — leverage outweighs R:R and liquidity subcomponents
     const totalScore =
       (passesFilter ? 1_000_000 : 0) +
       (liquidityOk ? 100_000 : 0) +
       (sideMatchOk ? 10_000 : 0) +
+      leverageRank * 100 +   // 0-10,000: dominates R:R/spread/OI within same tier
       rrRank +
       spreadRank +
       oiRank;
