@@ -305,6 +305,7 @@ async function main() {
   console.log(`\n${'='.repeat(80)}`);
   console.log(`  BACKTEST: ${TICKER} on ${TARGET_DATE} (Profile: ${PROFILE}, Threshold: ${MIN_CONFIDENCE}${USE_AI ? ', AI ORCHESTRATOR' : ', deterministic'}${USE_TOPO ? ', TOPOLOGY GATE' : ''})`);
   console.log(`  Walking market hours ${MARKET_OPEN_UTC}–${MARKET_CLOSE_UTC} UTC in 1-min intervals`);
+  console.log(`  ⚠ No order flow data — live confidence may differ by ±25% (orderFlowBonus unavailable in backtest)`);
   console.log(`${'='.repeat(80)}\n`);
 
   // ── Step 1: Fetch historical bars ──────────────────────────────────────────
@@ -1441,30 +1442,39 @@ async function main() {
     const deltaInfo = e.sim.entryDelta != null ? ` | Delta: ${e.sim.entryDelta.toFixed(2)}` : '';
     const premInfo = e.sim.entryPremium != null ? ` | Prem: $${e.sim.entryPremium.toFixed(2)}→$${(e.sim.exitPremium ?? 0).toFixed(2)}` : '';
     console.log(`    Sim (approx): ${simIcon} P&L ${e.sim.pnlPct >= 0 ? '+' : ''}${e.sim.pnlPct.toFixed(1)}% | Exit: ${simExitTag} after ${e.sim.holdMinutes}m | Peak: +${e.sim.peakPnlPct.toFixed(1)}% | DD: -${e.sim.maxDrawdownPct.toFixed(1)}%${deltaInfo}${premInfo}`);
-    // Top confidence factors
+    // All confidence factors (matches live analysis-agent.ts 29-factor breakdown)
     const cb = e.breakdown;
     const factors = [
       { name: 'DI Spread', val: cb.diSpreadBonus },
       { name: 'ADX', val: cb.adxBonus },
       { name: 'DI Cross', val: cb.diCrossBonus },
       { name: 'Alignment', val: cb.alignmentBonus },
+      { name: 'TD', val: cb.tdAdjustment },
       { name: 'VWAP', val: cb.vwapBonus },
       { name: 'OBV', val: cb.obvBonus },
+      { name: 'OI/Vol', val: cb.oiVolumeBonus },
       { name: 'Structure', val: cb.structureBonus },
       { name: 'ORB', val: cb.orbBonus },
       { name: 'Price Action', val: cb.recentPriceActionBonus },
       { name: 'Trend Phase', val: cb.trendPhaseBonus },
       { name: 'Momentum', val: cb.momentumAccelBonus },
+      { name: 'PricePos', val: cb.pricePositionAdjustment },
       { name: 'ADX Maturity', val: cb.adxMaturityPenalty },
       { name: 'TR Contract', val: cb.trContractionPenalty },
       { name: 'Low Vol', val: cb.lowVolPenalty },
       { name: 'Exhaustion', val: cb.moveExhaustionPenalty },
       { name: 'Consolidation', val: cb.consolidationPenalty },
       { name: 'Near Level', val: cb.nearLevelPenalty },
+      { name: 'Theta', val: cb.thetaDecayPenalty },
       { name: 'Narrow Range', val: cb.narrowRangePenalty },
+      { name: 'Candle', val: cb.candlePatternBonus },
+      { name: 'PriceVel', val: cb.priceVelocityBonus },
+      { name: 'VolSurge', val: cb.volumeSurgeBonus },
       { name: 'MACD', val: cb.macdBonus },
       { name: 'Conv/Div', val: cb.convergenceDurationBonus },
-    ].filter(f => Math.abs(f.val) >= 0.01);
+      { name: 'OrderFlow', val: cb.orderFlowBonus },
+      { name: 'Persistence', val: cb.trendPersistenceBonus },
+    ].filter(f => Math.abs(f.val) >= 0.005);
     const factorStr = factors.map(f => `${f.name}=${f.val >= 0 ? '+' : ''}${f.val.toFixed(3)}`).join(', ');
     console.log(`    Factors:    base=0.380, ${factorStr}`);
     if (e.aiDecision) {
@@ -1550,15 +1560,20 @@ async function main() {
       const bFactors = [
         { name: 'DI Spread', val: bcb.diSpreadBonus }, { name: 'ADX', val: bcb.adxBonus },
         { name: 'DI Cross', val: bcb.diCrossBonus }, { name: 'Alignment', val: bcb.alignmentBonus },
-        { name: 'VWAP', val: bcb.vwapBonus }, { name: 'OBV', val: bcb.obvBonus },
+        { name: 'TD', val: bcb.tdAdjustment }, { name: 'VWAP', val: bcb.vwapBonus },
+        { name: 'OBV', val: bcb.obvBonus }, { name: 'OI/Vol', val: bcb.oiVolumeBonus },
         { name: 'Structure', val: bcb.structureBonus }, { name: 'ORB', val: bcb.orbBonus },
         { name: 'PA', val: bcb.recentPriceActionBonus }, { name: 'Trend', val: bcb.trendPhaseBonus },
-        { name: 'Mom', val: bcb.momentumAccelBonus }, { name: 'Maturity', val: bcb.adxMaturityPenalty },
-        { name: 'Exhaust', val: bcb.moveExhaustionPenalty }, { name: 'Consol', val: bcb.consolidationPenalty },
-        { name: 'NearLvl', val: bcb.nearLevelPenalty }, { name: 'LowVol', val: bcb.lowVolPenalty },
-        { name: 'NarrowRng', val: bcb.narrowRangePenalty },
+        { name: 'Mom', val: bcb.momentumAccelBonus }, { name: 'PricePos', val: bcb.pricePositionAdjustment },
+        { name: 'Maturity', val: bcb.adxMaturityPenalty }, { name: 'TRContract', val: bcb.trContractionPenalty },
+        { name: 'LowVol', val: bcb.lowVolPenalty }, { name: 'Exhaust', val: bcb.moveExhaustionPenalty },
+        { name: 'Consol', val: bcb.consolidationPenalty }, { name: 'NearLvl', val: bcb.nearLevelPenalty },
+        { name: 'Theta', val: bcb.thetaDecayPenalty }, { name: 'NarrowRng', val: bcb.narrowRangePenalty },
+        { name: 'Candle', val: bcb.candlePatternBonus }, { name: 'PriceVel', val: bcb.priceVelocityBonus },
+        { name: 'VolSurge', val: bcb.volumeSurgeBonus },
         { name: 'MACD', val: bcb.macdBonus }, { name: 'Conv/Div', val: bcb.convergenceDurationBonus },
-      ].filter(f => Math.abs(f.val) >= 0.01);
+        { name: 'OrderFlow', val: bcb.orderFlowBonus }, { name: 'Persist', val: bcb.trendPersistenceBonus },
+      ].filter(f => Math.abs(f.val) >= 0.005);
       const bFactorStr = bFactors.map(f => `${f.name}=${f.val >= 0 ? '+' : ''}${f.val.toFixed(3)}`).join(', ');
       console.log(`     ${blocked.timeET} ET ${blocked.direction} ${blockTag} → ${outcomeIcon} ${gradeIcon} (conf=${(blocked.confidence * 100).toFixed(1)}%, MFE=${blocked.mfePct.toFixed(2)}% MAE=${blocked.maePct.toFixed(2)}%)`);
       console.log(`       Factors: base=0.380, ${bFactorStr}`);
