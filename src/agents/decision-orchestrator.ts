@@ -430,6 +430,7 @@ export class DecisionOrchestrator {
         lastVwapRevEntryAgeMin: vwapRevEntries[0] ? (nowMs - new Date(vwapRevEntries[0].createdAt).getTime()) / 60_000 : null,
         hasRecentPhaseChangeEntry: context.recentDecisions.some(d =>
           d.decisionType === 'NEW_ENTRY' && d.direction === signal.direction && d.reasoning?.includes('[PHASE-CHANGE')),
+        trendConsolidationBreakout: analysis.trendConsolidationBreakout ?? false,
       };
 
       const gate = evaluateEntryGate(gateInput);
@@ -459,6 +460,9 @@ export class DecisionOrchestrator {
       } else if (gate.bypass === 'strong_signal') {
         rawOutput.reasoning = `[STRONG-SIGNAL BYPASS] Confidence ${(analysis.confidence * 100).toFixed(1)}% + all_aligned → immediate ${side} entry (no 2-stage wait). ${rawOutput.reasoning}`;
         console.log(`[DecisionOrchestrator] NEW_ENTRY strong-signal bypass — ${side} (priorCount=${priorCount}, confidence=${analysis.confidence.toFixed(2)}, alignment=${signal.alignment})`);
+      } else if (gate.bypass === 'trend_consolidation') {
+        rawOutput.reasoning = `[TREND-CONSOL BYPASS] Consolidation breakout ${side} + all_aligned → immediate entry (conf=${(analysis.confidence * 100).toFixed(1)}%). ${rawOutput.reasoning}`;
+        console.log(`[DecisionOrchestrator] NEW_ENTRY trend-consolidation bypass — ${side} (priorCount=${priorCount}, confidence=${analysis.confidence.toFixed(2)}, alignment=${signal.alignment})`);
       } else if (gate.result === 'PHASE_CHANGE_OVERRIDE') {
         isPhaseChangeOverride = true;
         rawOutput.reasoning = `[PHASE-CHANGE OVERRIDE] HTF DI cross ${signal.direction} + rising ADX → immediate ${side} entry (no 2-stage wait). ${rawOutput.reasoning}`;

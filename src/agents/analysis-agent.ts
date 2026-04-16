@@ -2131,6 +2131,7 @@ export class AnalysisAgent {
     let displacementVelocity: number | undefined;
     let rangeExhaustion: number | undefined;
     let choppiness: number | undefined;
+    let trendConsolidationBreakout: boolean | undefined;
     {
       const ltfBars = signal.timeframes[0]?.bars;
       const htfAtr = (signal.timeframes[2] ?? signal.timeframes[0])?.atr.atr ?? 0;
@@ -2142,6 +2143,7 @@ export class AnalysisAgent {
           displacementVelocity = metrics.displacementVelocity;
           rangeExhaustion = metrics.rangeExhaustion;
           choppiness = metrics.choppiness;
+          trendConsolidationBreakout = metrics.trendConsolidationBreakout;
         }
       }
     }
@@ -2158,6 +2160,7 @@ export class AnalysisAgent {
       displacementVelocity,
       rangeExhaustion,
       choppiness,
+      trendConsolidationBreakout,
     };
 
     // Per-symbol confidence adjustment hook
@@ -2353,6 +2356,7 @@ export class AnalysisAgent {
       risks,
       desiredRight,
       rangeExhaustion,
+      trendConsolidationBreakout,
       createdAt: new Date().toISOString(),
     };
   }

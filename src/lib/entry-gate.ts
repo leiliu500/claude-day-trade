@@ -22,6 +22,7 @@ export type GateBypassType =
   | 'high_conviction'
   | 'phase_change'
   | 'strong_signal'
+  | 'trend_consolidation'
   | 'range'
   | 'breakout'
   | 'vwap_reversion'
@@ -81,6 +82,8 @@ export interface GateInput {
   vwapRevEntryCount: number;
   lastVwapRevEntryAgeMin: number | null;
   hasRecentPhaseChangeEntry: boolean;
+  /** True when LTF bars show a tight consolidation breakout in signal direction. */
+  trendConsolidationBreakout: boolean;
 }
 
 // ── Gate evaluation ─────────────────────────────────────────────────────────
@@ -95,6 +98,7 @@ export function evaluateEntryGate(input: GateInput): GateDecision {
     breakoutEntryCount, lastBreakoutEntryAgeMin,
     vwapRevEntryCount, lastVwapRevEntryAgeMin,
     hasRecentPhaseChangeEntry,
+    trendConsolidationBreakout,
   } = input;
 
   // ── High-conviction override ──
@@ -164,6 +168,21 @@ export function evaluateEntryGate(input: GateInput): GateDecision {
     && confidence >= 0.75 && alignment === 'all_aligned'
     && recentPriceActionBonus >= 0;
 
+  // ── Trend consolidation breakout bypass ──
+  // Price broke out of a tight consolidation within an established trend.
+  // This is a "bull flag" / "bear flag" continuation pattern — the consolidation
+  // IS the confirmation. Lower confidence bar (0.60) since the pattern itself
+  // provides structural confirmation that the 2-stage gate normally requires.
+  // Apr 16 SPY: 15-min consolidation at $699.65-$700.11, broke out at 11:00,
+  // but system couldn't enter until 11:22 because confidence was 61-66% (below
+  // the 0.75 strong-signal bar) and the entry gate blocked at Stage-1.
+  const trendConsolBypass = !highConvOverride && !phaseChangeOk && !strongSignalBypass
+    && priorCount < 1
+    && signalMode === 'trend'
+    && alignment === 'all_aligned'
+    && trendConsolidationBreakout
+    && confidence >= 0.60;
+
   // ── Range bypass ──
   let rangeBypass = false;
   if (signalMode === 'range' && priorCount < 1) {
@@ -206,7 +225,7 @@ export function evaluateEntryGate(input: GateInput): GateDecision {
   // Daily risk budget is enforced downstream in safety-gates (DAILY_RISK_BUDGET_GATE)
   // where the proposed cost is known, instead of a hard entry-count cap here.
   const anyBypass = highConvOverride || phaseChangeOk || strongSignalBypass ||
-    rangeBypass || breakoutBypass || vwapRevBypass;
+    trendConsolBypass || rangeBypass || breakoutBypass || vwapRevBypass;
 
   if (!anyBypass && priorCount < 1) {
     return { result: 'STAGE1_OBSERVE', bypass: null, phaseChangeTimingRejected, phaseChangeTimingRejectReason };
@@ -224,6 +243,9 @@ export function evaluateEntryGate(input: GateInput): GateDecision {
   }
   if (strongSignalBypass) {
     return { result: 'PASSED', bypass: 'strong_signal', phaseChangeTimingRejected, phaseChangeTimingRejectReason };
+  }
+  if (trendConsolBypass) {
+    return { result: 'PASSED', bypass: 'trend_consolidation', phaseChangeTimingRejected, phaseChangeTimingRejectReason };
   }
   if (phaseChangeOk && priorCount < 1 && !highConvOverride) {
     return { result: 'PHASE_CHANGE_OVERRIDE', bypass: 'phase_change', phaseChangeTimingRejected, phaseChangeTimingRejectReason };

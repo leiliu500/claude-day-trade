@@ -39,7 +39,7 @@ import type { TopologySignal } from '../topology/types.js';
 // ── Config ────────────────────────────────────────────────────────────────────
 
 const USE_AI = process.argv.includes('--ai');
-const USE_TOPO = process.argv.includes('--topo');
+const USE_TOPO = !process.argv.includes('--no-topo'); // enabled by default, matching live
 const JSON_OUTPUT = process.argv.includes('--json');
 const HTML_OUTPUT = process.argv.includes('--html');
 const TARGET_DATE = process.argv.filter(a => !a.startsWith('--'))[2] || '2026-03-18';
@@ -691,6 +691,7 @@ async function main() {
     const displacementVelocity = entryMetrics?.displacementVelocity ?? 0;
     const rangeExhaustion = entryMetrics?.rangeExhaustion ?? 0;
     const choppiness = entryMetrics?.choppiness ?? 0;
+    const trendConsolidationBreakout = entryMetrics?.trendConsolidationBreakout ?? false;
     const minutesSinceOpen = (currentTs - openTime.getTime()) / 60_000;
 
     // Intraday trend tracking: consecutive directional closes
@@ -750,7 +751,7 @@ async function main() {
     const entryCtx = {
       signalMode, direction, alignment, confidence: cbRaw.total,
       breakdown: cbRaw, strengthScore, currentPrice, atr,
-      rangeExhaustion, displacementVelocity, choppiness,
+      rangeExhaustion, displacementVelocity, choppiness, trendConsolidationBreakout,
       intradayTrendStrength, regimeScore, dailyEntryCount,
       minutesSinceOpen: (currentTs - openTime.getTime()) / 60_000,
       ltfBars,
@@ -1232,6 +1233,7 @@ async function main() {
           lastVwapRevEntryAgeMin: lastVwapRevEntryTs === 0 ? null : (currentTs - lastVwapRevEntryTs) / 60_000,
           // Risk budget checked outside the gate (below), matching live safety-gates approach.
           hasRecentPhaseChangeEntry: false, // backtest doesn't track phase-change history
+          trendConsolidationBreakout,
         };
 
         const gate = evaluateEntryGate(gateInput);

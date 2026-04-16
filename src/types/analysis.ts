@@ -56,5 +56,7 @@ export interface AnalysisResult {
   risks: string[];
   desiredRight: 'call' | 'put' | null;
   rangeExhaustion?: number;        // (dayHigh - dayLow) / htfATR — how much of daily range is consumed
+  /** True when LTF bars show a tight consolidation breakout in signal direction. */
+  trendConsolidationBreakout?: boolean;
   createdAt: string;
 }

@@ -39,6 +39,10 @@ export interface EntryContext {
   /** Direction flip frequency in recent LTF bars (0 = perfectly smooth, >1 = choppy).
    *  Computed as (actual flips) / (expected flips at random = barCount / 4). */
   choppiness?: number;
+  /** True when recent LTF bars form a tight consolidation (range < 0.4% of price
+   *  over 10+ bars) that price is now breaking out of in the signal direction.
+   *  Detects "bull flag" / "bear flag" continuation patterns within established trends. */
+  trendConsolidationBreakout?: boolean;
 }
 
 // ── Mode detection result ────────────────────────────────────────────────────

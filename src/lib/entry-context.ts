@@ -13,6 +13,8 @@ export interface EntryMetrics {
   displacementVelocity: number;
   rangeExhaustion: number;
   choppiness: number;
+  /** True when last 10+ bars form a tight consolidation that the current bar breaks out of. */
+  trendConsolidationBreakout: boolean;
 }
 
 /**
@@ -70,5 +72,29 @@ export function computeEntryMetrics(
     choppiness = flips / Math.max(1, recent.length / 4);
   }
 
-  return { displacementVelocity, rangeExhaustion, choppiness };
+  // ── Trend consolidation breakout ──
+  // Detects "bull flag" / "bear flag": tight range for 10+ bars, then price breaks out.
+  // Look at bars [-15..-2] for the consolidation range, then check if bar [-1]
+  // (current) breaks above/below that range.
+  let trendConsolidationBreakout = false;
+  if (todayBars.length >= 15) {
+    const consolBars = todayBars.slice(-15, -1); // 14 bars for range
+    const currentBar = todayBars[todayBars.length - 1]!;
+    let consolHigh = -Infinity, consolLow = Infinity;
+    for (const b of consolBars) {
+      if (b.high > consolHigh) consolHigh = b.high;
+      if (b.low < consolLow) consolLow = b.low;
+    }
+    const consolRange = consolHigh - consolLow;
+    const consolRangePct = currentBar.close > 0 ? (consolRange / currentBar.close) * 100 : 999;
+    // Tight consolidation: range < 0.4% of price (~$2.80 for SPY at $700)
+    // Apr 16 SPY 10:45-11:00: $0.46 range on $700 = 0.066% — well under threshold
+    if (consolRangePct < 0.40) {
+      const brokeBullish = currentBar.close > consolHigh;
+      const brokeBearish = currentBar.close < consolLow;
+      trendConsolidationBreakout = brokeBullish || brokeBearish;
+    }
+  }
+
+  return { displacementVelocity, rangeExhaustion, choppiness, trendConsolidationBreakout };
 }
