@@ -2128,11 +2128,10 @@ export class OrderAgent {
     }
 
     // Always derive both prices from confirmed fills, never from the stale DB column.
-    // If Alpaca had no position (code 42210000), record exit at $0 (full loss).
     // If sell fill was not confirmed within 15 s, exitPrice stays null so evaluation
     // is skipped rather than recording a misleading 0% P&L.
     const entryPrice = this.fillPrice ?? candidate.entryPremium;
-    const exitPrice: number | null = positionGoneFromAlpaca ? 0 : (exitFill ?? null);
+    let exitPrice: number | null = exitFill ?? null;
 
     // Record sell order and close position in DB.
     // Errors here are non-fatal — evaluation must still run regardless.
@@ -2155,8 +2154,24 @@ export class OrderAgent {
         submittedAt:   new Date().toISOString(),
         filledAt:      exitFill ? new Date().toISOString() : undefined,
       });
-      // Pass 0 when fill unconfirmed — closePosition treats 0 as "look up fill from order_executions"
+      // Pass 0 when fill unconfirmed — closePosition uses COALESCE to look up fill from order_executions
       await closePosition({ positionId: this.positionId, exitPrice: exitPrice ?? 0, entryPrice, closeReason: reason });
+
+      // Re-read the DB-resolved exit_price when we don't have a confirmed fill locally.
+      // closePosition's COALESCE may have found the real fill from order_executions
+      // (e.g. 42210000 race condition where Alpaca briefly reports no position).
+      if (exitPrice == null || exitPrice === 0) {
+        const pool = getPool();
+        const { rows } = await pool.query<{ exit_price: string | null }>(
+          `SELECT exit_price FROM trading.position_journal WHERE id = $1`,
+          [this.positionId],
+        );
+        const dbExit = rows[0]?.exit_price != null ? Number(rows[0].exit_price) : null;
+        if (dbExit && dbExit > 0) {
+          console.log(`[OrderAgent ${ticker} ${symbol}] Resolved exit price from DB: $${dbExit.toFixed(2)}`);
+          exitPrice = dbExit;
+        }
+      }
     } catch (dbErr) {
       console.error(
         `[OrderAgent ${ticker} ${symbol}] Exit DB error (non-fatal):`,
@@ -2223,11 +2238,11 @@ export class OrderAgent {
     // Send chart for exit event (fire-and-forget)
     sendTradeChart(ticker, 'EXIT');
 
-    // Skip evaluation when fill price wasn't confirmed — a 0% P&L record would corrupt AI history
-    if (exitPrice != null) {
+    // Skip evaluation when fill price wasn't confirmed or is zero — a bogus P&L would corrupt AI history
+    if (exitPrice != null && exitPrice > 0) {
       await this._triggerEvaluation(exitPrice, reason);
     } else {
-      console.warn(`[OrderAgent ${ticker} ${symbol}] Skipping evaluation — sell fill unconfirmed`);
+      console.warn(`[OrderAgent ${ticker} ${symbol}] Skipping evaluation — sell fill ${exitPrice === 0 ? 'resolved to $0' : 'unconfirmed'}`);
     }
     this.phase = 'CLOSED';
     console.log(`[OrderAgent ${ticker} ${symbol}] Phase: CLOSED`);

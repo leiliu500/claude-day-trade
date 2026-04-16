@@ -22,6 +22,7 @@ async function backfill(): Promise<void> {
     LEFT JOIN trading.trading_decisions td ON pj.decision_id = td.id
     WHERE pj.status = 'CLOSED'
       AND pj.exit_price IS NOT NULL
+      AND pj.exit_price > 0
       AND pj.id NOT IN (SELECT position_id FROM trading.trade_evaluations WHERE position_id IS NOT NULL)
     ORDER BY pj.closed_at DESC
   `);
