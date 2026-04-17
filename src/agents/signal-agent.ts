@@ -187,9 +187,9 @@ export class SignalAgent {
       // Use per-symbol strategy for mode detection
       const modeResult = strategy.detectMode(tfIndicators, direction, currentPrice);
       signalMode = modeResult.signalMode;
-      // Only apply mode evaluator's direction when leading override hasn't already set a faster direction.
-      // Leading indicators (velocity + LTF DMI) detect direction changes 5-15 bars before HTF DI catches up.
-      if (modeResult.direction && !leadingSignalOverride) direction = modeResult.direction;
+      // Only apply mode evaluator's direction when an override hasn't already set a faster direction.
+      // Both leading indicators and reversal override detect direction changes before HTF DI catches up.
+      if (modeResult.direction && !leadingSignalOverride && !reversalOverride) direction = modeResult.direction;
       rangeSupport = modeResult.rangeSupport;
       rangeResistance = modeResult.rangeResistance;
       breakoutLevel = modeResult.breakoutLevel;
@@ -208,7 +208,7 @@ export class SignalAgent {
         evaluateVwapReversion(ltfTf, htfTf, currentPrice),
       );
       signalMode = modeResult.signalMode;
-      if (modeResult.direction && !leadingSignalOverride) direction = modeResult.direction;
+      if (modeResult.direction && !leadingSignalOverride && !reversalOverride) direction = modeResult.direction;
       rangeSupport = modeResult.rangeSupport;
       rangeResistance = modeResult.rangeResistance;
       breakoutLevel = modeResult.breakoutLevel;

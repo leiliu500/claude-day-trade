@@ -638,9 +638,9 @@ async function main() {
       const modeResult = resolveMode(trendCandidate, rangeCandidate, breakoutCandidate, vwapRevCandidate);
 
       signalMode = modeResult.signalMode;
-      // Only apply mode evaluator's direction when leading override hasn't already set a faster direction.
-      // Leading indicators (velocity + LTF DMI) detect direction changes 5-15 bars before HTF DI catches up.
-      if (modeResult.direction && !leadingSignalOverride) {
+      // Only apply mode evaluator's direction when an override hasn't already set a faster direction.
+      // Both leading indicators and reversal override detect direction changes before HTF DI catches up.
+      if (modeResult.direction && !leadingSignalOverride && !reversalOverride) {
         direction = modeResult.direction;
         signal.direction = direction;
       }
