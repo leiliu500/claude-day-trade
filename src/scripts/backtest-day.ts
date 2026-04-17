@@ -234,6 +234,9 @@ function filterCategory(reason: string): string {
   if (reason.startsWith('trend_exhausted_reverting')) return 'trend_exhausted_reverting';
   if (reason.startsWith('trend_max_exhaustion')) return 'trend_max_exhaustion';
   if (reason.startsWith('entry_window')) return 'entry_window';
+  if (reason.startsWith('topology_trajectory')) return 'topology_trajectory';
+  if (reason.startsWith('topology: REGIME fragmented')) return 'topology_fragmented';
+  if (reason.startsWith('topology:')) return 'topology_dimension';
   return reason.replace(/[^a-zA-Z_]/g, '').slice(0, 40);
 }
 
