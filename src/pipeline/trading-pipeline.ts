@@ -204,7 +204,7 @@ export async function runPipeline(
     console.log(`[Pipeline] Option: winner=${optionEval.winner ?? 'none'}, liq=${optionEval.liquidityOk}`);
 
     // ── Phase 5: Analysis (deterministic confidence; AI explanation only when market open) ──
-    const analysis = await analysisAgent.run(signal, optionEval, timeGateOk, tickerCfg);
+    let analysis = await analysisAgent.run(signal, optionEval, timeGateOk, tickerCfg);
     console.log(`[Pipeline] Analysis: confidence=${analysis.confidence.toFixed(2)}, threshold=${analysis.meetsEntryThreshold}`);
     if (analysis.confidenceBreakdown) {
       const cb = analysis.confidenceBreakdown;
@@ -213,12 +213,14 @@ export async function runPipeline(
 
     // ── Phase 5b: REST cross-validation (stream vs REST indicator divergence check) ──
     // When stream-based confidence meets entry threshold, fetch HTF bars from REST
-    // and compare key indicators. If ADX slope sign disagrees (e.g., stream says rising
-    // but REST says falling), the stream cache is stale/diverged — block the entry.
+    // and compare key indicators. If ADX slope sign or DI spread sign disagrees,
+    // the stream cache is stale/diverged. Rather than hard-blocking, swap REST
+    // HTF into the signal and recompute analysis — if confidence still clears the
+    // threshold under REST truth, the entry is genuine; if not, it's naturally blocked.
     //
-    // Apr 10 SPY: stream cache produced adxSlope=+5.0 (rising → trendPhase=+0.06)
-    // while REST/backtest showed adxSlope=-5.8 (falling → trendPhase=-0.08).
-    // This 0.14 swing inflated confidence from ~15% to ~73%, causing 3 losing entries.
+    // Apr 10 SPY: stream adxSlope=+5.0 vs REST=-5.8 → REST recalc drops conf from
+    // ~73% to ~15%, naturally blocks. Apr 17 SPY 10:00: same magnitude divergence
+    // but REST recalc still clears 65% because orderFlow/alignment dominate → entry kept.
     if (analysis.meetsEntryThreshold) {
       try {
         const [, , htf] = PROFILE_TIMEFRAMES[profile];
@@ -234,19 +236,30 @@ export async function runPipeline(
           // Also check DI spread direction — confirms whether trend direction is genuine
           const streamDirSpread = signal.direction === 'bullish'
             ? streamHtf.dmi.plusDI - streamHtf.dmi.minusDI
-            : streamHtf.dmi.minusDI - streamHtf.dmi.plusDI;
+            : signal.direction === 'bearish'
+              ? streamHtf.dmi.minusDI - streamHtf.dmi.plusDI
+              : 0;
           const restDirSpread = signal.direction === 'bullish'
             ? restHtf.dmi.plusDI - restHtf.dmi.minusDI
-            : restHtf.dmi.minusDI - restHtf.dmi.plusDI;
+            : signal.direction === 'bearish'
+              ? restHtf.dmi.minusDI - restHtf.dmi.plusDI
+              : 0;
           const spreadSignDiverged = (streamDirSpread > 2 && restDirSpread < -2) || (streamDirSpread < -2 && restDirSpread > 2);
 
           console.log(`[Pipeline] REST cross-check[${ticker}]: streamADXSlope=${streamSlope.toFixed(1)} restADXSlope=${restSlope.toFixed(1)} delta=${slopeDelta.toFixed(1)} | streamDISpread=${streamDirSpread.toFixed(1)} restDISpread=${restDirSpread.toFixed(1)} | diverged=${slopeSignDiverged || spreadSignDiverged}`);
 
           if (slopeSignDiverged || spreadSignDiverged) {
-            const divergeType = slopeSignDiverged ? `ADX slope sign (stream=${streamSlope.toFixed(1)} vs REST=${restSlope.toFixed(1)})` : `DI spread sign (stream=${streamDirSpread.toFixed(1)} vs REST=${restDirSpread.toFixed(1)})`;
-            console.warn(`[Pipeline] STREAM/REST DIVERGENCE — blocking entry: ${divergeType}`);
-            analysis.meetsEntryThreshold = false;
-            analysis.entryBlockReason = `STREAM_REST_DIVERGENCE: ${divergeType}`;
+            const divergeType = slopeSignDiverged
+              ? `ADX slope sign (stream=${streamSlope.toFixed(1)} vs REST=${restSlope.toFixed(1)})`
+              : `DI spread sign (stream=${streamDirSpread.toFixed(1)} vs REST=${restDirSpread.toFixed(1)})`;
+            console.warn(`[Pipeline] STREAM/REST DIVERGENCE — swapping REST HTF and recomputing: ${divergeType}`);
+            const streamConf = analysis.confidence;
+            signal.timeframes[2] = restHtf;
+            analysis = await analysisAgent.run(signal, optionEval, timeGateOk, tickerCfg);
+            console.log(`[Pipeline] Recalc with REST HTF[${ticker}]: confidence ${streamConf.toFixed(2)} → ${analysis.confidence.toFixed(2)}, meetsThreshold=${analysis.meetsEntryThreshold}`);
+            if (!analysis.meetsEntryThreshold && !analysis.entryBlockReason) {
+              analysis.entryBlockReason = `STREAM_REST_DIVERGENCE resolved via REST: conf ${streamConf.toFixed(2)}→${analysis.confidence.toFixed(2)} (${divergeType})`;
+            }
           }
         }
       } catch (err) {
