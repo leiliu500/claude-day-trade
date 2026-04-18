@@ -6,7 +6,6 @@ import { ExecutionAgent } from '../agents/execution-agent.js';
 import { OrderAgentRegistry } from '../agents/order-agent-registry.js';
 import type { OrderAgentOutcome } from '../agents/order-agent.js';
 import { buildContext } from './context-builder.js';
-import { checkMarketOpen } from './safety-gates.js';
 import { getOrCreateSession } from '../db/repositories/sessions.js';
 import { insertSignalSnapshot } from '../db/repositories/signals.js';
 import { insertDecision } from '../db/repositories/decisions.js';
@@ -153,8 +152,8 @@ export async function runPipeline(
   console.log(`[Pipeline] Starting: ${ticker} ${profile} (${trigger}) [minConf=${tickerCfg.minConfidence}]`);
 
   try {
-    // ── Phase 1: Market hours (cheap — determines whether AI calls are needed) ─
-    const timeGateOk = await checkMarketOpen();
+    // Scheduler's isTradingWindow() + stream-only-during-hours + entry-window gate cover this.
+    const timeGateOk = true;
 
     // ── Phase 2: Session ───────────────────────────────────────────────────
     const intervals = profile === 'S' ? '2m,3m,5m' : profile === 'M' ? '1m,5m,15m' : '5m,1h,1d';

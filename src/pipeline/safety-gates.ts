@@ -130,20 +130,3 @@ export function checkSafetyGates(params: {
 
   return { passed: failed.length === 0, failedGates: failed };
 }
-
-/** Check if current market is open via Alpaca clock */
-export async function checkMarketOpen(): Promise<boolean> {
-  try {
-    const res = await fetch(`${config.ALPACA_BASE_URL}/v2/clock`, {
-      headers: {
-        'APCA-API-KEY-ID': config.ALPACA_API_KEY,
-        'APCA-API-SECRET-KEY': config.ALPACA_SECRET_KEY,
-      },
-    });
-    if (!res.ok) return false;
-    const data = (await res.json()) as { is_open?: boolean };
-    return data.is_open ?? false;
-  } catch {
-    return false;
-  }
-}
