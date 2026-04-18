@@ -311,6 +311,15 @@ function spyShouldAllowEntry(ctx: EntryContext): true | string {
   // momentum signals lack follow-through in that tape.
   if (direction === 'bullish' && _lastRegimeScore <= 50) return `bullish lowRegime ${_lastRegimeScore} <= 50`;
 
+  // Mid-strength kill zone: strength 70-79 is toxic on 2026 YTD SPY — 21 entries,
+  // 3A/2B/3C/1D/12F, exp -0.810. Both directions: bullish 70-79 exp -0.750,
+  // bearish 70-79 exp -0.889. Adjacent buckets (60-69, 80-89, 90-100) all much
+  // better. Classic "not weak enough to filter, not strong enough to trust"
+  // middling-signal cluster.
+  if (ctx.strengthScore >= 70 && ctx.strengthScore < 80) {
+    return `mid-strength kill zone ${ctx.strengthScore}`;
+  }
+
   return true;
 }
 
