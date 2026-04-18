@@ -305,6 +305,12 @@ function spyShouldAllowEntry(ctx: EntryContext): true | string {
       && ctx.rangeExhaustion !== undefined && ctx.rangeExhaustion >= 4.5
       && _lastRegimeScore >= 65) return `bullish breakout highExh+regime rExh=${ctx.rangeExhaustion.toFixed(1)} regime=${_lastRegimeScore}`;
 
+  // Bullish + low regime: mined 2026-04-18 on regime-fix baseline.
+  // Bullish subpopulation at regime <= 50 is 0A/2B/5C/3D/8F (zero A-grade,
+  // F-catch 22%, cascade 50%). Low regime = flat/choppy session; bullish
+  // momentum signals lack follow-through in that tape.
+  if (direction === 'bullish' && _lastRegimeScore <= 50) return `bullish lowRegime ${_lastRegimeScore} <= 50`;
+
   return true;
 }
 
