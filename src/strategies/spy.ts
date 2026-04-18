@@ -53,9 +53,14 @@ function computeRegimeScore(
   vwapPriceVs: number,
   adx: number,
 ): number {
-  // Filter to today's regular-session bars (13:30–20:00 UTC).
-  // Stream cache / REST bars can span 2+ days; prior-day bars corrupt dayOpen.
-  const todayStr = new Date().toISOString().slice(0, 10);
+  // Filter to the latest session's regular-hours bars (13:30–20:00 UTC).
+  // Derive "today" from the last bar's timestamp so this works identically in
+  // live mode (last bar = wall-clock today) and backtest mode (last bar = the
+  // simulated historical date). Using `new Date()` here was a bug: it made
+  // todayBars empty in every backtest and pinned regime to 50.
+  const lastBar = bars[bars.length - 1];
+  if (!lastBar) return 50;
+  const todayStr = lastBar.timestamp.slice(0, 10);
   const todayBars = bars.filter(b => {
     if (!b.timestamp.startsWith(todayStr)) return false;
     const h = parseInt(b.timestamp.slice(11, 13), 10);
