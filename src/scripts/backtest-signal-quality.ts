@@ -60,6 +60,13 @@ interface EntryDetail {
   move15m: number | null;
   move30m: number | null;
   gateResult: string;
+  // Indicator signature — for F-grade signature mining
+  atr: number | null;
+  regime: number | null;
+  rangeExh: number | null;
+  dispVel: number | null;
+  chop: number | null;
+  trendStr: number | null;
 }
 
 interface DayResult {
@@ -103,6 +110,15 @@ function parseEntries(output: string): EntryDetail[] {
       return m ? parseFloat(m[1]!) : null;
     };
 
+    // Indicator line: "ATR: $0.641 | Regime: 60 | RangeExh: 6.2 | DispVel: -0.010 | Chop: 1.87 | TrendStr: 0"
+    const atrM = block.match(/ATR:\s+\$([\d.]+)/);
+    const regimeM = block.match(/Regime:\s+(-?[\d.]+)/);
+    const rExhM = block.match(/RangeExh:\s+(-?[\d.]+)/);
+    const dvelM = block.match(/DispVel:\s+(-?[\d.]+)/);
+    const chopM = block.match(/Chop:\s+(-?[\d.]+)/);
+    const tstrM = block.match(/TrendStr:\s+(-?[\d.]+)/);
+    const numOrNull = (m: RegExpMatchArray | null) => m ? parseFloat(m[1]!) : null;
+
     entries.push({
       time: timeM?.[1] ?? '?',
       direction: dirM?.[1]?.toUpperCase() ?? '?',
@@ -121,6 +137,12 @@ function parseEntries(output: string): EntryDetail[] {
       move15m: parseMove('15m'),
       move30m: parseMove('30m'),
       gateResult: gateM?.[0] ?? '?',
+      atr: numOrNull(atrM),
+      regime: numOrNull(regimeM),
+      rangeExh: numOrNull(rExhM),
+      dispVel: numOrNull(dvelM),
+      chop: numOrNull(chopM),
+      trendStr: numOrNull(tstrM),
     });
   }
 
@@ -397,6 +419,16 @@ if (EMIT_JSON) {
         marginal: entries.filter(e => e.outcome === 'MARGINAL').length,
         expectancy,
         byMonth,
+        entries: entries.map((e, idx) => ({
+          date: results.find(r => r.entries.includes(e))?.date ?? '?',
+          time: e.time, direction: e.direction, mode: e.mode,
+          grade: e.grade, confidence: e.confidence,
+          mfePct: e.mfePct, maePct: e.maePct,
+          atr: e.atr, regime: e.regime, rangeExh: e.rangeExh,
+          dispVel: e.dispVel, chop: e.chop, trendStr: e.trendStr,
+          gateResult: e.gateResult,
+          idx,
+        })),
       };
     }),
   };
