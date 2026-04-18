@@ -39,6 +39,13 @@ const CACHE_PATH = getFlag('--cache');
 
 const TOP_N = 15;
 const MIN_BLOCKED = 3;
+// Cluster window for dedup-awareness: entries on the same date + same direction
+// within this many minutes of each other are treated as competing for ONE position
+// slot. Realization rate for each clustered entry = 1 / cluster_size.
+// Calibrated from 2026-04-18 validate run: removing `breakout rangeExh < 1.0`
+// blocked 33 entries (10 at 13:30 UTC bullish + 3 at 13:35 etc.) → predicted +23
+// cost, actual +1 entry admitted. Tight same-minute clustering collapses to ~1.
+const CLUSTER_WINDOW_MIN = 15;
 
 interface RejectedEntry {
   date?: string;
@@ -91,19 +98,67 @@ interface RuleBucket {
   rule: string;
   entries: RejectedEntry[];
   A: number; B: number; C: number; D: number; F: number; unknown: number;
-  costScore: number;
+  costScore: number;              // raw grade-weighted cost of rejections
   abShare: number;
   avgMfe: number;
+  avgRealization: number;         // mean realization rate (1/cluster_size) for rule's entries
+  adjustedCost: number;           // costScore weighted by realization (predicts actual Δscore)
 }
 
-function aggregate(entries: RejectedEntry[], stage: 'filter' | 'gate'): RuleBucket[] {
+const GRADE_SCORE: Record<string, number> = { A: 2, B: 1, C: 0, D: -1, F: -2 };
+
+/** Parse an ISO timestamp or "HH:MM" string into minutes since UTC midnight.
+ *  Returns NaN if the input isn't recognizable. */
+function toMinutes(s: string | undefined): number {
+  if (!s) return NaN;
+  if (s.length >= 16 && s[10] === 'T') {
+    const h = parseInt(s.slice(11, 13), 10);
+    const m = parseInt(s.slice(14, 16), 10);
+    return h * 60 + m;
+  }
+  if (/^\d{2}:\d{2}$/.test(s)) return parseInt(s.slice(0, 2), 10) * 60 + parseInt(s.slice(3, 5), 10);
+  return NaN;
+}
+
+/** For each rejected entry, compute how many other rejections share its
+ *  (date, direction) within CLUSTER_WINDOW_MIN minutes — those entries compete
+ *  for a single position slot, so realization rate ≈ 1 / cluster_size. */
+function computeRealizationRates(all: RejectedEntry[]): Map<RejectedEntry, number> {
+  // Group by date+direction for efficient cluster search
+  const groups = new Map<string, RejectedEntry[]>();
+  for (const e of all) {
+    const key = `${e.date ?? '?'}|${e.direction}`;
+    let arr = groups.get(key);
+    if (!arr) { arr = []; groups.set(key, arr); }
+    arr.push(e);
+  }
+  const rates = new Map<RejectedEntry, number>();
+  for (const arr of groups.values()) {
+    const withMin = arr.map(e => ({ e, mins: toMinutes(e.time) }))
+      .filter(x => !Number.isNaN(x.mins))
+      .sort((a, b) => a.mins - b.mins);
+    for (let i = 0; i < withMin.length; i++) {
+      let size = 1;
+      for (let j = 0; j < withMin.length; j++) {
+        if (i === j) continue;
+        if (Math.abs(withMin[j]!.mins - withMin[i]!.mins) <= CLUSTER_WINDOW_MIN) size++;
+      }
+      rates.set(withMin[i]!.e, 1 / size);
+    }
+    // Entries with un-parseable times: no cluster info → assume realization 1
+    for (const e of arr) if (!rates.has(e)) rates.set(e, 1);
+  }
+  return rates;
+}
+
+function aggregate(entries: RejectedEntry[], stage: 'filter' | 'gate', realization: Map<RejectedEntry, number>): RuleBucket[] {
   const m = new Map<string, RuleBucket>();
   for (const e of entries) {
     const rule = stage === 'filter' ? (e.filterRule ?? '(unknown filter)') : (e.gate ?? '(unknown gate)');
     const category = stage === 'filter' ? (e.filterCategory ?? 'uncategorized') : 'gate';
     let b = m.get(rule);
     if (!b) {
-      b = { stage, category, rule, entries: [], A: 0, B: 0, C: 0, D: 0, F: 0, unknown: 0, costScore: 0, abShare: 0, avgMfe: 0 };
+      b = { stage, category, rule, entries: [], A: 0, B: 0, C: 0, D: 0, F: 0, unknown: 0, costScore: 0, abShare: 0, avgMfe: 0, avgRealization: 0, adjustedCost: 0 };
       m.set(rule, b);
     }
     b.entries.push(e);
@@ -118,15 +173,23 @@ function aggregate(entries: RejectedEntry[], stage: 'filter' | 'gate'): RuleBuck
     const n = b.entries.length || 1;
     b.abShare = (b.A + b.B) / n;
     b.avgMfe = b.entries.reduce((s, e) => s + (e.mfePct ?? 0), 0) / n;
+    let adj = 0, totRate = 0;
+    for (const e of b.entries) {
+      const r = realization.get(e) ?? 1;
+      totRate += r;
+      adj += (GRADE_SCORE[e.grade] ?? 0) * r;
+    }
+    b.avgRealization = totRate / n;
+    b.adjustedCost = adj;
   }
   return [...m.values()].filter(b => b.entries.length >= MIN_BLOCKED);
 }
 
 function fmtBucket(b: RuleBucket): string {
   const total = b.A + b.B + b.C + b.D + b.F + b.unknown;
-  const sign = b.costScore >= 0 ? '+' : '';
+  const sign = (n: number) => n >= 0 ? '+' : '';
   const unk = b.unknown ? `/${b.unknown}?` : '';
-  return `  [${b.stage}:${b.category}] ${b.rule}\n    rejects ${total} (${b.A}A/${b.B}B/${b.C}C/${b.D}D/${b.F}F${unk})  AB-share=${(b.abShare * 100).toFixed(0)}%  avgMFE=${b.avgMfe.toFixed(3)}%  cost=${sign}${b.costScore}`;
+  return `  [${b.stage}:${b.category}] ${b.rule}\n    rejects ${total} (${b.A}A/${b.B}B/${b.C}C/${b.D}D/${b.F}F${unk})  AB-share=${(b.abShare * 100).toFixed(0)}%  avgMFE=${b.avgMfe.toFixed(3)}%  rawCost=${sign(b.costScore)}${b.costScore}  realize=${(b.avgRealization * 100).toFixed(0)}%  adj=${sign(b.adjustedCost)}${b.adjustedCost.toFixed(1)}`;
 }
 
 // ── Main ──
@@ -150,13 +213,17 @@ if (filtered.length === 0 && blocked.length === 0) {
   process.exit(0);
 }
 
-const allBuckets = [...aggregate(filtered, 'filter'), ...aggregate(blocked, 'gate')]
-  .sort((a, b) => b.costScore - a.costScore);
+// Compute realization rates once across the union of all rejections (clusters can
+// span filter+gate rejections on the same minute).
+const realization = computeRealizationRates([...filtered, ...blocked]);
 
-const positive = allBuckets.filter(b => b.costScore > 0);
-const negative = allBuckets.filter(b => b.costScore < 0).sort((a, b) => a.costScore - b.costScore);
+const allBuckets = [...aggregate(filtered, 'filter', realization), ...aggregate(blocked, 'gate', realization)]
+  .sort((a, b) => b.adjustedCost - a.adjustedCost);
 
-console.log(`\n  ── Rules BLOCKING NET-GOOD entries (candidates to relax, top ${TOP_N}) ──\n`);
+const positive = allBuckets.filter(b => b.adjustedCost > 0);
+const negative = allBuckets.filter(b => b.adjustedCost < 0).sort((a, b) => a.adjustedCost - b.adjustedCost);
+
+console.log(`\n  ── Rules BLOCKING NET-GOOD entries (ranked by adj cost = raw × realization) ──\n`);
 if (positive.length === 0) {
   console.log(`  (none — every rejection bucket with ≥${MIN_BLOCKED} entries is net-negative)`);
 } else {
