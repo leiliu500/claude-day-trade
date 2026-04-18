@@ -12,9 +12,11 @@
 import 'dotenv/config';
 import { execSync } from 'child_process';
 
-const START = process.argv[2] || '2025-10-01';
-const END = process.argv[3] || '2026-03-25';
-const TICKER_ARG = process.argv[4]?.toUpperCase(); // optional: SPY, QQQ, or omit for both
+const EMIT_JSON = process.argv.includes('--json');
+const positionalArgs = process.argv.slice(2).filter(a => !a.startsWith('--'));
+const START = positionalArgs[0] || '2025-10-01';
+const END = positionalArgs[1] || '2026-03-25';
+const TICKER_ARG = positionalArgs[2]?.toUpperCase(); // optional: SPY, QQQ, or omit for both
 const TICKERS = TICKER_ARG ? [TICKER_ARG] : ['SPY', 'QQQ', 'IWM', 'NVDA'];
 
 // ── Generate trading days (weekdays) in range ────────────────────────────────
@@ -355,4 +357,50 @@ if (TICKERS.length > 1) {
   }
 
   console.log(`\n${'='.repeat(80)}\n`);
+}
+
+// ── Machine-readable JSON summary (for validate-change harness) ─────────────
+if (EMIT_JSON) {
+  const summary = {
+    start: START,
+    end: END,
+    tickers: TICKERS,
+    perTicker: TICKERS.map(ticker => {
+      const results = allTickerResults.get(ticker) ?? [];
+      const entries = results.flatMap(r => r.entries);
+      const gc = (g: string) => entries.filter(e => e.grade === g).length;
+      const A = gc('A'), B = gc('B'), C = gc('C'), D = gc('D'), F = gc('F');
+      const expectancy = entries.length > 0 ? (A * 2 + B - D - F * 2) / entries.length : 0;
+      const byMonth = [...new Set(results.map(r => r.month))].sort().map(month => {
+        const me = results.filter(r => r.month === month).flatMap(r => r.entries);
+        const mA = me.filter(e => e.grade === 'A').length;
+        const mB = me.filter(e => e.grade === 'B').length;
+        const mC = me.filter(e => e.grade === 'C').length;
+        const mD = me.filter(e => e.grade === 'D').length;
+        const mF = me.filter(e => e.grade === 'F').length;
+        const mExp = me.length > 0 ? (mA * 2 + mB - mD - mF * 2) / me.length : 0;
+        const mDir = me.length > 0 ? me.filter(e => e.directionCorrect).length / me.length : 0;
+        return { month, entries: me.length, grades: { A: mA, B: mB, C: mC, D: mD, F: mF }, directionAccuracy: mDir, expectancy: mExp };
+      });
+      return {
+        ticker,
+        tradingDays: results.length,
+        daysWithEntries: results.filter(r => r.entries.length > 0).length,
+        totalEntries: entries.length,
+        directionCorrect: entries.filter(e => e.directionCorrect).length,
+        directionAccuracy: entries.length > 0 ? entries.filter(e => e.directionCorrect).length / entries.length : 0,
+        avgMfe: entries.length > 0 ? entries.reduce((s, e) => s + e.mfePct, 0) / entries.length : 0,
+        avgMae: entries.length > 0 ? entries.reduce((s, e) => s + e.maePct, 0) / entries.length : 0,
+        grades: { A, B, C, D, F },
+        good: entries.filter(e => e.outcome === 'GOOD').length,
+        bad: entries.filter(e => e.outcome === 'BAD').length,
+        marginal: entries.filter(e => e.outcome === 'MARGINAL').length,
+        expectancy,
+        byMonth,
+      };
+    }),
+  };
+  console.log('<!--VALIDATE-JSON-BEGIN-->');
+  console.log(JSON.stringify(summary));
+  console.log('<!--VALIDATE-JSON-END-->');
 }
