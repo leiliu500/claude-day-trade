@@ -170,6 +170,14 @@ function printTickerReport(ticker: string, results: DayResult[]) {
   console.log(`  Outcome:         ${good} good (A+B) | ${bad} bad (F) | ${marginal} marginal (C+D)`);
   console.log(`  Signal quality:  ${((good / allEntries.length) * 100).toFixed(0)}% good | ${((bad / allEntries.length) * 100).toFixed(0)}% bad`);
 
+  // Grade-weighted expectancy — primary metric for filter/gate change validation.
+  // Formula: (A·2 + B·1 + C·0 + D·−1 + F·−2) / N. Pure underlying-price measure,
+  // no sim P&L. Use to compare before/after across ≥10 trading days.
+  const expectancy = allEntries.length > 0
+    ? (gradeA * 2 + gradeB * 1 + gradeC * 0 + gradeD * -1 + gradeF * -2) / allEntries.length
+    : 0;
+  console.log(`  Expectancy:      ${expectancy >= 0 ? '+' : ''}${expectancy.toFixed(3)} (grade-weighted: A=+2 B=+1 C=0 D=-1 F=-2)`);
+
   // ── Monthly Breakdown ────────────────────────────────────────────────────
   console.log(`\n  ── Monthly Breakdown ──\n`);
   console.log(`  ${pad('Month', 10)} ${rpad('Entries', 8)} ${rpad('Dir%', 6)} ${rpad('Good', 6)} ${rpad('Bad', 5)} ${rpad('AvgMFE', 8)} ${rpad('AvgMAE', 8)} ${rpad('Ratio', 6)} ${rpad('Grades', 12)}`);
