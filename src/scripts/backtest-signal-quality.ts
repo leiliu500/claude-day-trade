@@ -92,6 +92,11 @@ interface DayResult {
   entries: EntryDetail[];
   filtered: RejectedEntry[];     // shouldAllowEntry rejections (with grade + filterRule)
   blocked: RejectedEntry[];      // confirmation-gate rejections (with grade)
+  /** Raw per-day confirmed entries (from backtest-day JSON). Includes fields
+   *  dropped by parseEntries — breakdown sub-components, strength, alignment,
+   *  mode, move5m/10m/15m/30m — for feature discovery beyond the fixed mining
+   *  tuple. Surfaced as `rawConfirmed` in the aggregate output's perTicker. */
+  rawConfirmed: Record<string, unknown>[];
   skipped: boolean;
   error?: string;
 }
@@ -339,6 +344,7 @@ for (const ticker of TICKERS) {
       // can score filter rules by the quality of entries they reject.
       let filtered: RejectedEntry[] = [];
       let blocked: RejectedEntry[] = [];
+      let rawConfirmed: Record<string, unknown>[] = [];
       if (!skipped) {
         const jm = output.match(/__JSON_START__(.+?)__JSON_END__/s);
         if (jm) {
@@ -346,12 +352,13 @@ for (const ticker of TICKERS) {
             const day = JSON.parse(jm[1]!);
             filtered = day.filtered ?? [];
             blocked = day.blocked ?? [];
+            rawConfirmed = (day.confirmed ?? []).map((c: Record<string, unknown>) => ({ ...c, date }));
           } catch { /* ignore malformed */ }
         }
       }
       const month = date.slice(0, 7);
 
-      results.push({ date, month, ticker, entries, filtered, blocked, skipped });
+      results.push({ date, month, ticker, entries, filtered, blocked, rawConfirmed, skipped });
 
       if (skipped) {
         process.stdout.write(` SKIP (no data)\n`);
@@ -365,7 +372,7 @@ for (const ticker of TICKERS) {
       }
     } catch (err: any) {
       const msg = err.stderr?.toString().slice(0, 100) || err.message?.slice(0, 100) || 'unknown error';
-      results.push({ date, month: date.slice(0, 7), ticker, entries: [], filtered: [], blocked: [], skipped: true, error: msg });
+      results.push({ date, month: date.slice(0, 7), ticker, entries: [], filtered: [], blocked: [], rawConfirmed: [], skipped: true, error: msg });
       process.stdout.write(` ERROR\n`);
     }
   }
@@ -465,6 +472,7 @@ if (EMIT_JSON) {
         })),
         filtered: results.flatMap(r => r.filtered.map(f => ({ ...f, date: r.date }))),
         blocked: results.flatMap(r => r.blocked.map(b => ({ ...b, date: r.date }))),
+        rawConfirmed: results.flatMap(r => r.rawConfirmed),
       };
     }),
   };
