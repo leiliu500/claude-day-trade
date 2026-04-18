@@ -69,11 +69,29 @@ interface EntryDetail {
   trendStr: number | null;
 }
 
+interface RejectedEntry {
+  time: string;
+  direction: string;
+  mode: string;
+  confidence: number;
+  price: number;
+  grade: 'A' | 'B' | 'C' | 'D' | 'F' | '?';
+  outcome: string;
+  mfePct: number;
+  maePct: number;
+  mfeOverMae?: number;
+  filterRule?: string;
+  filterCategory?: string;
+  gate?: string;
+}
+
 interface DayResult {
   date: string;
   month: string;
   ticker: string;
   entries: EntryDetail[];
+  filtered: RejectedEntry[];     // shouldAllowEntry rejections (with grade + filterRule)
+  blocked: RejectedEntry[];      // confirmation-gate rejections (with grade)
   skipped: boolean;
   error?: string;
 }
@@ -308,16 +326,32 @@ for (const ticker of TICKERS) {
 
     try {
       const output = execSync(
-        `npx tsx src/scripts/backtest-day.ts ${date} ${ticker} 2>&1`,
+        `npx tsx src/scripts/backtest-day.ts ${date} ${ticker} --json 2>&1`,
         { timeout: 120_000, encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'] },
       );
 
       const hasResults = output.includes('ticks processed');
       const skipped = !hasResults;
       const entries = skipped ? [] : parseEntries(output);
+
+      // Extract per-day JSON for rejection data (shouldAllowEntry + gate rejections).
+      // Both already carry a grade computed from forward MFE/MAE, so mine-rejected-goods
+      // can score filter rules by the quality of entries they reject.
+      let filtered: RejectedEntry[] = [];
+      let blocked: RejectedEntry[] = [];
+      if (!skipped) {
+        const jm = output.match(/__JSON_START__(.+?)__JSON_END__/s);
+        if (jm) {
+          try {
+            const day = JSON.parse(jm[1]!);
+            filtered = day.filtered ?? [];
+            blocked = day.blocked ?? [];
+          } catch { /* ignore malformed */ }
+        }
+      }
       const month = date.slice(0, 7);
 
-      results.push({ date, month, ticker, entries, skipped });
+      results.push({ date, month, ticker, entries, filtered, blocked, skipped });
 
       if (skipped) {
         process.stdout.write(` SKIP (no data)\n`);
@@ -331,7 +365,7 @@ for (const ticker of TICKERS) {
       }
     } catch (err: any) {
       const msg = err.stderr?.toString().slice(0, 100) || err.message?.slice(0, 100) || 'unknown error';
-      results.push({ date, month: date.slice(0, 7), ticker, entries: [], skipped: true, error: msg });
+      results.push({ date, month: date.slice(0, 7), ticker, entries: [], filtered: [], blocked: [], skipped: true, error: msg });
       process.stdout.write(` ERROR\n`);
     }
   }
@@ -429,6 +463,8 @@ if (EMIT_JSON) {
           gateResult: e.gateResult,
           idx,
         })),
+        filtered: results.flatMap(r => r.filtered.map(f => ({ ...f, date: r.date }))),
+        blocked: results.flatMap(r => r.blocked.map(b => ({ ...b, date: r.date }))),
       };
     }),
   };
