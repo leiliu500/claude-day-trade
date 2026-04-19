@@ -337,6 +337,14 @@ function spyShouldAllowEntry(ctx: EntryContext): true | string {
     return `bullish trend+orb ${ctx.breakdown.orbBonus.toFixed(2)}`;
   }
 
+  // Very high ATR kill zone: 2026 YTD post-dvel baseline shows ATR >= 1.33
+  // is 4F/0A/0B (all bearish or bullish trend entries on high-vol days that
+  // retrace immediately). The 1A at atr=1.31 is just below this threshold.
+  // Complements the existing `trend atr < 0.45` lower floor.
+  if (ctx.atr >= 1.33) {
+    return `extreme atr ${ctx.atr.toFixed(2)} >= 1.33`;
+  }
+
   return true;
 }
 
