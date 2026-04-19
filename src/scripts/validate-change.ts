@@ -47,6 +47,46 @@ interface TickerSummary {
     directionAccuracy: number;
     expectancy: number;
   }>;
+  entries: Array<{ grade: 'A' | 'B' | 'C' | 'D' | 'F' | '?' }>;
+}
+
+// ── Bootstrap significance on Δexpectancy ────────────────────────────────────
+// Resample both populations with replacement 2000× and compute the CI on
+// candidate_expectancy - baseline_expectancy. If the 95% CI includes zero,
+// the observed delta is within sampling noise and should not be trusted.
+// If CI lower bound > 0, the filter delivers a statistically significant gain.
+const GRADE_SCORE: Record<string, number> = { A: 2, B: 1, C: 0, D: -1, F: -2 };
+
+function expOfGrades(grades: readonly string[]): number {
+  if (grades.length === 0) return 0;
+  let s = 0;
+  for (const g of grades) s += GRADE_SCORE[g] ?? 0;
+  return s / grades.length;
+}
+
+function bootstrapDeltaCI(
+  baseGrades: readonly string[],
+  candGrades: readonly string[],
+  iters = 2000,
+): { p5: number; p50: number; p95: number; probPositive: number } {
+  if (baseGrades.length === 0 || candGrades.length === 0) {
+    return { p5: 0, p50: 0, p95: 0, probPositive: 0 };
+  }
+  const deltas: number[] = new Array(iters);
+  const bN = baseGrades.length, cN = candGrades.length;
+  for (let i = 0; i < iters; i++) {
+    let bSum = 0;
+    for (let j = 0; j < bN; j++) bSum += GRADE_SCORE[baseGrades[(Math.random() * bN) | 0]!] ?? 0;
+    let cSum = 0;
+    for (let j = 0; j < cN; j++) cSum += GRADE_SCORE[candGrades[(Math.random() * cN) | 0]!] ?? 0;
+    deltas[i] = (cSum / cN) - (bSum / bN);
+  }
+  deltas.sort((a, b) => a - b);
+  const p5 = deltas[Math.floor(iters * 0.025)]!;
+  const p50 = deltas[Math.floor(iters * 0.5)]!;
+  const p95 = deltas[Math.floor(iters * 0.975)]!;
+  const probPositive = deltas.filter(d => d > 0).length / iters;
+  return { p5, p50, p95, probPositive };
 }
 
 function sh(cmd: string, opts: Record<string, unknown> = {}): string {
@@ -91,6 +131,24 @@ function fmtGrades(g: { A: number; B: number; C: number; D: number; F: number })
 function fmtDelta(delta: number, digits = 3, suffix = ''): string {
   const sign = delta >= 0 ? '+' : '';
   return `${sign}${delta.toFixed(digits)}${suffix}`;
+}
+
+function printBootstrapCI(base: TickerSummary, cand: TickerSummary): void {
+  const baseGrades = base.entries.map(e => e.grade);
+  const candGrades = cand.entries.map(e => e.grade);
+  const ci = bootstrapDeltaCI(baseGrades, candGrades);
+  const observedDelta = cand.expectancy - base.expectancy;
+  console.log(`\n  ── Bootstrap Δexpectancy 95% CI (${baseGrades.length}→${candGrades.length} entries, 2000 iters) ──`);
+  console.log(`     Observed:   ${fmtDelta(observedDelta)}`);
+  console.log(`     95% CI:     [${fmtDelta(ci.p5)}, ${fmtDelta(ci.p95)}]  median ${fmtDelta(ci.p50)}`);
+  console.log(`     P(Δ > 0):   ${(ci.probPositive * 100).toFixed(1)}%`);
+  if (ci.p5 > 0) {
+    console.log(`     ✓ CI entirely > 0 — improvement is statistically significant`);
+  } else if (ci.p95 < 0) {
+    console.log(`     ✗ CI entirely < 0 — regression is statistically significant`);
+  } else {
+    console.log(`     ⚠ CI spans zero — observed delta is within sampling noise`);
+  }
 }
 
 function printComparison(base: TickerSummary, cand: TickerSummary): void {
@@ -240,6 +298,7 @@ async function main(): Promise<number> {
 
     printComparison(baseline, candidate);
     printMonthlyBreakdown(baseline, candidate);
+    printBootstrapCI(baseline, candidate);
     const v = verdict(baseline, candidate);
     printVerdict(v);
 
