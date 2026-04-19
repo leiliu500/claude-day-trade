@@ -47,7 +47,7 @@ interface TickerSummary {
     directionAccuracy: number;
     expectancy: number;
   }>;
-  entries: Array<{ grade: 'A' | 'B' | 'C' | 'D' | 'F' | '?' }>;
+  entries: Array<{ date: string; grade: 'A' | 'B' | 'C' | 'D' | 'F' | '?' }>;
 }
 
 // ── Bootstrap significance on Δexpectancy ────────────────────────────────────
@@ -131,6 +131,63 @@ function fmtGrades(g: { A: number; B: number; C: number; D: number; F: number })
 function fmtDelta(delta: number, digits = 3, suffix = ''): string {
   const sign = delta >= 0 ? '+' : '';
   return `${sign}${delta.toFixed(digits)}${suffix}`;
+}
+
+// ── Walk-forward stability check ─────────────────────────────────────────────
+// Split the window into month chunks (using the existing date field on each
+// entry). For each chunk, bootstrap-CI the baseline vs candidate delta. A
+// robust filter should show same-direction delta across chunks. Would have
+// flagged MACD filter (Dec −0.204 outlier) and VWAP filter (Oct regression)
+// even without an explicit OOS re-run.
+function groupByMonth(entries: TickerSummary['entries']): Map<string, string[]> {
+  const m = new Map<string, string[]>();
+  for (const e of entries) {
+    const month = (e.date ?? '?').slice(0, 7);
+    let arr = m.get(month);
+    if (!arr) { arr = []; m.set(month, arr); }
+    arr.push(e.grade);
+  }
+  return m;
+}
+
+function printWalkForward(base: TickerSummary, cand: TickerSummary): void {
+  const bMonths = groupByMonth(base.entries);
+  const cMonths = groupByMonth(cand.entries);
+  const allMonths = [...new Set([...bMonths.keys(), ...cMonths.keys()])].sort();
+
+  console.log(`\n  ── Walk-forward per-month stability ──`);
+  console.log(`     ${'Month'.padEnd(10)} ${'ΔExp'.padStart(8)}  ${'95% CI'.padStart(20)}  ${'P(Δ>0)'.padStart(7)}  ${'N(b→c)'.padStart(9)}`);
+  console.log(`     ${'-'.repeat(62)}`);
+
+  let agreeing = 0, disagreeing = 0, neutralChunks = 0;
+  const observedSign = Math.sign(cand.expectancy - base.expectancy);
+
+  for (const m of allMonths) {
+    const bg = bMonths.get(m) ?? [];
+    const cg = cMonths.get(m) ?? [];
+    if (bg.length < 3 || cg.length < 3) {
+      console.log(`     ${m.padEnd(10)} ${'—'.padStart(8)}  ${'N too small'.padStart(20)}  ${'—'.padStart(7)}  ${`${bg.length}→${cg.length}`.padStart(9)}`);
+      continue;
+    }
+    const obs = expOfGrades(cg) - expOfGrades(bg);
+    const ci = bootstrapDeltaCI(bg, cg, 1000);
+    const ciStr = `[${fmtDelta(ci.p5, 2)}, ${fmtDelta(ci.p95, 2)}]`;
+    let marker = ' ';
+    if (Math.sign(obs) === observedSign) agreeing++;
+    else if (Math.sign(obs) !== 0 && observedSign !== 0) { disagreeing++; marker = '✗'; }
+    else neutralChunks++;
+    console.log(`    ${marker}${m.padEnd(10)} ${fmtDelta(obs).padStart(8)}  ${ciStr.padStart(20)}  ${(ci.probPositive * 100).toFixed(0).padStart(6)}%  ${`${bg.length}→${cg.length}`.padStart(9)}`);
+  }
+
+  const totalScored = agreeing + disagreeing;
+  console.log(`     ${'-'.repeat(62)}`);
+  if (totalScored === 0) {
+    console.log(`     ⚠ No chunks had enough data to assess`);
+  } else if (disagreeing === 0) {
+    console.log(`     ✓ All ${agreeing} scored chunks agree with overall direction — robust across time`);
+  } else {
+    console.log(`     ⚠ ${disagreeing}/${totalScored} chunks disagree with overall direction — filter may be fitting specific months`);
+  }
 }
 
 function printBootstrapCI(base: TickerSummary, cand: TickerSummary): void {
@@ -299,6 +356,7 @@ async function main(): Promise<number> {
     printComparison(baseline, candidate);
     printMonthlyBreakdown(baseline, candidate);
     printBootstrapCI(baseline, candidate);
+    printWalkForward(baseline, candidate);
     const v = verdict(baseline, candidate);
     printVerdict(v);
 
