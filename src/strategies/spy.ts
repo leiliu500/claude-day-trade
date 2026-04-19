@@ -274,8 +274,14 @@ function spyShouldAllowEntry(ctx: EntryContext): true | string {
   // bullish rangeExhaustion >= 6.0 removed for trends: Q1 counterfactual net costly —
   // exhausted+choppy (chop >= 2.0) now handles the high-risk cases
 
+  // Bullish negative dvel: only the band [-0.05, -0.04) is toxic (N=9,
+  // 1A/0B/3C/0D/5F, rawCost -8). Deeper negatives (-0.08 to -0.05) are
+  // legitimate reversal setups blocked as 2A/5B/0C/0D/0F (rawCost +9).
+  // Apr 16 specifically: 2 B-grade bullish runs (0.42% and 0.32% MFE) at
+  // dvel -0.07 were blocked by the old `< -0.04` rule. Narrowing recovers them.
   if (direction === 'bullish'
-      && ctx.displacementVelocity !== undefined && ctx.displacementVelocity < -0.04) return `bullish dvel ${ctx.displacementVelocity.toFixed(4)} < -0.04`;
+      && ctx.displacementVelocity !== undefined
+      && ctx.displacementVelocity < -0.04 && ctx.displacementVelocity >= -0.05) return `bullish dvel ${ctx.displacementVelocity.toFixed(4)} in [-0.05, -0.04)`;
 
   if (signalMode === 'breakout'
       && ctx.rangeExhaustion !== undefined && ctx.rangeExhaustion < 1.0) return `breakout rangeExhaustion ${ctx.rangeExhaustion.toFixed(1)} < 1.0 (early morning)`;
