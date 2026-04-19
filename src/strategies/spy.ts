@@ -320,6 +320,17 @@ function spyShouldAllowEntry(ctx: EntryContext): true | string {
     return `mid-strength kill zone ${ctx.strengthScore}`;
   }
 
+  // Bullish trend with high ORB bonus: counterintuitive F-cluster. 2026 YTD
+  // post-strength-filter shows bullish+trend+orbBonus>=0.04 is 3A/7B/5C/5D/18F
+  // (exp -0.737, 38 entries, 47% F). ORB bonus fires on aligned breakouts —
+  // in a flat-tape bullish context these are false breakouts that retrace.
+  // Bearish with same ORB bonus is -0.040 exp, so the signal is direction+mode
+  // specific, not a general "ORB bad" pattern.
+  if (direction === 'bullish' && signalMode === 'trend'
+      && ctx.breakdown.orbBonus >= 0.04) {
+    return `bullish trend+orb ${ctx.breakdown.orbBonus.toFixed(2)}`;
+  }
+
   return true;
 }
 
