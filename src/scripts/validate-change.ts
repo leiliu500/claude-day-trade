@@ -50,7 +50,7 @@ interface TickerSummary {
 }
 
 function sh(cmd: string, opts: Record<string, unknown> = {}): string {
-  return execSync(cmd, { encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'], ...opts });
+  return execSync(cmd, { encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'], maxBuffer: 64 * 1024 * 1024, ...opts });
 }
 
 // Only stash paths that actually affect backtest behavior — the harness and
