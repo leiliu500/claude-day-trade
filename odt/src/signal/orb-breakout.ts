@@ -1,6 +1,7 @@
 import type { Bar, Signal } from "../types.js";
 import { etDateKey, etMinutesSinceMidnight } from "../util/time.js";
-import { config } from "../config.js";
+import { defaultStrategyParams } from "../config.js";
+import type { StrategyParams } from "../config.js";
 
 const OR_START_MINS = 9 * 60 + 30;
 const OR_END_MINS = 10 * 60;
@@ -8,6 +9,7 @@ const ENTRY_CLOSE_MINS = 12 * 60;
 const RECENT_CAP = 10;
 
 export interface ORBState {
+  params: StrategyParams;
   recent: Bar[];
   count: number;
   ema: number;
@@ -26,8 +28,9 @@ export interface ORBState {
   lastSignal?: Signal;
 }
 
-export function makeState(): ORBState {
+export function makeState(params: StrategyParams = defaultStrategyParams()): ORBState {
   return {
+    params,
     recent: [],
     count: 0,
     ema: NaN,
@@ -47,7 +50,7 @@ export function makeState(): ORBState {
 }
 
 function updateEMA(state: ORBState, close: number): void {
-  const k = 2 / (config.strategy.emaPeriod + 1);
+  const k = 2 / (state.params.emaPeriod + 1);
   state.prevEma = state.ema;
   if (!isFinite(state.ema)) state.ema = close;
   else state.ema = close * k + state.ema * (1 - k);
@@ -56,7 +59,7 @@ function updateEMA(state: ORBState, close: number): void {
 function updateATR(state: ORBState, b: Bar): void {
   const prev = isFinite(state.prevTrClose) ? state.prevTrClose : b.c;
   const tr = Math.max(b.h - b.l, Math.abs(b.h - prev), Math.abs(b.l - prev));
-  const n = config.strategy.atrPeriod;
+  const n = state.params.atrPeriod;
   if (!isFinite(state.atr)) state.atr = tr;
   else state.atr = (state.atr * (n - 1) + tr) / n;
   state.prevTrClose = b.c;
@@ -107,7 +110,7 @@ export function onBar(state: ORBState, b: Bar): Signal | null {
   if (state.recent.length > RECENT_CAP) state.recent.shift();
   state.count++;
 
-  const warmup = config.strategy.atrPeriod + 2;
+  const warmup = state.params.atrPeriod + 2;
   if (state.count < warmup) return null;
   if (!state.orReady || state.firedToday) return null;
 

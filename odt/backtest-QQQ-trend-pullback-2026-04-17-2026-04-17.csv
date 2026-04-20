@@ -1,0 +1,2 @@
+id,opened,closed,kind,side,long,short,qty,entry_debit,exit_debit,exit_rule,pnl_dollars
+p1,2026-04-17T14:00:00.000Z,2026-04-17T17:20:00.000Z,long_option,LONG,QQQ260417C00647000,,5,1.65,1.09,premium_stop,-286.50

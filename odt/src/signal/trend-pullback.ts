@@ -1,6 +1,7 @@
 import type { Bar, Signal } from "../types.js";
 import { etDateKey, etMinutesSinceMidnight } from "../util/time.js";
-import { config } from "../config.js";
+import { defaultStrategyParams } from "../config.js";
+import type { StrategyParams } from "../config.js";
 
 const ENTRY_WINDOW_OPEN = 10 * 60;
 const ENTRY_WINDOW_CLOSE = 15 * 60 + 30;
@@ -17,6 +18,7 @@ export interface HTFState {
 }
 
 export interface StrategyState {
+  params: StrategyParams;
   recent: Bar[];
   count: number;
   ema: number;
@@ -32,8 +34,9 @@ export interface StrategyState {
   lastSignal?: Signal;
 }
 
-export function makeState(): StrategyState {
+export function makeState(params: StrategyParams = defaultStrategyParams()): StrategyState {
   return {
+    params,
     recent: [],
     count: 0,
     ema: NaN,
@@ -57,7 +60,7 @@ export function makeState(): StrategyState {
 }
 
 function updateEMA(state: StrategyState, close: number): void {
-  const k = 2 / (config.strategy.emaPeriod + 1);
+  const k = 2 / (state.params.emaPeriod + 1);
   state.prevEma = state.ema;
   if (!isFinite(state.ema)) state.ema = close;
   else state.ema = close * k + state.ema * (1 - k);
@@ -66,7 +69,7 @@ function updateEMA(state: StrategyState, close: number): void {
 function updateATR(state: StrategyState, b: Bar): void {
   const prev = isFinite(state.prevTrClose) ? state.prevTrClose : b.c;
   const tr = Math.max(b.h - b.l, Math.abs(b.h - prev), Math.abs(b.l - prev));
-  const n = config.strategy.atrPeriod;
+  const n = state.params.atrPeriod;
   if (!isFinite(state.atr)) state.atr = tr;
   else state.atr = (state.atr * (n - 1) + tr) / n;
   state.prevTrClose = b.c;
@@ -99,7 +102,7 @@ function updateHTF(state: StrategyState, b: Bar): void {
     return;
   }
   const closedClose = h.curClose;
-  const k = 2 / (config.strategy.emaPeriod + 1);
+  const k = 2 / (state.params.emaPeriod + 1);
   h.prevEma = h.ema;
   if (!isFinite(h.ema)) h.ema = closedClose;
   else h.ema = closedClose * k + h.ema * (1 - k);
@@ -111,7 +114,7 @@ function updateHTF(state: StrategyState, b: Bar): void {
 
 export function htfTrendAligned(state: StrategyState, side: "LONG" | "SHORT"): boolean {
   const h = state.htf;
-  if (h.closedBuckets < config.strategy.emaPeriod + 2) return false;
+  if (h.closedBuckets < state.params.emaPeriod + 2) return false;
   if (!isFinite(h.ema) || !isFinite(h.prevEma)) return false;
   if (side === "LONG") return h.ema > h.prevEma && h.lastClose > h.ema;
   return h.ema < h.prevEma && h.lastClose < h.ema;
@@ -126,7 +129,7 @@ export function onBar(state: StrategyState, b: Bar): Signal | null {
   if (state.recent.length > RECENT_CAP) state.recent.shift();
   state.count++;
 
-  const warmup = Math.max(config.strategy.emaPeriod + 5, config.strategy.atrPeriod + 2);
+  const warmup = Math.max(state.params.emaPeriod + 5, state.params.atrPeriod + 2);
   if (state.count < warmup) {
     state.prevClose = b.c;
     return null;

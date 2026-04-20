@@ -8,24 +8,57 @@
   </head>
   <body>
     <header>
-      <h1>odt</h1>
-      <nav>
-        <button class="tab-btn active" data-tab="live">Live</button>
-        <button class="tab-btn" data-tab="tests">Tests</button>
-        <button class="tab-btn" data-tab="compare">Compare</button>
-      </nav>
-      <div class="meta">
-        <span id="now"></span>
+      <h1>📈 odt</h1>
+      <div id="status-bar">
+        <span id="now">—</span>
+        <span id="auto-refresh">🔄 auto 15s</span>
       </div>
     </header>
 
     <main>
-      <section id="tab-live" class="tab active">
-        <div class="row">
-          <label>symbol <input id="live-symbol" value="SPY" /></label>
-          <button id="live-refresh">refresh</button>
-          <span id="live-auto">auto-refresh 15s: <b>on</b></span>
+      <!-- Summary cards -->
+      <section class="cards">
+        <div class="card">
+          <h3>Symbol</h3>
+          <div class="card-value" id="val-symbol">—</div>
         </div>
+        <div class="card">
+          <h3>Open Positions</h3>
+          <div class="card-value" id="val-positions">—</div>
+        </div>
+        <div class="card">
+          <h3>Today P&amp;L</h3>
+          <div class="card-value" id="val-pnl">—</div>
+        </div>
+        <div class="card">
+          <h3>Signals Today</h3>
+          <div class="card-value" id="val-signals">—</div>
+        </div>
+        <div class="card">
+          <h3>Kill Switch</h3>
+          <div class="card-value" id="val-kill">—</div>
+        </div>
+      </section>
+
+      <!-- Filter bar -->
+      <div class="filter-bar">
+        <div class="filter-group">
+          <label for="filter-ticker">Symbol</label>
+          <select id="filter-ticker"></select>
+        </div>
+        <button id="live-refresh" class="filter-clear">refresh</button>
+        <span class="muted" id="filter-meta"></span>
+      </div>
+
+      <!-- Page nav -->
+      <nav class="pages">
+        <button class="page-btn active" data-page="live">Live</button>
+        <button class="page-btn" data-page="tests">Tests &amp; Backtest</button>
+        <button class="page-btn" data-page="compare">Compare</button>
+      </nav>
+
+      <!-- LIVE page -->
+      <section id="page-live" class="page active">
         <div class="grid-2">
           <div class="card">
             <h2>Run</h2>
@@ -37,7 +70,7 @@
           </div>
         </div>
         <div class="card">
-          <h2>Open positions <span id="live-pos-count"></span></h2>
+          <h2>Open positions <span id="live-pos-count" class="muted"></span></h2>
           <div id="live-positions"></div>
         </div>
         <div class="card">
@@ -46,7 +79,8 @@
         </div>
       </section>
 
-      <section id="tab-tests" class="tab">
+      <!-- TESTS page -->
+      <section id="page-tests" class="page">
         <div class="card">
           <h2>Run a job</h2>
           <div class="job-buttons">
@@ -56,9 +90,8 @@
           <hr />
           <form id="backtest-form" class="job-form">
             <div class="row">
-              <label>symbol <input name="symbol" value="SPY" /></label>
-              <label>strategy <select name="strategy"><option value="orb">orb</option><option value="trend-pullback">trend-pullback</option></select></label>
-              <label>vehicle <select name="vehicle"><option value="long_option">long_option</option><option value="debit_vertical">debit_vertical</option></select></label>
+              <label>symbol <input name="symbol" id="bt-symbol" value="SPY" /></label>
+              <span class="muted">(strategy &amp; vehicle inherit live config.symbols)</span>
             </div>
             <div class="row">
               <label>start <input name="start" placeholder="YYYY-MM-DD" required /></label>
@@ -75,17 +108,18 @@
             <div id="jobs-list"></div>
           </div>
           <div class="card">
-            <h2>Output <span id="current-job-name"></span></h2>
+            <h2>Output <span id="current-job-name" class="muted"></span></h2>
             <pre id="job-output" class="output"></pre>
           </div>
         </div>
       </section>
 
-      <section id="tab-compare" class="tab">
+      <!-- COMPARE page -->
+      <section id="page-compare" class="page">
         <div class="row">
-          <label>symbol <input id="cmp-symbol" value="SPY" /></label>
           <label>day <input id="cmp-day" placeholder="YYYY-MM-DD" /></label>
           <button id="cmp-run">Compare</button>
+          <span class="muted">(uses symbol from filter bar above)</span>
         </div>
         <div class="grid-2">
           <div class="card">
@@ -98,7 +132,7 @@
           </div>
         </div>
         <div class="card">
-          <h2>Delta (live vs backtest)</h2>
+          <h2>Delta (live − backtest)</h2>
           <div id="cmp-delta"></div>
         </div>
       </section>

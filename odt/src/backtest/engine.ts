@@ -1,7 +1,7 @@
 import type { Bar, Position, Signal, Vehicle } from "../types.js";
 import { fetchStockBars } from "../data/alpaca-rest.js";
 import type { Strategy } from "../signal/strategy.js";
-import { trendPullbackStrategy } from "../signal/strategy.js";
+import { getStrategy, trendPullbackStrategy } from "../signal/strategy.js";
 import { pickSyntheticVertical, pickSyntheticLongOption } from "../selector/strike-picker.js";
 import { newAccountState, rollDay, recordClose } from "../risk/account.js";
 import { pretradeGate, sizeOrder } from "../risk/limits.js";
@@ -17,7 +17,13 @@ import { closePosition, evaluateExit, openPosition } from "../position/manager.j
 import { hvAnnualizedFromDailyCloses, dailyClosesFromIntraday } from "../vol/hv.js";
 import { rankWithin } from "../vol/iv-rank.js";
 import { etDateKey, etMinutesSinceMidnight } from "../util/time.js";
-import { config } from "../config.js";
+import {
+  config,
+  exitParamsFor,
+  resolveSymbolConfig,
+  strategyParamsFor,
+  strikeParamsFor,
+} from "../config.js";
 import { logger } from "../util/logger.js";
 import type { TrackingSink } from "../tracking/sink.js";
 import { NoopSink } from "../tracking/sink.js";
@@ -78,8 +84,13 @@ export async function runBacktest(inp: BacktestInputs): Promise<BacktestResult> 
   const daily = await fetchStockBars(inp.symbol, "1Day", priorStart, inp.endISO);
   log.info(`loaded ${min1.length} 1m bars, ${min5All.length} ${config.strategy.barMinutes}m bars, ${daily.length} daily bars`);
 
-  const strategy = inp.strategy ?? trendPullbackStrategy;
-  const vehicle: Vehicle = inp.vehicle ?? config.strategy.vehicle;
+  const preset = config.symbols.find((c) => c.symbol === inp.symbol);
+  const resolved = resolveSymbolConfig(preset ?? { symbol: inp.symbol });
+  const strategy =
+    inp.strategy ?? (preset?.strategy ? getStrategy(resolved.strategy) : trendPullbackStrategy);
+  const vehicle: Vehicle = inp.vehicle ?? resolved.vehicle;
+  const strikeParams = strikeParamsFor({ ...resolved, vehicle });
+  const exitParams = exitParamsFor({ ...resolved, vehicle });
   log.info(`strategy: ${strategy.name}, vehicle: ${vehicle}`);
   const sink: TrackingSink = inp.sink ?? new NoopSink({
     mode: "backtest",
@@ -92,7 +103,7 @@ export async function runBacktest(inp: BacktestInputs): Promise<BacktestResult> 
   const initialEquity = inp.initialEquity ?? config.risk.accountEquityFallback;
   const account = newAccountState(initialEquity, etDateKey(new Date(inp.startISO).getTime()));
   const kill = newKillState();
-  const state = strategy.makeState();
+  const state = strategy.makeState(strategyParamsFor({ ...resolved, vehicle }));
   const closed: Position[] = [];
   const signals: Signal[] = [];
   const blocked: Array<{ signal: Signal; reason: string }> = [];
@@ -203,7 +214,7 @@ export async function runBacktest(inp: BacktestInputs): Promise<BacktestResult> 
         min5All.filter((x) => x.t < b.t),
         (x) => etDateKey(x.t),
       );
-      const hv = hvAnnualizedFromDailyCloses(priorClosures, config.strategy.hvPeriod);
+      const hv = hvAnnualizedFromDailyCloses(priorClosures, resolved.hvPeriod);
       if (isFinite(hv)) {
         hvWindow.push(hv);
         if (hvWindow.length > 60) hvWindow.shift();
@@ -214,8 +225,8 @@ export async function runBacktest(inp: BacktestInputs): Promise<BacktestResult> 
           if (
             shouldKillForRegime(
               dailyRankHistory,
-              config.strategy.hvRankRegimeKill,
-              config.strategy.hvRankRegimeKillConsecutiveDays,
+              resolved.hvRankRegimeKill,
+              resolved.hvRankRegimeKillConsecutiveDays,
             )
           ) {
             killTrip(kill, "regime");
@@ -233,13 +244,17 @@ export async function runBacktest(inp: BacktestInputs): Promise<BacktestResult> 
       pos.lastMarkDebit = theo;
       await emitMarkIfBucketCrossed(pos, theo, b.c, b.t);
       const invalidated = strategy.underlyingInvalidated(state, pos.fill.order.side);
-      const exitRule = evaluateExit(pos, {
-        now: b.t,
-        underlyingPx: b.c,
-        markDebit: theo,
-        underlyingInvalidated: invalidated,
-        killTripped: kill.tripped,
-      });
+      const exitRule = evaluateExit(
+        pos,
+        {
+          now: b.t,
+          underlyingPx: b.c,
+          markDebit: theo,
+          underlyingInvalidated: invalidated,
+          killTripped: kill.tripped,
+        },
+        exitParams,
+      );
       if (exitRule) {
         const exit = simulateExitFill(pos.fill.order, theo);
         closePosition(pos, exitRule, exit.debit, exit.fees, b.t);
@@ -292,7 +307,7 @@ export async function runBacktest(inp: BacktestInputs): Promise<BacktestResult> 
           await recordBlocked("hv-not-ready");
         } else {
           const hvRank = hvWindow.length >= 10 ? rankWithin(sigma, hvWindow) : 0.5;
-          if (hvRank > config.strategy.hvRankSellMin) {
+          if (hvRank > resolved.hvRankSellMin) {
             await recordBlocked(`hv-rank-too-high:${hvRank.toFixed(2)}`);
           } else {
             const pickerCtx = {
@@ -305,14 +320,20 @@ export async function runBacktest(inp: BacktestInputs): Promise<BacktestResult> 
             };
             const order =
               vehicle === "long_option"
-                ? pickSyntheticLongOption(pickerCtx, signal.side, signal)
-                : pickSyntheticVertical(pickerCtx, signal.side, signal);
-            const size = sizeOrder(order, account);
+                ? pickSyntheticLongOption(pickerCtx, signal.side, signal, strikeParams)
+                : pickSyntheticVertical(pickerCtx, signal.side, signal, strikeParams);
+            const size = sizeOrder(order, account, {
+              longOptionStopPct: resolved.longOptionPremiumStopPct,
+            });
             if (size.qty === 0) {
               await recordBlocked(size.reason);
             } else {
               order.qty = size.qty;
-              const gate = pretradeGate(account, size.perContractRisk * size.qty);
+              const gate = pretradeGate(account, size.perContractRisk * size.qty, {
+                symbol: inp.symbol,
+                symbolMaxConcurrent: resolved.maxConcurrent,
+                symbolLossStreakLockout: resolved.lossStreakLockout,
+              });
               if (!gate.ok) {
                 await recordBlocked(gate.reason ?? "gate");
               } else {

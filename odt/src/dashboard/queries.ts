@@ -78,6 +78,16 @@ function etDay(): string {
   return fmt.format(now);
 }
 
+export async function listSymbols(): Promise<string[]> {
+  const res = await getPool().query<{ symbol: string }>(
+    `SELECT DISTINCT symbol
+     FROM trading.odt_runs
+     WHERE mode = 'live' AND symbol IS NOT NULL
+     ORDER BY symbol ASC`,
+  );
+  return res.rows.map((r) => r.symbol);
+}
+
 export async function listRecentRuns(limit = 20): Promise<RunRow[]> {
   const res = await getPool().query<RunRow>(
     `SELECT id, mode, strategy, vehicle, symbol, started_at, ended_at, fold_start, fold_end

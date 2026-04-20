@@ -1,5 +1,11 @@
 import { describe, it, expect } from "vitest";
-import { newAccountState, recordClose, rollDay } from "../src/risk/account.js";
+import {
+  countOpenForSymbol,
+  ensureSymbolDay,
+  newAccountState,
+  recordClose,
+  rollDay,
+} from "../src/risk/account.js";
 import { pretradeGate, sizeOrder } from "../src/risk/limits.js";
 import { newKillState, check, trip, shouldKillForRegime } from "../src/risk/kill-switch.js";
 import { buildOccSymbol } from "../src/selector/occ-symbol.js";
@@ -108,6 +114,70 @@ describe("shouldKillForRegime", () => {
 
   it("handles exact-threshold equality correctly", () => {
     expect(shouldKillForRegime([0.90, 0.90], 0.90, 2)).toBe(true);
+  });
+});
+
+describe("per-symbol pretradeGate", () => {
+  it("enforces per-symbol max-concurrent independently", () => {
+    const state = newAccountState(25_000, "2026-04-20");
+    const pos = { id: "a", symbol: "SPY" } as unknown as Position;
+    state.openPositions.push(pos);
+    const gSpy = pretradeGate(state, 100, { symbol: "SPY", symbolMaxConcurrent: 1 });
+    expect(gSpy.ok).toBe(false);
+    expect(gSpy.reason).toBe("symbol-max-concurrent");
+    const gQqq = pretradeGate(state, 100, { symbol: "QQQ", symbolMaxConcurrent: 1 });
+    expect(gQqq.ok).toBe(true);
+  });
+
+  it("uses per-symbol streakLosses when symbol provided", () => {
+    const state = newAccountState(25_000, "2026-04-20");
+    const d = ensureSymbolDay(state, "SPY", "2026-04-20");
+    d.streakLosses = 3;
+    const gSpy = pretradeGate(state, 100, {
+      symbol: "SPY",
+      symbolMaxConcurrent: 5,
+      symbolLossStreakLockout: 3,
+    });
+    expect(gSpy.ok).toBe(false);
+    expect(gSpy.reason).toBe("loss-streak-lockout");
+    const gQqq = pretradeGate(state, 100, {
+      symbol: "QQQ",
+      symbolMaxConcurrent: 5,
+      symbolLossStreakLockout: 3,
+    });
+    expect(gQqq.ok).toBe(true);
+  });
+});
+
+describe("countOpenForSymbol", () => {
+  it("counts only positions for the given symbol", () => {
+    const state = newAccountState(25_000, "2026-04-20");
+    state.openPositions.push(
+      { id: "1", symbol: "SPY" } as unknown as Position,
+      { id: "2", symbol: "SPY" } as unknown as Position,
+      { id: "3", symbol: "QQQ" } as unknown as Position,
+    );
+    expect(countOpenForSymbol(state, "SPY")).toBe(2);
+    expect(countOpenForSymbol(state, "QQQ")).toBe(1);
+    expect(countOpenForSymbol(state, "MSFT")).toBe(0);
+  });
+});
+
+describe("recordClose per-symbol", () => {
+  it("updates per-symbol streak independently", () => {
+    const state = newAccountState(10_000, "2026-04-20");
+    const makePos = (pnl: number, symbol: string): Position =>
+      ({ id: "p", symbol, pnlDollars: pnl, fill: { fees: 0, order: { qty: 1 } } }) as unknown as Position;
+    recordClose(state, makePos(-50, "SPY"));
+    recordClose(state, makePos(-50, "SPY"));
+    recordClose(state, makePos(100, "QQQ"));
+    const spy = state.perSymbolToday.get("SPY");
+    const qqq = state.perSymbolToday.get("QQQ");
+    expect(spy?.streakLosses).toBe(2);
+    expect(spy?.losses).toBe(2);
+    expect(qqq?.streakLosses).toBe(0);
+    expect(qqq?.wins).toBe(1);
+    expect(state.today.streakLosses).toBe(0);
   });
 });
 

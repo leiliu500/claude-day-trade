@@ -5,9 +5,11 @@ import { existsSync, readFileSync } from "node:fs";
 import {
   compareDay,
   listRecentRuns,
+  listSymbols,
   positionMarks,
   todayLive,
 } from "./queries.js";
+import { config } from "../config.js";
 import {
   buildPresetJob,
   cancelJob,
@@ -45,6 +47,17 @@ export function createApp() {
 
   app.get("/api/health", (_req, res) => {
     res.json({ ok: true, now: Date.now() });
+  });
+
+  app.get("/api/symbols", async (_req, res) => {
+    try {
+      const dbSymbols = await listSymbols();
+      const configured = config.symbols.map((s) => s.symbol);
+      const merged = Array.from(new Set([...configured, ...dbSymbols])).sort();
+      res.json({ symbols: merged, configured });
+    } catch (e) {
+      res.status(500).json({ error: (e as Error).message });
+    }
   });
 
   app.get("/api/runs", async (_req, res) => {

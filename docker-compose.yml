@@ -70,7 +70,9 @@ services:
       TELEGRAM_CHAT_ID: ${TELEGRAM_CHAT_ID}
       NODE_ENV: ${NODE_ENV:-production}
       ODT_LOG_LEVEL: ${ODT_LOG_LEVEL:-info}
-    command: ['npx', 'tsx', 'odt/src/cli/live.ts', '--symbol', 'SPY', '--strategy', 'orb-filtered', '--vehicle', 'long_option']
+    # Symbols, strategies, and vehicles come from odt/src/config.ts (config.symbols).
+    # To override at runtime: set ODT_SYMBOLS env (comma-list or JSON) or pass --symbols=SPY,QQQ.
+    command: ['npx', 'tsx', 'odt/src/cli/live.ts']
 
   # New odt dashboard on :3001 (replaces what the legacy orchestrator used to publish).
   odt-dashboard:

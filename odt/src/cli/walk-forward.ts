@@ -3,6 +3,7 @@ import { formatReport } from "../backtest/report.js";
 import { getStrategy } from "../signal/strategy.js";
 import { makeSink } from "../tracking/factory.js";
 import { closePool } from "../tracking/db-pool.js";
+import { config, resolveSymbolConfig } from "../config.js";
 
 function arg(name: string, fallback?: string): string {
   const prefix = `--${name}=`;
@@ -21,13 +22,16 @@ async function main(): Promise<void> {
   const folds = Number(arg("folds", "3"));
   const equity = Number(arg("equity", "25000"));
 
-  const strategyName = arg("strategy", "trend-pullback");
-  const strategy = getStrategy(strategyName);
-  const vehicleArg = arg("vehicle", "") as "" | "debit_vertical" | "long_option";
-  const vehicle = vehicleArg === "" ? undefined : vehicleArg;
+  const preset = config.symbols.find((c) => c.symbol === symbol);
+  const resolved = resolveSymbolConfig(preset ?? { symbol });
+  const strategy = getStrategy(resolved.strategy);
+  const vehicle = resolved.vehicle;
+
   const useDb = process.argv.includes("--db");
   const useTelegram = process.argv.includes("--telegram");
-  console.log(`Strategy: ${strategy.name}  Vehicle: ${vehicle ?? "(config default)"}  db=${useDb} telegram=${useTelegram}`);
+  console.log(
+    `Walk-forward (live-mirror): symbol=${symbol} strategy=${strategy.name} vehicle=${vehicle} source=${preset ? "config.symbols" : "global-default"}  db=${useDb} telegram=${useTelegram}`,
+  );
 
   const createSink = (useDb || useTelegram)
     ? (fold: { startISO: string; endISO: string }) =>
@@ -35,7 +39,7 @@ async function main(): Promise<void> {
           {
             mode: "backtest" as const,
             strategy: strategy.name,
-            vehicle: vehicle ?? "debit_vertical",
+            vehicle,
             symbol,
             startedAt: Date.now(),
             foldWindow: { start: fold.startISO, end: fold.endISO },

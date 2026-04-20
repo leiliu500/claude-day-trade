@@ -1,4 +1,5 @@
 import type { Bar, Signal } from "../types.js";
+import type { StrategyParams } from "../config.js";
 import * as trendPullback from "./trend-pullback.js";
 import * as orbBreakout from "./orb-breakout.js";
 import * as orbFiltered from "./orb-filtered.js";
@@ -6,7 +7,7 @@ import * as orbMulti from "./orb-multi.js";
 
 export interface Strategy {
   readonly name: string;
-  makeState(): unknown;
+  makeState(params?: StrategyParams): unknown;
   onBar(state: unknown, b: Bar): Signal | null;
   underlyingInvalidated(state: unknown, side: "LONG" | "SHORT"): boolean;
 }

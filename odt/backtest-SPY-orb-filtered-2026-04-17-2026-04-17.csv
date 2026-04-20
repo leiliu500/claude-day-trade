@@ -1,0 +1,2 @@
+id,opened,closed,kind,side,long,short,qty,entry_debit,exit_debit,exit_rule,pnl_dollars
+p1,2026-04-17T14:00:00.000Z,2026-04-17T14:45:00.000Z,long_option,LONG,SPY260417C00709000,,4,1.37,2.73,target,538.80

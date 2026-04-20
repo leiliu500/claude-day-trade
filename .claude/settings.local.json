@@ -196,7 +196,27 @@
       "Bash(curl -s -X POST http://localhost:3001/api/jobs -H \"content-type: application/json\" -d '{\"preset\":\"unit-tests\"}')",
       "Bash(curl -s -X POST http://localhost:3001/api/jobs -H \"content-type: application/json\" -d '{\"preset\":\"backtest\",\"params\":{\"symbol\":\"SPY\",\"start\":\"2026-04-17\",\"end\":\"2026-04-17\",\"strategy\":\"orb\",\"vehicle\":\"long_option\"}}')",
       "Bash(curl -s \"http://localhost:3001/api/live/today?symbol=SPY\")",
-      "Bash(curl -s http://localhost:3001/static/app.js)"
+      "Bash(curl -s http://localhost:3001/static/app.js)",
+      "Bash(git -C /home/ec2-user/claude-day-trade log --oneline -20)",
+      "Bash(/home/ec2-user/claude-day-trade/node_modules/.bin/tsc --noEmit)",
+      "Bash(ALPACA_API_KEY=test ALPACA_SECRET_KEY=test /home/ec2-user/claude-day-trade/node_modules/.bin/vitest run)",
+      "Bash(/home/ec2-user/claude-day-trade/node_modules/.bin/tsc -p . --noEmit)",
+      "Bash(/home/ec2-user/claude-day-trade/node_modules/.bin/tsx odt/src/cli/backtest.ts --symbol=SPY --start=2025-04-17 --end=2025-04-17 --strategy=orb --vehicle=long_option)",
+      "Bash(/home/ec2-user/claude-day-trade/node_modules/.bin/tsx odt/src/cli/backtest.ts --symbol=SPY --start=2026-04-17 --end=2026-04-17 --strategy=orb --vehicle=long_option)",
+      "Bash(/home/ec2-user/claude-day-trade/node_modules/.bin/tsx odt/src/cli/backtest.ts --symbol=SPY --start=2026-04-17 --end=2026-04-17)",
+      "Bash(/home/ec2-user/claude-day-trade/node_modules/.bin/tsx odt/src/cli/backtest.ts --symbol=QQQ --start=2026-04-17 --end=2026-04-17)",
+      "Bash(/home/ec2-user/claude-day-trade/node_modules/.bin/tsx odt/src/scripts/sweep-symbol.ts --symbol=QQQ --start=2026-01-01 --end=2026-04-17 --minTrades=15)",
+      "Bash(/home/ec2-user/claude-day-trade/node_modules/.bin/tsx odt/src/scripts/sweep-symbol.ts --symbol=QQQ --start=2026-01-01 --end=2026-04-17 --minTrades=20)",
+      "Bash(/home/ec2-user/claude-day-trade/node_modules/.bin/tsx odt/src/scripts/sweep-symbol.ts --symbol=QQQ --start=2026-01-01 --end=2026-04-17 --minTrades=20 '--combos=[ *)",
+      "Bash(/home/ec2-user/claude-day-trade/node_modules/.bin/tsx odt/src/cli/backtest.ts --symbol=SPY --start=2026-01-01 --end=2026-04-17)",
+      "Bash(/home/ec2-user/claude-day-trade/node_modules/.bin/tsx odt/src/cli/backtest.ts --symbol=QQQ --start=2026-01-01 --end=2026-04-17)",
+      "Bash(echo \"---EXIT $?\")",
+      "Bash(timeout 15 /home/ec2-user/claude-day-trade/node_modules/.bin/tsx odt/src/cli/live.ts --symbols=SPY,QQQ --dry-run --no-db --no-telegram)",
+      "Bash(echo \"---exit=$?\")",
+      "Bash(docker-compose --version)",
+      "Bash(docker run *)",
+      "Bash(awk -F',' 'NR>1 {m=substr\\($2,1,7\\); n[m]++; pnl[m]+=$12; if\\($12>0\\)w[m]++; else l[m]++;} END {printf \"month     | trades |  W/L  | winRate | net P&L   | avg/trade\\\\n\"; printf \"----------+--------+-------+---------+-----------+----------\\\\n\"; for\\(m in n\\) printf \"%s   |   %3d  | %2d/%-2d | %6.1f%% | %+9.2f | %+8.2f\\\\n\", m, n[m], w[m]+0, l[m]+0, \\(w[m]+0\\)/n[m]*100, pnl[m], pnl[m]/n[m];}' /home/ec2-user/claude-day-trade/odt/backtest-QQQ-trend-pullback-2026-01-01-2026-04-17.csv)",
+      "Bash(awk -F',' 'NR>1 {print substr\\($2,1,7\\)}' /home/ec2-user/claude-day-trade/odt/backtest-QQQ-trend-pullback-2026-01-01-2026-04-17.csv)"
     ],
     "additionalDirectories": [
       "/home/ec2-user/.claude/projects/-home-ec2-user-claude-day-trade"

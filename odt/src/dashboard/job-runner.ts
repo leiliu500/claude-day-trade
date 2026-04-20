@@ -127,8 +127,6 @@ export const PRESETS: Record<string, (params: Record<string, string>) => JobSpec
       "--symbol", p.symbol ?? "SPY",
       "--start", p.start ?? "",
       "--end", p.end ?? "",
-      "--strategy", p.strategy ?? "orb",
-      "--vehicle", p.vehicle ?? "long_option",
     ],
   }),
   "walk-forward": (p) => ({
@@ -141,8 +139,6 @@ export const PRESETS: Record<string, (params: Record<string, string>) => JobSpec
       "--start", p.start ?? "",
       "--end", p.end ?? "",
       "--folds", p.folds ?? "3",
-      "--strategy", p.strategy ?? "orb",
-      "--vehicle", p.vehicle ?? "long_option",
     ],
   }),
 };

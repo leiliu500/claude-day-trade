@@ -1,6 +1,7 @@
 import type { Bar, Signal } from "../types.js";
 import { etDateKey, etMinutesSinceMidnight } from "../util/time.js";
-import { config } from "../config.js";
+import { defaultStrategyParams } from "../config.js";
+import type { StrategyParams } from "../config.js";
 
 const RECENT_CAP = 10;
 
@@ -30,6 +31,7 @@ interface Range {
 }
 
 export interface ORBMultiState {
+  params: StrategyParams;
   recent: Bar[];
   count: number;
   ema: number;
@@ -52,8 +54,9 @@ function freshRanges(): Range[] {
   return RANGES.map((r) => ({ id: r.id, high: -Infinity, low: Infinity, ready: false, fired: false }));
 }
 
-export function makeState(): ORBMultiState {
+export function makeState(params: StrategyParams = defaultStrategyParams()): ORBMultiState {
   return {
+    params,
     recent: [],
     count: 0,
     ema: NaN,
@@ -73,7 +76,7 @@ export function makeState(): ORBMultiState {
 }
 
 function updateEMA(s: ORBMultiState, close: number): void {
-  const k = 2 / (config.strategy.emaPeriod + 1);
+  const k = 2 / (s.params.emaPeriod + 1);
   s.prevEma = s.ema;
   if (!isFinite(s.ema)) s.ema = close;
   else s.ema = close * k + s.ema * (1 - k);
@@ -82,7 +85,7 @@ function updateEMA(s: ORBMultiState, close: number): void {
 function updateATR(s: ORBMultiState, b: Bar): void {
   const prev = isFinite(s.prevTrClose) ? s.prevTrClose : b.c;
   const tr = Math.max(b.h - b.l, Math.abs(b.h - prev), Math.abs(b.l - prev));
-  const n = config.strategy.atrPeriod;
+  const n = s.params.atrPeriod;
   if (!isFinite(s.atr)) s.atr = tr;
   else s.atr = (s.atr * (n - 1) + tr) / n;
   s.prevTrClose = b.c;
@@ -150,7 +153,7 @@ export function onBar(s: ORBMultiState, b: Bar): Signal | null {
   if (s.recent.length > RECENT_CAP) s.recent.shift();
   s.count++;
 
-  const warmup = config.strategy.atrPeriod + 2;
+  const warmup = s.params.atrPeriod + 2;
   if (s.count < warmup) return null;
   if (!isFinite(s.atr) || s.atr <= 0) return null;
 

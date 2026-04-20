@@ -70,6 +70,7 @@ export type ExitRule = "invalidation" | "premium_stop" | "target" | "time" | "ki
 
 export interface Position {
   id: string;
+  symbol: string;
   opened: number;
   fill: Fill;
   entryUnderlying: number;

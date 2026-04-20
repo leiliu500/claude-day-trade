@@ -8,6 +8,26 @@ const R = 0.04;
 const MIN_T_SECONDS = 60;
 const YEAR_SECONDS = 365 * 24 * 3600;
 
+export interface StrikeParams {
+  targetDelta: number;
+  longOptionTargetDelta: number;
+  deltaBand: number;
+  verticalWidthDollars: number;
+  minDTE: number;
+  maxDTE: number;
+}
+
+export function defaultStrikeParams(): StrikeParams {
+  return {
+    targetDelta: config.strategy.targetDelta,
+    longOptionTargetDelta: config.strategy.longOptionTargetDelta,
+    deltaBand: config.strategy.deltaBand,
+    verticalWidthDollars: config.strategy.verticalWidthDollars,
+    minDTE: config.strategy.minDTE,
+    maxDTE: config.strategy.maxDTE,
+  };
+}
+
 export interface SynthContext {
   underlying: string;
   underlyingPx: number;
@@ -27,9 +47,10 @@ export function pickSyntheticVertical(
   ctx: SynthContext,
   side: "LONG" | "SHORT",
   signal: Signal,
+  params: StrikeParams = defaultStrikeParams(),
 ): VerticalOrder {
   const type: "C" | "P" = side === "LONG" ? "C" : "P";
-  const dte = Math.round((config.strategy.minDTE + config.strategy.maxDTE) / 2);
+  const dte = Math.round((params.minDTE + params.maxDTE) / 2);
   const expiryISO = addBusinessDays(ctx.asOfDateISO, dte);
   const T = timeToExpiryYears(ctx.asOfMs, expiryISO);
   const step = ctx.strikeStep ?? 1;
@@ -41,10 +62,10 @@ export function pickSyntheticVertical(
     R,
     sigma,
     type,
-    config.strategy.targetDelta,
+    params.targetDelta,
     step,
   );
-  const width = config.strategy.verticalWidthDollars;
+  const width = params.verticalWidthDollars;
   const shortStrike = type === "C" ? longStrike + width : longStrike - width;
 
   const longDelta = bsDelta({ S: ctx.underlyingPx, K: longStrike, T, r: R, sigma, type });
@@ -87,9 +108,10 @@ export function pickSyntheticLongOption(
   ctx: SynthContext,
   side: "LONG" | "SHORT",
   signal: Signal,
+  params: StrikeParams = defaultStrikeParams(),
 ): LongOptionOrder {
   const type: "C" | "P" = side === "LONG" ? "C" : "P";
-  const dte = Math.round((config.strategy.minDTE + config.strategy.maxDTE) / 2);
+  const dte = Math.round((params.minDTE + params.maxDTE) / 2);
   const expiryISO = addBusinessDays(ctx.asOfDateISO, dte);
   const T = timeToExpiryYears(ctx.asOfMs, expiryISO);
   const step = ctx.strikeStep ?? 1;
@@ -101,7 +123,7 @@ export function pickSyntheticLongOption(
     R,
     sigma,
     type,
-    config.strategy.longOptionTargetDelta,
+    params.longOptionTargetDelta,
     step,
   );
   const delta = bsDelta({ S: ctx.underlyingPx, K: strike, T, r: R, sigma, type });
@@ -140,15 +162,16 @@ export function pickLongOptionFromSnapshots(
   candidates: OptionContract[],
   side: "LONG" | "SHORT",
   signal: Signal,
+  params: StrikeParams = defaultStrikeParams(),
 ): LongOptionOrder | null {
   const type: "C" | "P" = side === "LONG" ? "C" : "P";
   const pool = candidates.filter((c) => c.type === type);
   if (pool.length === 0) return null;
 
-  const target = side === "LONG" ? config.strategy.longOptionTargetDelta : -config.strategy.longOptionTargetDelta;
+  const target = side === "LONG" ? params.longOptionTargetDelta : -params.longOptionTargetDelta;
   pool.sort((a, b) => Math.abs(a.delta - target) - Math.abs(b.delta - target));
   const leg = pool.find(
-    (c) => Math.abs(Math.abs(c.delta) - config.strategy.longOptionTargetDelta) <= config.strategy.deltaBand,
+    (c) => Math.abs(Math.abs(c.delta) - params.longOptionTargetDelta) <= params.deltaBand,
   );
   if (!leg) return null;
 
@@ -172,17 +195,20 @@ export function pickFromSnapshots(
   candidates: OptionContract[],
   side: "LONG" | "SHORT",
   signal: Signal,
+  params: StrikeParams = defaultStrikeParams(),
 ): VerticalOrder | null {
   const type: "C" | "P" = side === "LONG" ? "C" : "P";
   const pool = candidates.filter((c) => c.type === type);
   if (pool.length < 2) return null;
 
-  const target = side === "LONG" ? config.strategy.targetDelta : -config.strategy.targetDelta;
+  const target = side === "LONG" ? params.targetDelta : -params.targetDelta;
   pool.sort((a, b) => Math.abs(a.delta - target) - Math.abs(b.delta - target));
-  const longLeg = pool.find((c) => Math.abs(Math.abs(c.delta) - config.strategy.targetDelta) <= config.strategy.deltaBand);
+  const longLeg = pool.find(
+    (c) => Math.abs(Math.abs(c.delta) - params.targetDelta) <= params.deltaBand,
+  );
   if (!longLeg) return null;
 
-  const width = config.strategy.verticalWidthDollars;
+  const width = params.verticalWidthDollars;
   const shortStrike = type === "C" ? longLeg.strike + width : longLeg.strike - width;
   const shortLeg = pool
     .filter((c) => c.expiry === longLeg.expiry)

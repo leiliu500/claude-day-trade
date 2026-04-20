@@ -5,7 +5,7 @@ const $$ = (sel) => Array.from(document.querySelectorAll(sel));
 
 const fmtUsd = (n) => {
   if (n === null || n === undefined) return "—";
-  const sign = n >= 0 ? "+" : "-";
+  const sign = Number(n) >= 0 ? "+" : "-";
   return `${sign}$${Math.abs(Number(n)).toFixed(2)}`;
 };
 const fmtTime = (ts) => {
@@ -13,24 +13,58 @@ const fmtTime = (ts) => {
   const d = new Date(ts);
   return d.toLocaleString("en-US", { timeZone: "America/New_York", hour12: false });
 };
-const fmtDate = (ts) => (ts ? new Date(ts).toISOString().slice(0, 10) : "—");
 const cls = (n) => (n === null || n === undefined ? "muted" : Number(n) >= 0 ? "good" : "bad");
 
-/* ---------------- tab switching ---------------- */
-$$(".tab-btn").forEach((btn) => {
+let symbols = [];
+let currentSymbol = localStorage.getItem("odt.symbol") || "SPY";
+
+/* ---------------- symbols + filter bar ---------------- */
+async function loadSymbols() {
+  try {
+    const r = await fetch("/api/symbols");
+    const data = await r.json();
+    symbols = data.symbols && data.symbols.length ? data.symbols : [currentSymbol];
+  } catch {
+    symbols = [currentSymbol];
+  }
+  const sel = $("#filter-ticker");
+  sel.innerHTML = symbols.map((s) => `<option value="${s}">${s}</option>`).join("");
+  if (!symbols.includes(currentSymbol)) currentSymbol = symbols[0];
+  sel.value = currentSymbol;
+  $("#bt-symbol").value = currentSymbol;
+}
+
+$("#filter-ticker")?.addEventListener("change", (e) => {
+  currentSymbol = e.target.value;
+  localStorage.setItem("odt.symbol", currentSymbol);
+  $("#bt-symbol").value = currentSymbol;
+  refreshCurrentPage();
+});
+
+/* ---------------- page switching ---------------- */
+$$(".page-btn").forEach((btn) => {
   btn.addEventListener("click", () => {
-    $$(".tab-btn").forEach((b) => b.classList.remove("active"));
+    $$(".page-btn").forEach((b) => b.classList.remove("active"));
     btn.classList.add("active");
-    const t = btn.dataset.tab;
-    $$(".tab").forEach((s) => s.classList.toggle("active", s.id === `tab-${t}`));
-    if (t === "live") refreshLive();
-    if (t === "tests") refreshJobs();
-    if (t === "compare") {
-      const today = new Date().toISOString().slice(0, 10);
-      if (!$("#cmp-day").value) $("#cmp-day").value = today;
-    }
+    const p = btn.dataset.page;
+    $$(".page").forEach((s) => s.classList.toggle("active", s.id === `page-${p}`));
+    refreshCurrentPage();
   });
 });
+
+function currentPage() {
+  const btn = $(".page-btn.active");
+  return btn ? btn.dataset.page : "live";
+}
+
+function refreshCurrentPage() {
+  const p = currentPage();
+  if (p === "live") refreshLive();
+  else if (p === "tests") refreshJobs();
+  else if (p === "compare") {
+    if (!$("#cmp-day").value) $("#cmp-day").value = new Date().toISOString().slice(0, 10);
+  }
+}
 
 /* ---------------- clock ---------------- */
 setInterval(() => {
@@ -40,12 +74,31 @@ setInterval(() => {
   }) + " ET";
 }, 1000);
 
-/* ---------------- LIVE tab ---------------- */
+/* ---------------- LIVE ---------------- */
 async function refreshLive() {
-  const symbol = $("#live-symbol").value.trim() || "SPY";
+  const symbol = currentSymbol;
+  $("#val-symbol").textContent = symbol;
   try {
     const r = await fetch(`/api/live/today?symbol=${encodeURIComponent(symbol)}`);
     const data = await r.json();
+
+    const open = (data.positions || []).filter((p) => !p.closed_ts);
+    const closed = (data.positions || []).length - open.length;
+    $("#val-positions").textContent = String(open.length);
+
+    const d = data.daily;
+    const pnl = d ? Number(d.pnl_realized) : null;
+    const pnlEl = $("#val-pnl");
+    pnlEl.textContent = pnl != null ? fmtUsd(pnl) : "—";
+    pnlEl.className = "card-value " + (pnl == null ? "" : pnl >= 0 ? "green" : "red");
+
+    $("#val-signals").textContent = d ? `${d.signals_accepted}/${d.signals_total}` : "—";
+    $("#val-kill").textContent = d && d.kill_switch_reason ? d.kill_switch_reason : "off";
+    $("#val-kill").className = "card-value " + (d && d.kill_switch_reason ? "red" : "");
+
+    $("#filter-meta").textContent = data.run
+      ? `run ${data.run.id.slice(0, 8)} • ${data.run.strategy}/${data.run.vehicle}`
+      : `no live run for ${symbol}`;
 
     $("#live-run").innerHTML = data.run
       ? `<dl class="kv">
@@ -58,7 +111,6 @@ async function refreshLive() {
         </dl>`
       : `<div class="muted">no live run for ${symbol}</div>`;
 
-    const d = data.daily;
     $("#live-daily").innerHTML = d
       ? `<dl class="kv">
           <dt>equity</dt><dd>$${Number(d.equity_end).toFixed(2)}</dd>
@@ -70,13 +122,12 @@ async function refreshLive() {
         </dl>`
       : `<div class="muted">no EOD record yet today</div>`;
 
-    const open = data.positions.filter((p) => !p.closed_ts);
-    $("#live-pos-count").textContent = `(${open.length} open, ${data.positions.length - open.length} closed)`;
-    $("#live-positions").innerHTML = data.positions.length
-      ? renderPositionsTable(data.positions, /* includeMark */ true)
+    $("#live-pos-count").textContent = `(${open.length} open, ${closed} closed)`;
+    $("#live-positions").innerHTML = (data.positions || []).length
+      ? renderPositionsTable(data.positions, true)
       : `<div class="muted">no positions yet today</div>`;
 
-    $("#live-signals").innerHTML = data.signals.length
+    $("#live-signals").innerHTML = (data.signals || []).length
       ? renderSignalsTable(data.signals)
       : `<div class="muted">no signals today</div>`;
   } catch (e) {
@@ -129,11 +180,10 @@ function renderSignalsTable(rows) {
 
 $("#live-refresh")?.addEventListener("click", refreshLive);
 setInterval(() => {
-  if ($("#tab-live").classList.contains("active")) refreshLive();
+  if ($("#page-live").classList.contains("active")) refreshLive();
 }, 15_000);
-refreshLive();
 
-/* ---------------- TESTS tab ---------------- */
+/* ---------------- TESTS ---------------- */
 let currentJobEvt = null;
 
 async function refreshJobs() {
@@ -208,7 +258,7 @@ $$(".job-buttons button").forEach((b) =>
   b.addEventListener("click", () => startPresetJob(b.dataset.preset, {})),
 );
 
-$("#backtest-form").addEventListener("submit", (e) => {
+$("#backtest-form")?.addEventListener("submit", (e) => {
   e.preventDefault();
   const preset = e.submitter?.dataset.preset ?? "backtest";
   const form = new FormData(e.currentTarget);
@@ -217,9 +267,9 @@ $("#backtest-form").addEventListener("submit", (e) => {
   startPresetJob(preset, params);
 });
 
-/* ---------------- COMPARE tab ---------------- */
-$("#cmp-run").addEventListener("click", async () => {
-  const symbol = $("#cmp-symbol").value.trim() || "SPY";
+/* ---------------- COMPARE ---------------- */
+$("#cmp-run")?.addEventListener("click", async () => {
+  const symbol = currentSymbol;
   const day = $("#cmp-day").value.trim();
   if (!/^\d{4}-\d{2}-\d{2}$/.test(day)) {
     alert("day must be YYYY-MM-DD");
@@ -308,3 +358,9 @@ function matchTrades(live, bt) {
   }
   return result;
 }
+
+/* ---------------- init ---------------- */
+(async () => {
+  await loadSymbols();
+  refreshLive();
+})();
