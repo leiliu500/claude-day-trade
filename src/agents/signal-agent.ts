@@ -63,6 +63,31 @@ export async function fetchBarsRest(
 }
 
 /**
+ * Daily-bar cache. Daily bars are invariant intraday — only refresh once per
+ * UTC day. On REST failure, reuse the last known bars so a flaky Alpaca REST
+ * endpoint can't abort every signal tick (PDH/PDL is derived from these).
+ */
+const _dailyBarsCache = new Map<string, { bars: OHLCVBar[]; utcDate: string }>();
+
+async function fetchDailyBarsCached(ticker: string, limit: number): Promise<OHLCVBar[]> {
+  const todayUtc = new Date().toISOString().slice(0, 10);
+  const cached = _dailyBarsCache.get(ticker);
+  if (cached && cached.utcDate === todayUtc) return cached.bars;
+
+  try {
+    const bars = await fetchBarsRest(ticker, '1d', limit);
+    _dailyBarsCache.set(ticker, { bars, utcDate: todayUtc });
+    return bars;
+  } catch (err) {
+    if (cached) {
+      console.warn(`[SignalAgent] Daily-bars REST failed for ${ticker} — reusing cached bars from ${cached.utcDate}: ${(err as Error).message}`);
+      return cached.bars;
+    }
+    throw err;
+  }
+}
+
+/**
  * Primary bar fetcher — tries the streaming cache first (zero REST calls),
  * falls back to the REST API when the cache is absent, stale, or has
  * insufficient bars (e.g. before the stream has warmed up, or for 1h/1d).
@@ -152,7 +177,7 @@ export class SignalAgent {
       fetchBars(ticker, ltf),
       fetchBars(ticker, mtf),
       fetchBars(ticker, htf),
-      fetchBarsRest(ticker, '1d', 3),
+      fetchDailyBarsCached(ticker, 3),
     ]);
 
     // ── Direction detection (shared with backtest) ─────────────────────────────

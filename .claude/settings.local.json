@@ -138,7 +138,11 @@
       "Bash(tee /tmp/range-spy-latest.txt)",
       "Bash(PGPASSWORD=trader123 psql -h localhost -p 5434 -U trader -d day_trade -c \"\\\\dt\")",
       "Bash(docker volume:*)",
-      "Bash(PGPASSWORD=traderpass psql -h localhost -p 5434 -U trader -d day_trade -c \"SELECT created_at AT TIME ZONE 'America/New_York' as time_et, direction, signal_mode, confidence, current_price, decision_type, entry_block_reason FROM decisions WHERE ticker='SPY' AND created_at::date = '2026-04-01' ORDER BY created_at;\")"
+      "Bash(PGPASSWORD=traderpass psql -h localhost -p 5434 -U trader -d day_trade -c \"SELECT created_at AT TIME ZONE 'America/New_York' as time_et, direction, signal_mode, confidence, current_price, decision_type, entry_block_reason FROM decisions WHERE ticker='SPY' AND created_at::date = '2026-04-01' ORDER BY created_at;\")",
+      "Bash(kill %1)",
+      "Bash(wait)",
+      "Bash(awk '{print $2}')",
+      "Bash(xargs -r kill)"
     ],
     "additionalDirectories": [
       "/home/ec2-user/.claude/projects/-home-ec2-user-claude-day-trade"
