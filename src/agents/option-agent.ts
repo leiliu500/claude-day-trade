@@ -216,11 +216,15 @@ export class OptionAgent {
     url.searchParams.set('strike_price_lte', String(strikeMax));
     url.searchParams.set('limit', '50');
 
-    const res = await fetch(url.toString(), { headers: this.headers, signal: AbortSignal.timeout(20_000) });
-    if (!res.ok) return [];
-
-    const data = (await res.json()) as { option_contracts?: AlpacaOptionContract[] };
-    return data.option_contracts ?? [];
+    try {
+      const res = await fetch(url.toString(), { headers: this.headers, signal: AbortSignal.timeout(20_000) });
+      if (!res.ok) return [];
+      const data = (await res.json()) as { option_contracts?: AlpacaOptionContract[] };
+      return data.option_contracts ?? [];
+    } catch (err) {
+      console.warn(`[OptionAgent] fetchContracts network error for ${ticker} ${side}: ${(err as Error).message}`);
+      return [];
+    }
   }
 
   private async fetchSnapshots(symbols: string[]): Promise<Record<string, AlpacaOptionSnapshot>> {
@@ -230,11 +234,15 @@ export class OptionAgent {
     url.searchParams.set('symbols', symbols.join(','));
     url.searchParams.set('feed', 'opra'); // real-time OPRA feed (Algo Trader Plus)
 
-    const res = await fetch(url.toString(), { headers: this.headers, signal: AbortSignal.timeout(20_000) });
-    if (!res.ok) return {};
-
-    const data = (await res.json()) as { snapshots?: Record<string, AlpacaOptionSnapshot> };
-    return data.snapshots ?? {};
+    try {
+      const res = await fetch(url.toString(), { headers: this.headers, signal: AbortSignal.timeout(20_000) });
+      if (!res.ok) return {};
+      const data = (await res.json()) as { snapshots?: Record<string, AlpacaOptionSnapshot> };
+      return data.snapshots ?? {};
+    } catch (err) {
+      console.warn(`[OptionAgent] fetchSnapshots network error (${symbols.length} symbols): ${(err as Error).message}`);
+      return {};
+    }
   }
 
   private shortlistByATM(
