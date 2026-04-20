@@ -176,7 +176,27 @@
       "Bash(awk '/^  Entry #/{f=1} f{print; if\\(/^$/\\){f=0}}' /tmp/bt-apr16.log)",
       "Bash(awk '{print $NF}')",
       "Bash(npx tsc *)",
-      "Bash(echo \"EXIT=$?\")"
+      "Bash(echo \"EXIT=$?\")",
+      "Bash(curl -s http://localhost:3002/api/health)",
+      "Bash(curl -s http://localhost:3002/api/runs)",
+      "Bash(curl -s \"http://localhost:3002/api/live/today?symbol=SPY\")",
+      "Bash(curl -s \"http://localhost:3002/api/compare?symbol=SPY&day=2026-04-17\")",
+      "Bash(curl -s -X POST http://localhost:3002/api/jobs -H \"content-type: application/json\" -d '{\"preset\":\"unit-tests\"}')",
+      "Bash(curl -s http://localhost:3002/)",
+      "Bash(curl -s http://localhost:3002/api/jobs)",
+      "Bash(lsof -iTCP:3001 -sTCP:LISTEN)",
+      "Bash(netstat -tlnp)",
+      "Bash(docker port *)",
+      "Bash(docker stop *)",
+      "Bash(docker-compose config *)",
+      "Bash(docker-compose build *)",
+      "Bash(docker-compose up *)",
+      "Bash(curl -s http://localhost:3001/api/health)",
+      "Bash(curl -s http://localhost:3001/api/runs)",
+      "Bash(curl -s -X POST http://localhost:3001/api/jobs -H \"content-type: application/json\" -d '{\"preset\":\"unit-tests\"}')",
+      "Bash(curl -s -X POST http://localhost:3001/api/jobs -H \"content-type: application/json\" -d '{\"preset\":\"backtest\",\"params\":{\"symbol\":\"SPY\",\"start\":\"2026-04-17\",\"end\":\"2026-04-17\",\"strategy\":\"orb\",\"vehicle\":\"long_option\"}}')",
+      "Bash(curl -s \"http://localhost:3001/api/live/today?symbol=SPY\")",
+      "Bash(curl -s http://localhost:3001/static/app.js)"
     ],
     "additionalDirectories": [
       "/home/ec2-user/.claude/projects/-home-ec2-user-claude-day-trade"

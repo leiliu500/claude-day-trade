@@ -1,0 +1,109 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>odt dashboard</title>
+    <link rel="stylesheet" href="/static/style.css" />
+  </head>
+  <body>
+    <header>
+      <h1>odt</h1>
+      <nav>
+        <button class="tab-btn active" data-tab="live">Live</button>
+        <button class="tab-btn" data-tab="tests">Tests</button>
+        <button class="tab-btn" data-tab="compare">Compare</button>
+      </nav>
+      <div class="meta">
+        <span id="now"></span>
+      </div>
+    </header>
+
+    <main>
+      <section id="tab-live" class="tab active">
+        <div class="row">
+          <label>symbol <input id="live-symbol" value="SPY" /></label>
+          <button id="live-refresh">refresh</button>
+          <span id="live-auto">auto-refresh 15s: <b>on</b></span>
+        </div>
+        <div class="grid-2">
+          <div class="card">
+            <h2>Run</h2>
+            <div id="live-run"></div>
+          </div>
+          <div class="card">
+            <h2>Today</h2>
+            <div id="live-daily"></div>
+          </div>
+        </div>
+        <div class="card">
+          <h2>Open positions <span id="live-pos-count"></span></h2>
+          <div id="live-positions"></div>
+        </div>
+        <div class="card">
+          <h2>Signals today</h2>
+          <div id="live-signals"></div>
+        </div>
+      </section>
+
+      <section id="tab-tests" class="tab">
+        <div class="card">
+          <h2>Run a job</h2>
+          <div class="job-buttons">
+            <button data-preset="unit-tests">Unit tests</button>
+            <button data-preset="type-check">Type-check</button>
+          </div>
+          <hr />
+          <form id="backtest-form" class="job-form">
+            <div class="row">
+              <label>symbol <input name="symbol" value="SPY" /></label>
+              <label>strategy <select name="strategy"><option value="orb">orb</option><option value="trend-pullback">trend-pullback</option></select></label>
+              <label>vehicle <select name="vehicle"><option value="long_option">long_option</option><option value="debit_vertical">debit_vertical</option></select></label>
+            </div>
+            <div class="row">
+              <label>start <input name="start" placeholder="YYYY-MM-DD" required /></label>
+              <label>end <input name="end" placeholder="YYYY-MM-DD" required /></label>
+              <button type="submit" data-preset="backtest">Backtest</button>
+              <button type="submit" data-preset="walk-forward">Walk-forward</button>
+              <label>folds <input name="folds" type="number" min="1" max="12" value="3" /></label>
+            </div>
+          </form>
+        </div>
+        <div class="grid-2">
+          <div class="card">
+            <h2>Recent jobs</h2>
+            <div id="jobs-list"></div>
+          </div>
+          <div class="card">
+            <h2>Output <span id="current-job-name"></span></h2>
+            <pre id="job-output" class="output"></pre>
+          </div>
+        </div>
+      </section>
+
+      <section id="tab-compare" class="tab">
+        <div class="row">
+          <label>symbol <input id="cmp-symbol" value="SPY" /></label>
+          <label>day <input id="cmp-day" placeholder="YYYY-MM-DD" /></label>
+          <button id="cmp-run">Compare</button>
+        </div>
+        <div class="grid-2">
+          <div class="card">
+            <h2>Live</h2>
+            <div id="cmp-live"></div>
+          </div>
+          <div class="card">
+            <h2>Backtest</h2>
+            <div id="cmp-backtest"></div>
+          </div>
+        </div>
+        <div class="card">
+          <h2>Delta (live vs backtest)</h2>
+          <div id="cmp-delta"></div>
+        </div>
+      </section>
+    </main>
+
+    <script src="/static/app.js"></script>
+  </body>
+</html>

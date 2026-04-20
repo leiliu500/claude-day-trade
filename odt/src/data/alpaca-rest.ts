@@ -168,20 +168,25 @@ export interface MlegLeg {
 
 export async function submitMlegOrder(params: {
   qty: number;
-  limitDebit: number;
+  limitDebit?: number;
   legs: MlegLeg[];
   tif?: "day";
+  orderType?: "limit" | "market";
   clientOrderId?: string;
 }): Promise<{ id: string; status: string }> {
-  const body = {
+  const orderType = params.orderType ?? "limit";
+  if (orderType === "limit" && params.limitDebit === undefined) {
+    throw new Error("limitDebit required for limit orders");
+  }
+  const body: Record<string, unknown> = {
     order_class: "mleg",
-    type: "limit",
+    type: orderType,
     time_in_force: params.tif ?? "day",
     qty: String(params.qty),
-    limit_price: params.limitDebit.toFixed(2),
     legs: params.legs,
     client_order_id: params.clientOrderId,
   };
+  if (orderType === "limit") body.limit_price = params.limitDebit!.toFixed(2);
   const r = await fetch(`${config.alpaca.baseUrl}/v2/orders`, {
     method: "POST",
     headers: { ...headers(), "content-type": "application/json" },

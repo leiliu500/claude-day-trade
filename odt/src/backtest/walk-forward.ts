@@ -2,6 +2,7 @@ import { runBacktest, type BacktestResult } from "./engine.js";
 import { computeMetrics, type Metrics } from "./report.js";
 import type { Strategy } from "../signal/strategy.js";
 import type { Vehicle } from "../types.js";
+import type { TrackingSink } from "../tracking/sink.js";
 
 export interface Fold {
   startISO: string;
@@ -35,10 +36,12 @@ export async function runWalkForward(params: {
   initialEquity?: number;
   strategy?: Strategy;
   vehicle?: Vehicle;
+  createSink?: (foldRange: { startISO: string; endISO: string }) => TrackingSink | undefined;
 }): Promise<Fold[]> {
   const partitions = splitFolds(params.startISO, params.endISO, params.folds);
   const results: Fold[] = [];
   for (const p of partitions) {
+    const sink = params.createSink?.(p);
     const result = await runBacktest({
       symbol: params.symbol,
       startISO: p.startISO,
@@ -46,6 +49,7 @@ export async function runWalkForward(params: {
       initialEquity: params.initialEquity,
       strategy: params.strategy,
       vehicle: params.vehicle,
+      sink,
     });
     results.push({ startISO: p.startISO, endISO: p.endISO, result, metrics: computeMetrics(result) });
   }

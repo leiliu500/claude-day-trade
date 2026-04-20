@@ -1,5 +1,7 @@
 import { runLive } from "../live/orchestrator.js";
 import { getStrategy } from "../signal/strategy.js";
+import { makeSink } from "../tracking/factory.js";
+import { closePool } from "../tracking/db-pool.js";
 
 function arg(name: string, fallback?: string): string {
   const prefix = `--${name}=`;
@@ -17,11 +19,28 @@ async function main(): Promise<void> {
   const strategyName = arg("strategy", "orb");
   const strategy = getStrategy(strategyName);
   const vehicleArg = arg("vehicle", "long_option") as "debit_vertical" | "long_option";
+  const noDb = process.argv.includes("--no-db");
+  const noTelegram = process.argv.includes("--no-telegram");
+
+  const sink = makeSink(
+    {
+      mode: "live",
+      strategy: strategy.name,
+      vehicle: vehicleArg,
+      symbol,
+      startedAt: Date.now(),
+    },
+    { db: !noDb, telegram: !noTelegram },
+  );
 
   console.log(
-    `Starting live: symbol=${symbol} strategy=${strategy.name} vehicle=${vehicleArg} dry-run=${dryRun}`,
+    `Starting live: symbol=${symbol} strategy=${strategy.name} vehicle=${vehicleArg} dry-run=${dryRun} db=${!noDb} telegram=${!noTelegram}`,
   );
-  await runLive({ symbol, dryRun, strategy, vehicle: vehicleArg });
+  try {
+    await runLive({ symbol, dryRun, strategy, vehicle: vehicleArg, sink });
+  } finally {
+    if (!noDb) await closePool();
+  }
 }
 
 main().catch((e) => {

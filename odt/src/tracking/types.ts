@@ -50,6 +50,18 @@ export interface CloseEvent {
   holdMinutes: number;
 }
 
+export interface MarkEvent {
+  kind: "mark";
+  ts: number;
+  day: string;
+  mode: "backtest" | "live";
+  positionId: string;
+  markDebit: number;
+  pnlPct: number;
+  pnlDollars: number;
+  underlyingPx: number;
+}
+
 export interface DailySummary {
   kind: "daily";
   day: string;
@@ -70,4 +82,4 @@ export interface DailySummary {
   killSwitchReason?: string;
 }
 
-export type TrackingEvent = SignalEvent | OpenEvent | CloseEvent | DailySummary;
+export type TrackingEvent = SignalEvent | OpenEvent | CloseEvent | MarkEvent | DailySummary;

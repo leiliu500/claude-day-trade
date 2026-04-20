@@ -19,7 +19,10 @@ services:
       timeout: 5s
       retries: 5
 
+  # Legacy system — retained for manual restart only. Not started by default.
+  # To run it: `docker-compose --profile legacy up -d orchestrator`
   orchestrator:
+    profiles: [legacy]
     build:
       context: .
       dockerfile: Dockerfile
@@ -45,6 +48,56 @@ services:
       - '3000:3000'
     volumes:
       - ./logs:/app/logs
+
+  # New odt trading loop (0DTE ORB + long call). Defaults to --dry-run.
+  # To submit real (paper) orders: override command without --dry-run.
+  odt-live:
+    build:
+      context: .
+      dockerfile: odt/Dockerfile
+    container_name: odt-live
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-trader}:${POSTGRES_PASSWORD:-traderpass}@postgres:5432/${POSTGRES_DB:-day_trade}
+      ALPACA_API_KEY: ${ALPACA_API_KEY}
+      ALPACA_SECRET_KEY: ${ALPACA_SECRET_KEY}
+      ALPACA_BASE_URL: ${ALPACA_BASE_URL:-https://paper-api.alpaca.markets}
+      ALPACA_DATA_URL: ${ALPACA_DATA_URL:-https://data.alpaca.markets}
+      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN}
+      TELEGRAM_CHAT_ID: ${TELEGRAM_CHAT_ID}
+      NODE_ENV: ${NODE_ENV:-production}
+      ODT_LOG_LEVEL: ${ODT_LOG_LEVEL:-info}
+    command: ['npx', 'tsx', 'odt/src/cli/live.ts', '--symbol', 'SPY', '--strategy', 'orb-filtered', '--vehicle', 'long_option']
+
+  # New odt dashboard on :3001 (replaces what the legacy orchestrator used to publish).
+  odt-dashboard:
+    build:
+      context: .
+      dockerfile: odt/Dockerfile
+    container_name: odt-dashboard
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-trader}:${POSTGRES_PASSWORD:-traderpass}@postgres:5432/${POSTGRES_DB:-day_trade}
+      # Alpaca keys must be present so dashboard-triggered backtests + tests
+      # (which spawn as child processes inheriting env) can reach the data API.
+      ALPACA_API_KEY: ${ALPACA_API_KEY}
+      ALPACA_SECRET_KEY: ${ALPACA_SECRET_KEY}
+      ALPACA_BASE_URL: ${ALPACA_BASE_URL:-https://paper-api.alpaca.markets}
+      ALPACA_DATA_URL: ${ALPACA_DATA_URL:-https://data.alpaca.markets}
+      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN}
+      TELEGRAM_CHAT_ID: ${TELEGRAM_CHAT_ID}
+      NODE_ENV: ${NODE_ENV:-production}
+      ODT_DASHBOARD_PORT: 3001
+      ODT_LOG_LEVEL: ${ODT_LOG_LEVEL:-info}
+    ports:
+      - '3001:3001'
+    command: ['npx', 'tsx', 'odt/src/cli/dashboard.ts']
 
 volumes:
   postgres_data:
