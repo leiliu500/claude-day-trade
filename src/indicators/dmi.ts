@@ -4,8 +4,11 @@ import type { DMIResult } from '../types/indicators.js';
 /**
  * Compute DMI (Directional Movement Index) + ADX
  * Uses Wilder's smoothing (EMA with alpha = 1/period)
- * skipSessionGaps: when true, uses high-low only for True Range on first bar of a new session
- * to avoid overnight gap contamination (use for intraday timeframes).
+ * skipSessionGaps: when true, zeroes TR and DM+/DM- on the first bar of a new session
+ * to avoid overnight gap contamination (use for intraday timeframes). Without this,
+ * a Fri close → Mon open gap inflates DM- (or DM+) by the size of the overnight move
+ * while TR is clipped to the intraday range — producing DI values that exceed 100
+ * and remain distorted for the length of the Wilder smoothing window.
  */
 export function computeDMI(bars: OHLCVBar[], period = 14, skipSessionGaps = false): DMIResult {
   if (bars.length < period + 1) {
@@ -33,16 +36,21 @@ export function computeDMI(bars: OHLCVBar[], period = 14, skipSessionGaps = fals
           Math.abs(curr.low - prev.close)
         );
 
-    if (upMove > downMove && upMove > 0) {
-      dmPlus[i] = upMove;
-    } else {
+    if (newSession) {
       dmPlus[i] = 0;
-    }
-
-    if (downMove > upMove && downMove > 0) {
-      dmMinus[i] = downMove;
-    } else {
       dmMinus[i] = 0;
+    } else {
+      if (upMove > downMove && upMove > 0) {
+        dmPlus[i] = upMove;
+      } else {
+        dmPlus[i] = 0;
+      }
+
+      if (downMove > upMove && downMove > 0) {
+        dmMinus[i] = downMove;
+      } else {
+        dmMinus[i] = 0;
+      }
     }
   }
 
