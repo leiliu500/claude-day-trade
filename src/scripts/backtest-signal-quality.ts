@@ -122,8 +122,10 @@ function parseEntries(output: string): EntryDetail[] {
     const mfeM = block.match(/MFE=([\d.]+)%/);
     const maeM = block.match(/MAE=([\d.]+)%/);
     const ratioM = block.match(/MFE\/MAE=([\d.]+)/);
-    // Direction correct: ✅ or ❌ after direction
-    const dirCorrectM = block.includes('✅');
+    // Direction correct: ✅ or ❌ on the "Direction:  BEARISH ❌" line specifically.
+    // Bare block.includes('✅') matched trailing MOVE SCANNER / validations output.
+    const dirLineM = block.match(/Direction:\s+(?:BULLISH|BEARISH)\s+(✅|❌)/i);
+    const dirCorrectM = dirLineM?.[1] === '✅';
     // Gate result
     const gateM = block.match(/🟢 CONFIRMED|⚡ HIGH-CONV OVERRIDE|⚡ PHASE-CHANGE OVERRIDE/);
 

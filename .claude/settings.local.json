@@ -142,7 +142,9 @@
       "Bash(kill %1)",
       "Bash(wait)",
       "Bash(awk '{print $2}')",
-      "Bash(xargs -r kill)"
+      "Bash(xargs -r kill)",
+      "Bash(BT_DEBUG=1 BT_DEBUG_MIN=0.45 npx tsx src/scripts/backtest-day.ts 2026-04-20 SPY)",
+      "Bash(awk '/Entry #1:/,0')"
     ],
     "additionalDirectories": [
       "/home/ec2-user/.claude/projects/-home-ec2-user-claude-day-trade"
