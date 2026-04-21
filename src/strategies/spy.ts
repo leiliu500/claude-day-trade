@@ -144,6 +144,31 @@ function spyDetectMode(
 function spyAdjustConfidence(breakdown: ConfidenceBreakdown, ctx: EntryContext): ConfidenceBreakdown {
   let bd = breakdown;
 
+  // Regime-gated suppression of two perverse-signed factors from factor-orthogonality.ts.
+  //
+  // 2026 YTD diagnostic (114 entries, 43 A/B vs 44 F) found these firing backwards:
+  //   priceVelocityBonus      d = -0.68 — F entries score HIGHER (late-chase amplifier)
+  //   pricePositionAdjustment d = -0.45 — A/B carries larger negative adjustment
+  //
+  // Blanket-zero validated +0.262 on 73-day 2026 window but regressed Apr 2025 (-0.212)
+  // on 16-month window — the factors are genuinely helpful in strong trending regimes.
+  // Gate on trendPhaseBonus <= 0 (ADX flat or declining) to preserve rising-ADX trends.
+  // Mirrors the reversal-trap pattern below (trendPhase <= 0 + leading PA = dying move).
+  if (bd.trendPhaseBonus <= 0) {
+    if (bd.priceVelocityBonus !== 0) {
+      bd = bd === breakdown ? { ...bd } : bd;
+      bd.total -= bd.priceVelocityBonus;
+      bd.priceVelocityBonus = 0;
+      bd.total = Math.max(0, Math.min(1, bd.total));
+    }
+    if (bd.pricePositionAdjustment !== 0) {
+      bd = bd === breakdown ? { ...bd } : bd;
+      bd.total -= bd.pricePositionAdjustment;
+      bd.pricePositionAdjustment = 0;
+      bd.total = Math.max(0, Math.min(1, bd.total));
+    }
+  }
+
   // Suppress positive PA bonus for bullish trend entries at high regime.
   // At high regime (>= 75), consecutive confirming bars on the bullish side
   // are the final push into a day-high stall, not fresh momentum.
