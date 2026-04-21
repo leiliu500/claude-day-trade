@@ -184,6 +184,53 @@ export async function runPipeline(
     // ── Short-circuit: no qualifying mode — skip tick ────────────────────────
     if (signal.signalMode === 'none') {
       console.log(`[Pipeline] No qualifying regime detected for ${ticker} — skipping tick`);
+      const reason = `No qualifying market regime (trend/range/breakout/vwap_reversion) — signal=${signal.direction} (${signal.alignment})`;
+      // Persist a minimal snapshot + WAIT decision so the dashboard shows a row
+      // for every tick instead of silent gaps during NO-SETUP runs.
+      try {
+        const stubOption: OptionEvaluation = {
+          signalId: signal.id,
+          ticker,
+          evaluatedAt: new Date().toISOString(),
+          desiredSide: null,
+          callCandidate: null,
+          putCandidate: null,
+          winner: null,
+          winnerCandidate: null,
+          selectionReason: 'no-setup skip',
+          liquidityOk: false,
+          candidatePass: false,
+        };
+        const stubAnalysis = {
+          signalId: signal.id,
+          confidence: 0,
+          meetsEntryThreshold: false,
+          aiExplanation: reason,
+          keyFactors: [],
+          risks: [],
+          desiredRight: null,
+          createdAt: new Date().toISOString(),
+        } as unknown as AnalysisResult;
+        const snapshotId = await insertSignalSnapshot(signal, stubOption, stubAnalysis, sessionId);
+        signal.id = snapshotId;
+        await insertDecision({
+          id: uuidv4(),
+          signalId: snapshotId,
+          sessionId,
+          decisionType: 'WAIT',
+          ticker,
+          profile,
+          direction: signal.direction,
+          confirmationCount: 0,
+          orchestrationConfidence: 0,
+          reasoning: reason,
+          urgency: 'low',
+          shouldExecute: false,
+          createdAt: new Date().toISOString(),
+        });
+      } catch (persistErr) {
+        console.warn(`[Pipeline] NO-SETUP persist failed (non-blocking):`, (persistErr as Error).message);
+      }
       return {
         ticker,
         profile,
@@ -191,7 +238,7 @@ export async function runPipeline(
         alignment: signal.alignment,
         confidence: 0,
         decision: 'WAIT',
-        reasoning: 'No qualifying market regime (trend/range/breakout/vwap_reversion) detected',
+        reasoning: reason,
         orderSubmitted: false,
         signal,
       };
