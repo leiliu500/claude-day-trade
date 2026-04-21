@@ -362,6 +362,15 @@ function spyShouldAllowEntry(ctx: EntryContext): true | string {
     return `bullish trend+orb ${ctx.breakdown.orbBonus.toFixed(2)}`;
   }
 
+  // Bearish + deep range-position penalty: 15-month SPY mining (2025-01..2026-04)
+  // shows bearish entries with pricePositionAdjustment <= -0.028 are 0A/3B/4C/0D/21F
+  // (28 entries, 75% F, raw cost cleanly F-dominant). Interpretation: bearish signal
+  // fires when price is already deep in the daily range (near support), where further
+  // downside is limited — the move is mostly played out before entry.
+  if (direction === 'bearish' && ctx.breakdown.pricePositionAdjustment <= -0.028) {
+    return `bearish deep pricePos ${ctx.breakdown.pricePositionAdjustment.toFixed(3)} (exhausted)`;
+  }
+
   // Very high ATR kill zone: 2026 YTD post-dvel baseline shows ATR >= 1.33
   // is 4F/0A/0B (all bearish or bullish trend entries on high-vol days that
   // retrace immediately). The 1A at atr=1.31 is just below this threshold.
