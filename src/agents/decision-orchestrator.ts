@@ -1,6 +1,7 @@
 import OpenAI from 'openai';
 import { v4 as uuidv4 } from 'uuid';
 import { config } from '../config.js';
+import { getPool } from '../db/client.js';
 import { loadSkill } from '../utils/skill-loader.js';
 import { checkFomcWindow } from '../lib/fomc-calendar.js';
 import { evaluateEntryGate, type GateInput } from '../lib/entry-gate.js';
@@ -299,6 +300,26 @@ export class DecisionOrchestrator {
       rawOutput.decision_type = 'WAIT';
       rawOutput.should_execute = false;
       rawOutput.reasoning = `[GATE OVERRIDE] No open position — ${originalDecision} is not applicable. ${rawOutput.reasoning}`;
+    }
+
+    // Race guard: ADD_POSITION assumes an open parent to scale into, but the context was
+    // snapshotted ~3s before the AI call completed. A trailing-stop / velocity-crash can close
+    // the parent mid-call (observed 2026-04-21 15:26 SPY: TRAILING_STOP fired while the
+    // pipeline was still computing, AI saw stale open_positions → picked ADD_POSITION → buy
+    // filled with no parent). Re-query v_active_positions and downgrade to NEW_ENTRY so the
+    // standard confirmation gate / strong-signal bypass re-evaluates the entry on its merits.
+    if (rawOutput.decision_type === 'ADD_POSITION' && rawOutput.should_execute
+        && context.openPositions.length > 0) {
+      const pool = getPool();
+      const freshPos = await pool.query(
+        `SELECT 1 FROM trading.v_active_positions WHERE ticker = $1 LIMIT 1`,
+        [signal.ticker]
+      );
+      if (freshPos.rows.length === 0) {
+        rawOutput.decision_type = 'NEW_ENTRY';
+        rawOutput.reasoning = `[RACE GUARD] Parent position closed during AI call — downgraded ADD_POSITION → NEW_ENTRY. ${rawOutput.reasoning}`;
+        console.log(`[DecisionOrchestrator] Race guard: ADD_POSITION → NEW_ENTRY (parent closed during decision cycle for ${signal.ticker})`);
+      }
     }
 
     // Hard EOD gate: force EXIT for any open position in EOD window
