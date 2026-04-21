@@ -167,6 +167,17 @@ function spyAdjustConfidence(breakdown: ConfidenceBreakdown, ctx: EntryContext):
       bd.pricePositionAdjustment = 0;
       bd.total = Math.max(0, Math.min(1, bd.total));
     }
+    // macdBonus added 2026-04-21 from 15-month factor-orthogonality diagnostic:
+    // d = -0.34 (strongest perverse factor), F mean +0.023 vs A+B mean +0.016.
+    // MACD is another momentum indicator — when ADX is flat/declining, it's
+    // oscillating on noise and firing positive on late chases, same failure
+    // mode as priceVelocityBonus. Gated on same trendPhaseBonus <= 0.
+    if (bd.macdBonus !== 0) {
+      bd = bd === breakdown ? { ...bd } : bd;
+      bd.total -= bd.macdBonus;
+      bd.macdBonus = 0;
+      bd.total = Math.max(0, Math.min(1, bd.total));
+    }
   }
 
   // Suppress positive PA bonus for bullish trend entries at high regime.
