@@ -57,6 +57,16 @@ export interface PositionContext {
   dailyRealizedPnl: number;
   /** Total option premium (entry_price × qty × 100) deployed today across all tickers. */
   dailyPremiumDeployed: number;
+  /**
+   * Most recent trailing-stop-type exit for this ticker, or null if none in the last 5 min.
+   * Used by the entry gate to disqualify bypass paths on same-direction re-entries that
+   * would otherwise fire seconds after price reversed enough to trigger a trailing stop.
+   */
+  lastTrailingStopExit: {
+    closedAt: string;
+    direction: 'bullish' | 'bearish';
+    closeReason: string;
+  } | null;
 }
 
 export interface EntryStrategy {

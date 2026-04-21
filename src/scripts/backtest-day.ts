@@ -1055,6 +1055,7 @@ async function main() {
           accountBuyingPower: 100_000,
           dailyRealizedPnl: 0,
           dailyPremiumDeployed,
+          lastTrailingStopExit: null,
         };
 
         const decision: DecisionResult = await orchestrator.run({
@@ -1237,6 +1238,7 @@ async function main() {
           // Risk budget checked outside the gate (below), matching live safety-gates approach.
           hasRecentPhaseChangeEntry: false, // backtest doesn't track phase-change history
           trendConsolidationBreakout,
+          sameSideTrailingStopAgeSec: null, // backtest does not simulate position lifecycle / exits
         };
 
         const gate = evaluateEntryGate(gateInput);

@@ -80,7 +80,7 @@ export async function buildContext(ticker: string): Promise<PositionContext> {
     fetchAndSyncBrokerState(ticker),
   ]);
 
-  const [activePos, recentDecisions, streaks, recentEvals, dailyPnl, dailyPremiumResult] = await Promise.all([
+  const [activePos, recentDecisions, streaks, recentEvals, dailyPnl, dailyPremiumResult, lastTrailingStop] = await Promise.all([
     pool.query(
       `SELECT id, option_symbol, option_right, qty, entry_price, current_stop, current_tp,
               opened_at, confirmation_count
@@ -122,6 +122,20 @@ export async function buildContext(ticker: string): Promise<PositionContext> {
          FROM trading.position_journal
         WHERE trade_date = CURRENT_DATE
           AND status = 'OPEN'`
+    ),
+    // Most recent trailing-stop-type exit for this ticker in the last 5 min.
+    // The entry gate uses this to suppress bypass paths on same-side re-entries
+    // that would otherwise fire seconds after price reversed against us.
+    pool.query<{ closed_at: Date; option_right: string; close_reason: string }>(
+      `SELECT closed_at, option_right, close_reason
+         FROM trading.position_journal
+        WHERE ticker = $1
+          AND status = 'CLOSED'
+          AND closed_at >= NOW() - INTERVAL '5 minutes'
+          AND close_reason ~ '^(TRAILING_STOP|PROFIT_REVERSED|TINY_GAIN_LOCK|MICRO_GAIN_LOCK)'
+        ORDER BY closed_at DESC
+        LIMIT 1`,
+      [ticker]
     ),
   ]);
 
@@ -184,5 +198,14 @@ export async function buildContext(ticker: string): Promise<PositionContext> {
     accountEquity: account.equity,
     dailyRealizedPnl: parseFloat(dailyPnl.rows[0]?.total ?? '0'),
     dailyPremiumDeployed: parseFloat(dailyPremiumResult.rows[0]?.total ?? '0'),
+    lastTrailingStopExit: lastTrailingStop.rows[0]
+      ? {
+          closedAt: lastTrailingStop.rows[0].closed_at instanceof Date
+            ? lastTrailingStop.rows[0].closed_at.toISOString()
+            : String(lastTrailingStop.rows[0].closed_at),
+          direction: lastTrailingStop.rows[0].option_right === 'call' ? 'bullish' : 'bearish',
+          closeReason: lastTrailingStop.rows[0].close_reason,
+        }
+      : null,
   };
 }

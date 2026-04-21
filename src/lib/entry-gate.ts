@@ -84,6 +84,14 @@ export interface GateInput {
   hasRecentPhaseChangeEntry: boolean;
   /** True when LTF bars show a tight consolidation breakout in signal direction. */
   trendConsolidationBreakout: boolean;
+  /**
+   * Age in seconds since the most recent same-direction trailing-stop-type exit
+   * (TRAILING_STOP / PROFIT_REVERSED / *_GAIN_LOCK), or null if none in the last 5 min.
+   * When ≤ 60s, the strong-signal and trend-consolidation bypass paths are disqualified:
+   * the trailing stop fired BECAUSE price reversed, so bypassing the 2-tick wait chases
+   * the reversal. Stage-2 confirmation still allows entry if the signal re-establishes.
+   */
+  sameSideTrailingStopAgeSec: number | null;
 }
 
 // ── Gate evaluation ─────────────────────────────────────────────────────────
@@ -99,7 +107,16 @@ export function evaluateEntryGate(input: GateInput): GateDecision {
     vwapRevEntryCount, lastVwapRevEntryAgeMin,
     hasRecentPhaseChangeEntry,
     trendConsolidationBreakout,
+    sameSideTrailingStopAgeSec,
   } = input;
+
+  // A trailing-stop-type exit fires because price reversed from peak. Re-entering
+  // the same direction within 60s via a bypass path chases that reversal — the
+  // minute-bar indicators haven't refreshed enough to show the reversal yet.
+  // Disqualify the bypass paths so the entry must rebuild via stage-2 confirmation
+  // (~1 more tick). The entry isn't blocked; it just can't skip confirmation.
+  const trailingStopReversalBlock = sameSideTrailingStopAgeSec != null
+    && sameSideTrailingStopAgeSec <= 60;
 
   // ── High-conviction override ──
   const highConvOverride = confidence >= 0.92 && alignment === 'all_aligned';
@@ -166,7 +183,8 @@ export function evaluateEntryGate(input: GateInput): GateDecision {
   const strongSignalBypass = !highConvOverride && !phaseChangeOk && priorCount < 1
     && signalMode !== 'breakout'
     && confidence >= 0.75 && alignment === 'all_aligned'
-    && recentPriceActionBonus >= 0;
+    && recentPriceActionBonus >= 0
+    && !trailingStopReversalBlock;
 
   // ── Trend consolidation breakout bypass ──
   // Price broke out of a tight consolidation within an established trend.
@@ -181,7 +199,8 @@ export function evaluateEntryGate(input: GateInput): GateDecision {
     && signalMode === 'trend'
     && alignment === 'all_aligned'
     && trendConsolidationBreakout
-    && confidence >= 0.60;
+    && confidence >= 0.60
+    && !trailingStopReversalBlock;
 
   // ── Range bypass ──
   let rangeBypass = false;
