@@ -2148,6 +2148,20 @@ export class AnalysisAgent {
       }
     }
 
+    // Derive minutes-from-open from the latest LTF bar timestamp so it works
+    // identically in live (last bar = now) and backtest (last bar = simulated) modes.
+    let minutesSinceOpen: number | undefined;
+    const lastBarTs = signal.timeframes[0]?.bars?.slice(-1)[0]?.timestamp;
+    if (lastBarTs) {
+      const d = new Date(lastBarTs);
+      const etParts = new Intl.DateTimeFormat('en-US', {
+        timeZone: 'America/New_York', hour: '2-digit', minute: '2-digit', hour12: false,
+      }).formatToParts(d);
+      const h = parseInt(etParts.find(p => p.type === 'hour')!.value, 10);
+      const m = parseInt(etParts.find(p => p.type === 'minute')!.value, 10);
+      minutesSinceOpen = (h * 60 + m) - (9 * 60 + 30);
+    }
+
     const entryCtx = {
       signalMode: signal.signalMode ?? 'none',
       direction: signal.direction,
@@ -2161,6 +2175,7 @@ export class AnalysisAgent {
       rangeExhaustion,
       choppiness,
       trendConsolidationBreakout,
+      minutesSinceOpen,
     };
 
     // Per-symbol confidence adjustment hook

@@ -373,6 +373,16 @@ function spyShouldAllowEntry(ctx: EntryContext): true | string {
     return `bullish trend+orb ${ctx.breakdown.orbBonus.toFixed(2)}`;
   }
 
+  // Midday chop window: 1:00-1:15 PM ET. 15-month SPY mining (2025-01..2026-04)
+  // shows 11 entries in this 15-min slot: 0A/1B/2C/2D/6F, expectancy -1.182.
+  // Wider 12:45-13:15 window tested first: Δexp +0.052 aggregate but 2025-03
+  // regressed -0.167 (an A/B pair caught at 12:55-13:05). Narrowing to 13:00-13:15
+  // keeps the zero-A cluster while avoiding the March bearish-trend A.
+  if (ctx.minutesSinceOpen !== undefined
+      && ctx.minutesSinceOpen >= 210 && ctx.minutesSinceOpen < 225) {
+    return `midday chop window ${ctx.minutesSinceOpen}m (13:00-13:15 ET)`;
+  }
+
   // Bearish + deep range-position penalty: 15-month SPY mining (2025-01..2026-04)
   // shows bearish entries with pricePositionAdjustment <= -0.028 are 0A/3B/4C/0D/21F
   // (28 entries, 75% F, raw cost cleanly F-dominant). Interpretation: bearish signal

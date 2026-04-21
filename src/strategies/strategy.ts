@@ -43,6 +43,11 @@ export interface EntryContext {
    *  over 10+ bars) that price is now breaking out of in the signal direction.
    *  Detects "bull flag" / "bear flag" continuation patterns within established trends. */
   trendConsolidationBreakout?: boolean;
+  /** Minutes elapsed since regular-session open (9:30 AM ET = 0).
+   *  Negative before open. Derived from the latest LTF bar's timestamp so it
+   *  works identically in live mode (last bar = wall-clock now) and backtest
+   *  mode (last bar = simulated time). Use for time-of-day-based filters. */
+  minutesSinceOpen?: number;
 }
 
 // ── Mode detection result ────────────────────────────────────────────────────
