@@ -58,7 +58,7 @@ function loadRawConfirmed(): RawConfirmed[] {
     console.log(`[backtest] Running ${START} → ${END} ${TICKER} (this takes a few minutes)`);
     const out = execSync(
       `npx tsx src/scripts/backtest-signal-quality.ts ${START} ${END} ${TICKER} --json`,
-      { encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'], timeout: 60 * 60 * 1000 },
+      { encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'], timeout: 60 * 60 * 1000, maxBuffer: 256 * 1024 * 1024 },
     );
     const m = out.match(/<!--VALIDATE-JSON-BEGIN-->\n(.+?)\n<!--VALIDATE-JSON-END-->/s);
     if (!m) throw new Error('JSON block not found in backtest output');
