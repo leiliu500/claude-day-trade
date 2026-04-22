@@ -288,6 +288,13 @@ function qqqShouldAllowEntry(ctx: EntryContext): true | string {
     return `extreme atr ${ctx.atr.toFixed(2)} >= 1.33`;
   }
 
+  // Low-volatility bearish filter — at atr < 0.6 bearish entries cluster 17F /
+  // 4B / 3A (F-rate 50%). Complements the existing trend+atr<0.45 rule by
+  // catching the 0.45-0.60 band and cross-mode bearish low-vol traps.
+  if (direction === 'bearish' && ctx.atr < 0.6) {
+    return `bearish low atr ${ctx.atr.toFixed(2)} < 0.6 (F-biased)`;
+  }
+
   return true;
 }
 
