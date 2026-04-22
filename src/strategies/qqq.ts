@@ -295,6 +295,14 @@ function qqqShouldAllowEntry(ctx: EntryContext): true | string {
     return `bearish low atr ${ctx.atr.toFixed(2)} < 0.6 (F-biased)`;
   }
 
+  // High macdBonus bullish filter — mined post-73dc19f. Full cut (macd>0.03
+  // both directions) gave +0.204 gross but breached -0.15 floor in 4 months
+  // (2025-05/07/08, 2026-02) — bearish side loses 10 A-grades. Bullish side
+  // clean: 0A/3B/4C/1D/10F (F=56%, no A losses) → raw +0.046, low risk.
+  if (direction === 'bullish' && ctx.breakdown.macdBonus > 0.03) {
+    return `bullish high macdBonus ${ctx.breakdown.macdBonus.toFixed(3)} > 0.03 (trend-chase)`;
+  }
+
   return true;
 }
 
