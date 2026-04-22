@@ -284,6 +284,13 @@ function qqqShouldAllowEntry(ctx: EntryContext): true | string {
     return `bearish deep pricePos ${ctx.breakdown.pricePositionAdjustment.toFixed(3)} (exhausted)`;
   }
 
+  // Bullish symmetric PA filter — mine-breakdown post-528a58d (low-cascade 24%).
+  // Bullish side: 14 hits split 1A/1B/1C/3D/8F at pricePositionAdjustment <-0.028.
+  // Same threshold as bearish rule above for consistency.
+  if (direction === 'bullish' && ctx.breakdown.pricePositionAdjustment <= -0.028) {
+    return `bullish deep pricePos ${ctx.breakdown.pricePositionAdjustment.toFixed(3)} (against-trend)`;
+  }
+
   if (ctx.atr >= 1.33) {
     return `extreme atr ${ctx.atr.toFixed(2)} >= 1.33`;
   }
