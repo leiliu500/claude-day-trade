@@ -310,6 +310,13 @@ function qqqShouldAllowEntry(ctx: EntryContext): true | string {
     return `bullish high macdBonus ${ctx.breakdown.macdBonus.toFixed(3)} > 0.03 (trend-chase)`;
   }
 
+  // Bearish saturated-strength macd filter — mined post-c10fe8f. Bearish side
+  // of macd>0.03 had 10A losses flat, but the strength==100 subcluster is
+  // 18F / 1A / 1B (20 hits) — late-stage short into maxed-out momentum.
+  if (direction === 'bearish' && ctx.breakdown.macdBonus > 0.03 && ctx.strengthScore === 100) {
+    return `bearish saturated macd+strength (macd=${ctx.breakdown.macdBonus.toFixed(3)})`;
+  }
+
   return true;
 }
 
