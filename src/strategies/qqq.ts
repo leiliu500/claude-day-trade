@@ -266,7 +266,11 @@ function qqqShouldAllowEntry(ctx: EntryContext): true | string {
 
   if (direction === 'bullish' && _lastRegimeScore <= 50) return `bullish lowRegime ${_lastRegimeScore} <= 50`;
 
-  if (ctx.strengthScore >= 70 && ctx.strengthScore < 80) {
+  // Mid-strength kill zone, with carve-outs for strength==71/77 which rejected-goods
+  // mining showed are AB-biased: strength=71 blocks 10A/3B/9C/0D/3F, strength=77
+  // blocks 9A/0B/2C/0D/5F. Other strengths 70-79 are net F-biased.
+  if (ctx.strengthScore >= 70 && ctx.strengthScore < 80
+      && ctx.strengthScore !== 71 && ctx.strengthScore !== 77) {
     return `mid-strength kill zone ${ctx.strengthScore}`;
   }
 
