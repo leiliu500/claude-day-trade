@@ -22,9 +22,12 @@
 import 'dotenv/config';
 import { execSync } from 'child_process';
 
-const START = process.argv[2] || '2026-01-02';
-const END = process.argv[3] || '2026-04-17';
-const TICKER = (process.argv[4] || 'SPY').toUpperCase();
+const concurrencyFlag = process.argv.find(a => a.startsWith('--concurrency='));
+const CONCURRENCY = concurrencyFlag ? Math.max(1, parseInt(concurrencyFlag.split('=')[1]!, 10)) : 8;
+const positionalArgs = process.argv.slice(2).filter(a => !a.startsWith('--'));
+const START = positionalArgs[0] || '2026-01-02';
+const END = positionalArgs[1] || '2026-04-17';
+const TICKER = (positionalArgs[2] || 'SPY').toUpperCase();
 
 // Verdict thresholds — tunable, keep conservative
 const EXPECTANCY_DELTA_MERGE = 0.02;        // need +0.02 expectancy gain to merge
@@ -108,10 +111,10 @@ function hasCandidateChanges(): boolean {
 }
 
 function runBacktest(label: string): TickerSummary {
-  console.log(`\n[${label}] Running backtest ${START} → ${END} ${TICKER}...`);
+  console.log(`\n[${label}] Running backtest ${START} → ${END} ${TICKER} (${CONCURRENCY} workers)...`);
   const startTs = Date.now();
   const out = sh(
-    `npx tsx src/scripts/backtest-signal-quality.ts ${START} ${END} ${TICKER} --json`,
+    `npx tsx src/scripts/backtest-signal-quality.ts ${START} ${END} ${TICKER} --json --concurrency=${CONCURRENCY}`,
     { timeout: 60 * 60 * 1000 }, // 60 min max
   );
   const secs = ((Date.now() - startTs) / 1000).toFixed(0);
@@ -324,7 +327,7 @@ async function main(): Promise<number> {
     return 1;
   }
 
-  console.log(`🔍 Validate-change: ${TICKER} ${START} → ${END}`);
+  console.log(`🔍 Validate-change: ${TICKER} ${START} → ${END} (${CONCURRENCY} workers/phase)`);
   console.log(`\nCandidate diff (watched paths only):`);
   console.log(sh(`git diff --stat -- ${STASH_PATHS.join(' ')}`).split('\n').map(l => `   ${l}`).join('\n'));
 

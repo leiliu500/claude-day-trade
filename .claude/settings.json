@@ -93,7 +93,12 @@
       "Bash(grep -E '\\(CONFIRMED.*BREAKOUT|CONFIRMED$|ATR.*Regime\\)')",
       "Bash(grep -r \"BT_\\\\|BACKTEST\\\\|ESTIMATE\" /home/ec2-user/claude-day-trade --include=*.ts --include=*.js --include=*.env* --include=*.json)",
       "Bash(BT_DEBUG=1 BT_DEBUG_MIN=0.40 npx tsx src/scripts/backtest-spy.ts 2026-04-01)",
-      "Bash(node -e ' *)"
+      "Bash(node -e ' *)",
+      "Bash(awk '/DBG / {last_dbg=$0} /ENTRY/ {print NR\": \"$0; if \\(last_dbg\\) print \"  prev:\"last_dbg}')",
+      "Bash(BT_DEBUG=1 BT_DEBUG_MIN=0.0 npx tsx src/scripts/backtest-day.ts 2026-04-21 SPY)",
+      "Bash(tee /tmp/factor-ortho-qqq-15mo.log)",
+      "Bash(ps -eo pid,etime,stat,cmd)",
+      "Bash(git commit -m ' *)"
     ],
     "additionalDirectories": [
       "/tmp"

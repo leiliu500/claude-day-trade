@@ -10,9 +10,14 @@
  */
 
 import 'dotenv/config';
-import { execSync } from 'child_process';
+import { exec } from 'child_process';
+import { promisify } from 'util';
+
+const execAsync = promisify(exec);
 
 const EMIT_JSON = process.argv.includes('--json');
+const concurrencyFlag = process.argv.find(a => a.startsWith('--concurrency='));
+const CONCURRENCY = concurrencyFlag ? Math.max(1, parseInt(concurrencyFlag.split('=')[1]!, 10)) : 8;
 const positionalArgs = process.argv.slice(2).filter(a => !a.startsWith('--'));
 const START = positionalArgs[0] || '2025-10-01';
 const END = positionalArgs[1] || '2026-03-25';
@@ -315,69 +320,83 @@ function printTickerReport(ticker: string, results: DayResult[]) {
 
 // ── Main execution ──────────────────────────────────────────────────────────
 
+async function processDay(date: string, ticker: string): Promise<DayResult> {
+  const month = date.slice(0, 7);
+  try {
+    const { stdout } = await execAsync(
+      `npx tsx src/scripts/backtest-day.ts ${date} ${ticker} --json 2>&1`,
+      { timeout: 120_000, encoding: 'utf-8', maxBuffer: 64 * 1024 * 1024 },
+    );
+    const output = stdout as string;
+
+    const hasResults = output.includes('ticks processed');
+    const skipped = !hasResults;
+    const entries = skipped ? [] : parseEntries(output);
+
+    // Extract per-day JSON for rejection data (shouldAllowEntry + gate rejections).
+    let filtered: RejectedEntry[] = [];
+    let blocked: RejectedEntry[] = [];
+    let rawConfirmed: Record<string, unknown>[] = [];
+    if (!skipped) {
+      const jm = output.match(/__JSON_START__(.+?)__JSON_END__/s);
+      if (jm) {
+        try {
+          const day = JSON.parse(jm[1]!);
+          filtered = day.filtered ?? [];
+          blocked = day.blocked ?? [];
+          rawConfirmed = (day.confirmed ?? []).map((c: Record<string, unknown>) => ({ ...c, date }));
+        } catch { /* ignore malformed */ }
+      }
+    }
+
+    return { date, month, ticker, entries, filtered, blocked, rawConfirmed, skipped };
+  } catch (err: any) {
+    const msg = err.stderr?.toString().slice(0, 100) || err.message?.slice(0, 100) || 'unknown error';
+    return { date, month, ticker, entries: [], filtered: [], blocked: [], rawConfirmed: [], skipped: true, error: msg };
+  }
+}
+
+async function runParallel(dates: string[], ticker: string, concurrency: number): Promise<DayResult[]> {
+  const results: DayResult[] = new Array(dates.length);
+  let nextIdx = 0;
+  let completed = 0;
+
+  const worker = async () => {
+    while (true) {
+      const idx = nextIdx++;
+      if (idx >= dates.length) return;
+      const date = dates[idx]!;
+      const r = await processDay(date, ticker);
+      results[idx] = r;
+      completed++;
+      const pct = ((completed / dates.length) * 100).toFixed(0);
+      let status: string;
+      if (r.error) status = 'ERROR';
+      else if (r.skipped) status = 'SKIP (no data)';
+      else if (r.entries.length === 0) status = 'no entries';
+      else {
+        const good = r.entries.filter(e => e.outcome === 'GOOD').length;
+        const bad = r.entries.filter(e => e.outcome === 'BAD').length;
+        const grades = r.entries.map(e => e.grade).join('');
+        status = `${r.entries.length} entries [${grades}] ${good}G/${bad}B`;
+      }
+      console.log(`  [${pct}%] ${date} ${status}`);
+    }
+  };
+
+  await Promise.all(Array.from({ length: Math.min(concurrency, dates.length) }, () => worker()));
+  return results;
+}
+
 const allDays = getTradingDays(START, END).filter(d => !HOLIDAYS.has(d));
 const allTickerResults = new Map<string, DayResult[]>();
 
 for (const ticker of TICKERS) {
   console.log(`\n${'='.repeat(80)}`);
-  console.log(`  ${ticker} SIGNAL QUALITY BACKTEST: ${START} → ${END} (${allDays.length} trading days)`);
+  console.log(`  ${ticker} SIGNAL QUALITY BACKTEST: ${START} → ${END} (${allDays.length} trading days, ${CONCURRENCY} workers)`);
   console.log(`${'='.repeat(80)}\n`);
 
-  const results: DayResult[] = [];
-  let processed = 0;
-
-  for (const date of allDays) {
-    processed++;
-    const pct = ((processed / allDays.length) * 100).toFixed(0);
-    process.stdout.write(`  [${pct}%] ${date} ...`);
-
-    try {
-      const output = execSync(
-        `npx tsx src/scripts/backtest-day.ts ${date} ${ticker} --json 2>&1`,
-        { timeout: 120_000, encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'] },
-      );
-
-      const hasResults = output.includes('ticks processed');
-      const skipped = !hasResults;
-      const entries = skipped ? [] : parseEntries(output);
-
-      // Extract per-day JSON for rejection data (shouldAllowEntry + gate rejections).
-      // Both already carry a grade computed from forward MFE/MAE, so mine-rejected-goods
-      // can score filter rules by the quality of entries they reject.
-      let filtered: RejectedEntry[] = [];
-      let blocked: RejectedEntry[] = [];
-      let rawConfirmed: Record<string, unknown>[] = [];
-      if (!skipped) {
-        const jm = output.match(/__JSON_START__(.+?)__JSON_END__/s);
-        if (jm) {
-          try {
-            const day = JSON.parse(jm[1]!);
-            filtered = day.filtered ?? [];
-            blocked = day.blocked ?? [];
-            rawConfirmed = (day.confirmed ?? []).map((c: Record<string, unknown>) => ({ ...c, date }));
-          } catch { /* ignore malformed */ }
-        }
-      }
-      const month = date.slice(0, 7);
-
-      results.push({ date, month, ticker, entries, filtered, blocked, rawConfirmed, skipped });
-
-      if (skipped) {
-        process.stdout.write(` SKIP (no data)\n`);
-      } else if (entries.length === 0) {
-        process.stdout.write(` no entries\n`);
-      } else {
-        const good = entries.filter(e => e.outcome === 'GOOD').length;
-        const bad = entries.filter(e => e.outcome === 'BAD').length;
-        const grades = entries.map(e => e.grade).join('');
-        process.stdout.write(` ${entries.length} entries [${grades}] ${good}G/${bad}B\n`);
-      }
-    } catch (err: any) {
-      const msg = err.stderr?.toString().slice(0, 100) || err.message?.slice(0, 100) || 'unknown error';
-      results.push({ date, month: date.slice(0, 7), ticker, entries: [], filtered: [], blocked: [], rawConfirmed: [], skipped: true, error: msg });
-      process.stdout.write(` ERROR\n`);
-    }
-  }
+  const results = await runParallel(allDays, ticker, CONCURRENCY);
 
   allTickerResults.set(ticker, results);
   printTickerReport(ticker, results);
