@@ -803,6 +803,10 @@ async function main() {
         cb = { ...cb, trendPersistenceBonus: persistenceBonus, total: Math.max(0, Math.min(1, cb.total + persistenceBonus + agingReduction)) };
       }
     }
+    // Sync entryCtx with post-persistence values so shouldAllowEntry sees the same
+    // confidence as live AnalysisAgent (which runs persistence before the filter).
+    entryCtx.confidence = cb.total;
+    entryCtx.breakdown = cb;
     // Record this signal for future persistence lookups
     signalHistory.push({ direction, alignment });
 
