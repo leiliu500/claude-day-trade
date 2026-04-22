@@ -151,6 +151,17 @@ function qqqAdjustConfidence(breakdown: ConfidenceBreakdown, ctx: EntryContext):
     }
   }
 
+  // Bullish entries with non-positive trendPhaseBonus: zero vwapBonus.
+  // vwap lift is noise when trend-phase isn't confirming; bearish side kept intact.
+  if (ctx.direction === 'bullish' && bd.trendPhaseBonus <= 0) {
+    if (bd.vwapBonus !== 0) {
+      bd = bd === breakdown ? { ...bd } : bd;
+      bd.total -= bd.vwapBonus;
+      bd.vwapBonus = 0;
+      bd.total = Math.max(0, Math.min(1, bd.total));
+    }
+  }
+
   // Suppress positive PA bonus for bullish trend entries at high regime (>= 75):
   // confirming bars in a high-regime tape are the final push, not fresh momentum.
   if (ctx.signalMode === 'trend' && ctx.direction === 'bullish'
