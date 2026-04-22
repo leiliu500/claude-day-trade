@@ -21,9 +21,14 @@
 
 import 'dotenv/config';
 import { execSync } from 'child_process';
+import { readFileSync, writeFileSync, existsSync } from 'fs';
 
 const concurrencyFlag = process.argv.find(a => a.startsWith('--concurrency='));
 const CONCURRENCY = concurrencyFlag ? Math.max(1, parseInt(concurrencyFlag.split('=')[1]!, 10)) : 8;
+const baselineJsonFlag = process.argv.find(a => a.startsWith('--baseline-json='));
+const BASELINE_JSON_PATH = baselineJsonFlag ? baselineJsonFlag.split('=')[1]! : undefined;
+const writeBaselineFlag = process.argv.find(a => a.startsWith('--write-baseline-json='));
+const WRITE_BASELINE_JSON_PATH = writeBaselineFlag ? writeBaselineFlag.split('=')[1]! : undefined;
 const positionalArgs = process.argv.slice(2).filter(a => !a.startsWith('--'));
 const START = positionalArgs[0] || '2026-01-02';
 const END = positionalArgs[1] || '2026-04-17';
@@ -321,6 +326,15 @@ function printVerdict(v: Verdict): void {
 // ── Main ─────────────────────────────────────────────────────────────────────
 
 async function main(): Promise<number> {
+  // --write-baseline-json mode: just capture baseline at HEAD (no candidate diff required)
+  if (WRITE_BASELINE_JSON_PATH) {
+    console.log(`📸 Capturing baseline ${TICKER} ${START} → ${END} → ${WRITE_BASELINE_JSON_PATH}`);
+    const baseline = runBacktest('BASELINE');
+    writeFileSync(WRITE_BASELINE_JSON_PATH, JSON.stringify(baseline));
+    console.log(`✓ baseline written (${baseline.totalEntries} entries, exp ${baseline.expectancy.toFixed(3)})`);
+    return 0;
+  }
+
   if (!hasCandidateChanges()) {
     console.error('❌ No candidate changes in watched paths. Edit one of:');
     for (const p of STASH_PATHS) console.error(`     ${p}`);
@@ -342,17 +356,30 @@ async function main(): Promise<number> {
     return 1;
   }
 
-  // Stash candidate → run baseline → pop → run candidate
+  // Baseline: load from cache OR stash candidate, run baseline, pop
+  let baseline: TickerSummary;
   let stashed = false;
   try {
-    sh(`git stash push -u -m validate-change-tmp -- ${STASH_PATHS.join(' ')}`);
-    stashed = true;
-    console.log(`[STASH] ✓ candidate stashed (${STASH_PATHS.length} watched paths)`);
-
-    const baseline = runBacktest('BASELINE');
-    sh('git stash pop');
-    stashed = false;
-    console.log('[STASH] ✓ candidate restored');
+    if (BASELINE_JSON_PATH) {
+      if (!existsSync(BASELINE_JSON_PATH)) {
+        console.error(`❌ --baseline-json file not found: ${BASELINE_JSON_PATH}`);
+        return 1;
+      }
+      baseline = JSON.parse(readFileSync(BASELINE_JSON_PATH, 'utf-8')) as TickerSummary;
+      if (baseline.ticker !== TICKER) {
+        console.error(`❌ baseline-json is for ${baseline.ticker}, not ${TICKER}`);
+        return 1;
+      }
+      console.log(`[BASELINE] ✓ loaded from cache: ${baseline.totalEntries} entries, exp ${baseline.expectancy.toFixed(3)}`);
+    } else {
+      sh(`git stash push -u -m validate-change-tmp -- ${STASH_PATHS.join(' ')}`);
+      stashed = true;
+      console.log(`[STASH] ✓ candidate stashed (${STASH_PATHS.length} watched paths)`);
+      baseline = runBacktest('BASELINE');
+      sh('git stash pop');
+      stashed = false;
+      console.log('[STASH] ✓ candidate restored');
+    }
 
     const candidate = runBacktest('CANDIDATE');
 
