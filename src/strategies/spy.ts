@@ -408,6 +408,13 @@ function spyShouldAllowEntry(ctx: EntryContext): true | string {
     return `bearish saturated macd+strength (macd=${ctx.breakdown.macdBonus.toFixed(3)})`;
   }
 
+  // Bullish high-strength macd filter — post-a4387bd baseline: bullish macd>0.03
+  // & strength>=80 is 7F / 1A / 1B / 1D (10 hits). Full macd>0.03 REVERTED earlier
+  // on 2026-03 cascade; narrowing by strength cuts the blast radius.
+  if (direction === 'bullish' && ctx.breakdown.macdBonus > 0.03 && ctx.strengthScore >= 80) {
+    return `bullish high macdBonus+strength (macd=${ctx.breakdown.macdBonus.toFixed(3)} s=${ctx.strengthScore})`;
+  }
+
   return true;
 }
 
