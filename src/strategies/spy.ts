@@ -310,6 +310,15 @@ function spyShouldAllowEntry(ctx: EntryContext): true | string {
   // bullish rangeExhaustion >= 6.0 removed for trends: Q1 counterfactual net costly —
   // exhausted+choppy (chop >= 2.0) now handles the high-risk cases
 
+  // Bullish high-rExh re-added at 7.5 (higher bar than the prior 6.0). Mined
+  // 2026-04-23 post-01081e8 on 15-month data: 14 entries 0A/4B/3C/0D/7F —
+  // ZERO A-grade loss. Cascade 32%, adj +0.025. Targets exhausted-but-clean
+  // bullish signals that the chop filter misses.
+  if (signalMode === 'trend' && direction === 'bullish'
+      && ctx.rangeExhaustion !== undefined && ctx.rangeExhaustion >= 7.5) {
+    return `bullish rangeExh ${ctx.rangeExhaustion.toFixed(1)} >= 7.5`;
+  }
+
   // Bullish negative dvel: only the band [-0.05, -0.04) is toxic (N=9,
   // 1A/0B/3C/0D/5F, rawCost -8). Deeper negatives (-0.08 to -0.05) are
   // legitimate reversal setups blocked as 2A/5B/0C/0D/0F (rawCost +9).
