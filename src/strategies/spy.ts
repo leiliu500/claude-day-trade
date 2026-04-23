@@ -415,6 +415,15 @@ function spyShouldAllowEntry(ctx: EntryContext): true | string {
     return `bullish high macdBonus+strength (macd=${ctx.breakdown.macdBonus.toFixed(3)} s=${ctx.strengthScore})`;
   }
 
+  // Bearish triangle-contraction + positive macd filter — post-7dfc0a2.
+  // Plain bearish trContract<0 REVERTED on 2025-07-31 B-grade entry (macd=-0.01).
+  // Adding macd>0 gate excludes that B and isolates a pure 8F/1D/0AB cluster.
+  if (direction === 'bearish'
+      && ctx.breakdown.trContractionPenalty < 0
+      && ctx.breakdown.macdBonus > 0) {
+    return `bearish triangle-contract+macd trC=${ctx.breakdown.trContractionPenalty.toFixed(2)} macd=${ctx.breakdown.macdBonus.toFixed(2)}`;
+  }
+
   return true;
 }
 
