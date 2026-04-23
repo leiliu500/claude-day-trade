@@ -99,12 +99,12 @@ const TICKER_OVERRIDES: Record<string, Partial<Omit<TickerConfig, 'ticker' | 'st
     entryWindowEndMin: 360,
   },
   QQQ: {
-    // Tuned from Q1 2026 backtest: 6W/3L (67%), +63.5% P&L
-    // (baseline was 8W/11L 42%, -63.8%)
+    // Enabled 2026-04-23 after 2026-04-22 filter-mining session: 15mo baseline
+    // -0.041 → +0.298 via 6 filter merges + 1 parity fix (c49c6c0 → 55e9488).
     minConfidence: 0.65,
 
     maxContracts: 5,       // smaller size — newer symbol, less data
-    enabled: false,
+    enabled: true,
     strategy: qqqStrategy,
   },
   IWM: {
