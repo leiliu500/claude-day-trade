@@ -424,6 +424,13 @@ function spyShouldAllowEntry(ctx: EntryContext): true | string {
     return `bearish triangle-contract+macd trC=${ctx.breakdown.trContractionPenalty.toFixed(2)} macd=${ctx.breakdown.macdBonus.toFixed(2)}`;
   }
 
+  // Bearish low-atr + strength filter — narrower than QQQ 73dc19f. SPY bearish
+  // atr<0.6 REVERTED on 2025-02/10 cascade. Narrowing to strength>=70 isolates
+  // a clean 10F/5D/4C/0AB cluster (19 entries) — zero AB loss.
+  if (direction === 'bearish' && ctx.atr < 0.6 && ctx.strengthScore >= 70) {
+    return `bearish low atr+strength ${ctx.atr.toFixed(2)} < 0.6 s=${ctx.strengthScore}`;
+  }
+
   return true;
 }
 
