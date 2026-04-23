@@ -400,6 +400,14 @@ function spyShouldAllowEntry(ctx: EntryContext): true | string {
     return `extreme atr ${ctx.atr.toFixed(2)} >= 1.33`;
   }
 
+  // Bearish saturated-strength macd filter — ported from QQQ 7f6df42 pattern.
+  // SPY 15mo factor-ortho (2026-04-23): macdBonus remains the top perverse factor
+  // (Δmean -0.0109, d=-0.51) despite existing regime-gate at trendPhase<=0. The
+  // strength==100 cluster at bearish macd>0.03 is 12F / 3C / 0AB (zero AB loss).
+  if (direction === 'bearish' && ctx.breakdown.macdBonus > 0.03 && ctx.strengthScore === 100) {
+    return `bearish saturated macd+strength (macd=${ctx.breakdown.macdBonus.toFixed(3)})`;
+  }
+
   return true;
 }
 
