@@ -413,6 +413,18 @@ function spyShouldAllowEntry(ctx: EntryContext): true | string {
     return `bearish deep pricePos ${ctx.breakdown.pricePositionAdjustment.toFixed(3)} (exhausted)`;
   }
 
+  // Bullish top-extreme + exhausted move (2026-04-24): 15-month SPY rawConfirmed
+  // shows 11 bullish entries at pricePositionAdjustment<=-0.07 (rp>=0.85) combined
+  // with moveExhaustionPenalty<=-0.05 were 0A/1B/3C/2D/5F (9% AB, rawCost -11 —
+  // filter catching them gains +11). Same bucket with mex>-0.05 has 75% AB
+  // (1A/2B/1C/0D/0F in 4 entries) — mex is the key discriminator separating
+  // genuine range-edge continuation from stale-trend top-chase.
+  if (direction === 'bullish'
+      && ctx.breakdown.pricePositionAdjustment <= -0.07
+      && ctx.breakdown.moveExhaustionPenalty <= -0.05) {
+    return `bullish top-extreme exhausted ppa=${ctx.breakdown.pricePositionAdjustment.toFixed(3)} mex=${ctx.breakdown.moveExhaustionPenalty.toFixed(3)}`;
+  }
+
   // Very high ATR kill zone: 2026 YTD post-dvel baseline shows ATR >= 1.33
   // is 4F/0A/0B (all bearish or bullish trend entries on high-vol days that
   // retrace immediately). The 1A at atr=1.31 is just below this threshold.
