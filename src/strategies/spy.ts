@@ -417,7 +417,10 @@ function spyShouldAllowEntry(ctx: EntryContext): true | string {
   // is 4F/0A/0B (all bearish or bullish trend entries on high-vol days that
   // retrace immediately). The 1A at atr=1.31 is just below this threshold.
   // Complements the existing `trend atr < 0.45` lower floor.
-  if (ctx.atr >= 1.33) {
+  // Mode=breakout carve-out (2026-04-24): QQQ data shows 4A/0B/1C/0D/1F on
+  // mode=breakout extreme-atr rejects (67% AB). SPY sample is only 4 entries
+  // (2A/2F, cost 0 — neutral) — symmetric carve-out with QQQ keeps SPY parity.
+  if (signalMode !== 'breakout' && ctx.atr >= 1.33) {
     return `extreme atr ${ctx.atr.toFixed(2)} >= 1.33`;
   }
 

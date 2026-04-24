@@ -300,7 +300,10 @@ function qqqShouldAllowEntry(ctx: EntryContext): true | string {
     return `bullish deep pricePos ${ctx.breakdown.pricePositionAdjustment.toFixed(3)} (against-trend)`;
   }
 
-  if (ctx.atr >= 1.33) {
+  // Mode=breakout carve-out (2026-04-24): across 6 QQQ historical extreme-atr
+  // rejections in mode=breakout, 4 were Grade A (67% AB, rawCost +6). The filter
+  // correctly catches high-ATR trend-mode entries but blocks genuine breakouts.
+  if (signalMode !== 'breakout' && ctx.atr >= 1.33) {
     return `extreme atr ${ctx.atr.toFixed(2)} >= 1.33`;
   }
 
