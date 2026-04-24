@@ -341,7 +341,13 @@ function spyShouldAllowEntry(ctx: EntryContext): true | string {
       && ctx.rangeExhaustion !== undefined && ctx.rangeExhaustion >= 9.0
       && ctx.choppiness !== undefined && ctx.choppiness >= 1.0) return `breakout highExh+highChop rExh=${ctx.rangeExhaustion.toFixed(1)} chop=${ctx.choppiness.toFixed(2)}`;
 
+  // Conf>=0.95 carve-out (2026-04-24): across 20 SPY + 29 QQQ historical extremeChop
+  // rejections, 0 had confidence >= 0.95. The filter catches chop-driven breakout
+  // signals with moderate conviction, NOT genuine ADX-rising breakouts. 2026-04-23
+  // SPY 13:10-13:13 had a -0.98% bearish breakout with conf 95-97% and adxSlope rising
+  // 4.6→9.9 (5 Grade A entries) — cascade-blocked here + midday chop.
   if (signalMode === 'breakout'
+      && ctx.confidence < 0.95
       && ctx.choppiness !== undefined && ctx.choppiness >= 2.0) return `breakout extremeChop ${ctx.choppiness.toFixed(2)} >= 2.0`;
 
   if (signalMode === 'breakout'
@@ -387,7 +393,13 @@ function spyShouldAllowEntry(ctx: EntryContext): true | string {
   // Wider 12:45-13:15 window tested first: Δexp +0.052 aggregate but 2025-03
   // regressed -0.167 (an A/B pair caught at 12:55-13:05). Narrowing to 13:00-13:15
   // keeps the zero-A cluster while avoiding the March bearish-trend A.
-  if (ctx.minutesSinceOpen !== undefined
+  //
+  // Mode=breakout carve-out (2026-04-24): across 19 SPY + 19 QQQ historical midday-chop
+  // rejections, only 1 was mode=breakout (QQQ 2026-03-18 Grade F). The filter catches
+  // trend-mode chop, NOT genuine breakouts. 2026-04-23 SPY 13:10-13:13 had a -0.98%
+  // bearish breakout with conf 95-97% (5 Grade A entries) — cascade-blocked here.
+  if (signalMode !== 'breakout'
+      && ctx.minutesSinceOpen !== undefined
       && ctx.minutesSinceOpen >= 210 && ctx.minutesSinceOpen < 225) {
     return `midday chop window ${ctx.minutesSinceOpen}m (13:00-13:15 ET)`;
   }

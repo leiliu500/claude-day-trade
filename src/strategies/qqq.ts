@@ -252,7 +252,9 @@ function qqqShouldAllowEntry(ctx: EntryContext): true | string {
       && ctx.rangeExhaustion !== undefined && ctx.rangeExhaustion >= 9.0
       && ctx.choppiness !== undefined && ctx.choppiness >= 1.0) return `breakout highExh+highChop rExh=${ctx.rangeExhaustion.toFixed(1)} chop=${ctx.choppiness.toFixed(2)}`;
 
+  // Conf>=0.95 carve-out (2026-04-24): see strategies/spy.ts rationale.
   if (signalMode === 'breakout'
+      && ctx.confidence < 0.95
       && ctx.choppiness !== undefined && ctx.choppiness >= 2.0) return `breakout extremeChop ${ctx.choppiness.toFixed(2)} >= 2.0`;
 
   if (signalMode === 'breakout'
@@ -279,7 +281,10 @@ function qqqShouldAllowEntry(ctx: EntryContext): true | string {
     return `bullish trend+orb ${ctx.breakdown.orbBonus.toFixed(2)}`;
   }
 
-  if (ctx.minutesSinceOpen !== undefined
+  // Mode=breakout carve-out (2026-04-24): midday chop filter catches trend-mode chop,
+  // not genuine breakouts. See strategies/spy.ts for evidence.
+  if (signalMode !== 'breakout'
+      && ctx.minutesSinceOpen !== undefined
       && ctx.minutesSinceOpen >= 210 && ctx.minutesSinceOpen < 225) {
     return `midday chop window ${ctx.minutesSinceOpen}m (13:00-13:15 ET)`;
   }
