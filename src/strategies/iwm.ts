@@ -314,6 +314,15 @@ function iwmShouldAllowEntry(ctx: EntryContext): true | string {
     return `bearish low atrPct+strength ${atrPct.toFixed(3)}% < 0.10 s=${ctx.strengthScore}`;
   }
 
+  // IWM-specific: high priceVelocityBonus catches rising-ADX late-chase (2026-04-25).
+  // 15-month breakdown mining: priceVelocityBonus > 0.05 blocks 11 entries, 0A/0B/0C/0D/11F
+  // (zero AB-loss, 100% F-catch, adj +0.045). Additive to the trendPhase<=0 regime gate,
+  // which zeros priceVelocityBonus only when ADX is flat/declining — this filter catches
+  // rising-ADX entries where high velocity = late chase rather than continuation.
+  if (ctx.breakdown.priceVelocityBonus > 0.05) {
+    return `priceVelocityBonus ${ctx.breakdown.priceVelocityBonus.toFixed(3)} > 0.05 (late chase)`;
+  }
+
   return true;
 }
 
