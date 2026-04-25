@@ -35,6 +35,11 @@ import { writeVisualizerHTML, type VisEntry, type VisBar } from './backtest-visu
 import { computePriceTopology } from '../topology/price-topology.js';
 import { computeTopologyEntry } from '../topology/entry-model.js';
 import type { TopologySignal } from '../topology/types.js';
+import {
+  hashStashPathsInWorkingTree, dayCachePathFor,
+  loadCachedJSON, saveCachedJSON,
+} from './lib/backtest-cache.js';
+import { existsSync } from 'fs';
 
 // ── Config ────────────────────────────────────────────────────────────────────
 
@@ -42,9 +47,66 @@ const USE_AI = process.argv.includes('--ai');
 const USE_TOPO = !process.argv.includes('--no-topo'); // enabled by default, matching live
 const JSON_OUTPUT = process.argv.includes('--json');
 const HTML_OUTPUT = process.argv.includes('--html');
+const NO_CACHE = process.argv.includes('--no-cache');
 const TARGET_DATE = process.argv.filter(a => !a.startsWith('--'))[2] || '2026-03-18';
 const TICKER = process.argv.filter(a => !a.startsWith('--'))[3] || 'SPY';
 const PROFILE = 'S' as const; // Scalp: 1m, 3m, 5m
+
+// ── Per-day stdout cache ─────────────────────────────────────────────────────
+// Cache key = SHA1 of STASH_PATHS content (matches validate-change). Skip when
+// any flag/env that would alter output is set: --ai (non-deterministic),
+// --html (creates a file as side-effect), --no-cache (explicit), no --json
+// (signal-quality is the only consumer that needs replayable output), or any
+// of BT_THRESHOLD / BT_DEBUG / BT_RECONNECT_TIMES (override behavior at run time).
+const CACHE_ELIGIBLE = JSON_OUTPUT && !USE_AI && !HTML_OUTPUT && !NO_CACHE
+  && !process.env.BT_THRESHOLD && !process.env.BT_DEBUG && !process.env.BT_RECONNECT_TIMES;
+
+interface DayCacheEntry { ticker: string; date: string; hash: string; stdout: string }
+
+let _cacheBuffer: string[] | null = null;
+let _cachePath: string | null = null;
+
+function _initCache(): void {
+  if (!CACHE_ELIGIBLE) return;
+  const hash = hashStashPathsInWorkingTree();
+  _cachePath = dayCachePathFor(TICKER, TARGET_DATE, hash);
+  if (existsSync(_cachePath)) {
+    const cached = loadCachedJSON<DayCacheEntry>(_cachePath);
+    if (cached && cached.ticker === TICKER && cached.date === TARGET_DATE && cached.hash === hash) {
+      // Replay the cached stdout verbatim and exit. Use process.stdout.write to
+      // bypass the tee'd console.log (which would re-buffer).
+      process.stdout.write(cached.stdout);
+      process.exit(0);
+    }
+  }
+  // Cache miss: tee everything written to stdout so we can save at the end.
+  // Intercept process.stdout.write (the primitive both console.log and direct
+  // process.stdout.write calls funnel through) so we capture all stdout bytes
+  // regardless of which API the caller used.
+  _cacheBuffer = [];
+  const origWrite = process.stdout.write.bind(process.stdout);
+  process.stdout.write = ((chunk: string | Uint8Array, ...rest: unknown[]): boolean => {
+    if (_cacheBuffer) {
+      _cacheBuffer.push(typeof chunk === 'string' ? chunk : Buffer.from(chunk).toString('utf-8'));
+    }
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    return origWrite(chunk as any, ...(rest as any));
+  }) as typeof process.stdout.write;
+}
+
+function _saveCache(): void {
+  if (!CACHE_ELIGIBLE || !_cacheBuffer || !_cachePath) return;
+  const hash = hashStashPathsInWorkingTree();
+  // Recompute hash at save time — if the working tree changed during the run,
+  // the cached stdout no longer matches the code that produced it. Skip save.
+  const expectedPath = dayCachePathFor(TICKER, TARGET_DATE, hash);
+  if (expectedPath !== _cachePath) return;
+  saveCachedJSON(_cachePath, {
+    ticker: TICKER, date: TARGET_DATE, hash, stdout: _cacheBuffer.join(''),
+  });
+}
+
+_initCache();
 
 // ── Per-ticker config ────────────────────────────────────────────────────────
 // Backtest config: sim parameters, entry window, daily limits, etc.
@@ -2790,7 +2852,9 @@ async function main() {
   }
 }
 
-main().catch(err => {
-  console.error('Backtest failed:', err);
-  process.exit(1);
-});
+main()
+  .then(() => { _saveCache(); })
+  .catch(err => {
+    console.error('Backtest failed:', err);
+    process.exit(1);
+  });

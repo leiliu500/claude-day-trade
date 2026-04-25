@@ -32,9 +32,12 @@
 
 import 'dotenv/config';
 import { execSync } from 'child_process';
-import { readFileSync, writeFileSync, existsSync, mkdirSync, readdirSync, unlinkSync } from 'fs';
-import { join as pathJoin } from 'path';
-import { createHash } from 'crypto';
+import { writeFileSync, existsSync } from 'fs';
+import {
+  STASH_PATHS, hashStashPathsAtHead, hashStashPathsInWorkingTree,
+  windowCachePathFor, loadCachedJSON, saveCachedJSON,
+  pruneStaleWindowCaches, pruneStaleDayCaches,
+} from './lib/backtest-cache.js';
 
 const concurrencyFlag = process.argv.find(a => a.startsWith('--concurrency='));
 const CONCURRENCY = concurrencyFlag ? Math.max(1, parseInt(concurrencyFlag.split('=')[1]!, 10)) : 8;
@@ -47,8 +50,6 @@ const positionalArgs = process.argv.slice(2).filter(a => !a.startsWith('--'));
 const START = positionalArgs[0] || '2026-01-02';
 const END = positionalArgs[1] || '2026-04-17';
 const TICKER = (positionalArgs[2] || 'SPY').toUpperCase();
-
-const AUTO_CACHE_DIR = '.validate-cache';
 
 // Verdict thresholds — tunable, keep conservative
 const EXPECTANCY_DELTA_MERGE = 0.02;        // need +0.02 expectancy gain to merge
@@ -117,79 +118,15 @@ function sh(cmd: string, opts: Record<string, unknown> = {}): string {
   return execSync(cmd, { encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'], maxBuffer: 64 * 1024 * 1024, ...opts });
 }
 
-// Only stash paths that actually affect backtest behavior — the harness and
-// signal-quality script live in src/scripts/ and must remain present in both
-// baseline and candidate runs.
-const STASH_PATHS = [
-  'src/strategies/', 'src/lib/', 'src/agents/',
-  'src/types/', 'src/ticker-configs.ts',
-  'src/scripts/backtest-day.ts', 'src/scripts/backtest-configs/',
-];
-
 function hasCandidateChanges(): boolean {
   const status = sh(`git status --porcelain -- ${STASH_PATHS.join(' ')}`).trim();
   return status.length > 0;
 }
 
-// Content-hash helpers — cache key is the SHA1 of the watched paths' content.
-// BASELINE runs against HEAD's STASH_PATHS tree.
-// CANDIDATE runs against the working-tree content of STASH_PATHS (tracked + untracked).
-// If the two hashes are equal (candidate === HEAD), the candidate phase can be
-// served from the baseline cache — no duplicate backtest runs.
-function hashStashPathsAtHead(): string {
-  // git ls-tree -r lists every file in HEAD under these paths with its blob SHA.
-  const out = sh(`git ls-tree -r HEAD -- ${STASH_PATHS.join(' ')}`);
-  return createHash('sha1').update(out).digest('hex').slice(0, 12);
-}
-
-function hashStashPathsInWorkingTree(): string {
-  // Tracked + untracked (-c -o) under STASH_PATHS, respecting .gitignore.
-  // Hash file path + content so renames and content changes both invalidate.
-  const files = sh(`git ls-files -c -o --exclude-standard -- ${STASH_PATHS.join(' ')}`)
-    .trim().split('\n').filter(Boolean).sort();
-  const h = createHash('sha1');
-  for (const f of files) {
-    h.update(f);
-    h.update('\0');
-    try { h.update(readFileSync(f)); } catch { /* deleted file — just record the path */ }
-    h.update('\0');
-  }
-  return h.digest('hex').slice(0, 12);
-}
-
-function cachePathFor(hash: string): string {
-  return pathJoin(AUTO_CACHE_DIR, `backtest-${TICKER}-${START}-${END}-${hash}.json`);
-}
-
 function loadCached(path: string): TickerSummary | null {
-  try {
-    const t = JSON.parse(readFileSync(path, 'utf-8')) as TickerSummary;
-    if (t.ticker !== TICKER) return null;
-    return t;
-  } catch {
-    return null;
-  }
-}
-
-function saveCached(path: string, t: TickerSummary): void {
-  mkdirSync(AUTO_CACHE_DIR, { recursive: true });
-  writeFileSync(path, JSON.stringify(t));
-}
-
-// Prune stale cache files for the current {ticker, window}: anything not in
-// `keepHashes` (current baseline + candidate) is removed. Other windows are
-// untouched. Keeps .validate-cache/ bounded at ≤2 files per active window.
-function pruneStaleCaches(keepHashes: ReadonlyArray<string>): number {
-  if (!existsSync(AUTO_CACHE_DIR)) return 0;
-  const prefix = `backtest-${TICKER}-${START}-${END}-`;
-  let removed = 0;
-  for (const f of readdirSync(AUTO_CACHE_DIR)) {
-    if (!f.startsWith(prefix) || !f.endsWith('.json')) continue;
-    const hash = f.slice(prefix.length, -'.json'.length);
-    if (keepHashes.includes(hash)) continue;
-    try { unlinkSync(pathJoin(AUTO_CACHE_DIR, f)); removed++; } catch { /* ignore */ }
-  }
-  return removed;
+  const t = loadCachedJSON<TickerSummary>(path);
+  if (!t || t.ticker !== TICKER) return null;
+  return t;
 }
 
 function runBacktest(label: string): TickerSummary {
@@ -436,8 +373,8 @@ async function main(): Promise<number> {
   // Compute content hashes so both phases can be cached / shared
   const baselineHash = !BASELINE_JSON_PATH && !NO_CACHE ? hashStashPathsAtHead() : undefined;
   const candidateHash = !NO_CACHE ? hashStashPathsInWorkingTree() : undefined;
-  const baselineCachePath = baselineHash ? cachePathFor(baselineHash) : undefined;
-  const candidateCachePath = candidateHash ? cachePathFor(candidateHash) : undefined;
+  const baselineCachePath = baselineHash ? windowCachePathFor(TICKER, START, END, baselineHash) : undefined;
+  const candidateCachePath = candidateHash ? windowCachePathFor(TICKER, START, END, candidateHash) : undefined;
 
   if (baselineHash && candidateHash) {
     console.log(`\n[CACHE] baseline content hash: ${baselineHash}`);
@@ -484,7 +421,7 @@ async function main(): Promise<number> {
       stashed = false;
       console.log('[STASH] ✓ candidate restored');
       if (baselineCachePath) {
-        saveCached(baselineCachePath, baseline);
+        saveCachedJSON(baselineCachePath, baseline);
         console.log(`[BASELINE] ✓ cached for future reruns at this HEAD content`);
       }
     }
@@ -507,16 +444,20 @@ async function main(): Promise<number> {
       if (candidateCachePath) console.log(`[CANDIDATE] auto-cache miss — running candidate (will cache to ${candidateCachePath})`);
       candidate = runBacktest('CANDIDATE');
       if (candidateCachePath) {
-        saveCached(candidateCachePath, candidate);
+        saveCachedJSON(candidateCachePath, candidate);
         console.log(`[CANDIDATE] ✓ cached for future reruns at this working-tree content`);
       }
     }
 
     // Prune stale caches for this window so the dir doesn't grow per commit.
+    // Also prune per-day caches (written by backtest-day) bound to old hashes —
+    // signal-quality runs ~340 day-files per pass at 15-mo, so this matters.
     if (!NO_CACHE) {
       const keep = [baselineHash, candidateHash].filter((h): h is string => !!h);
-      const removed = pruneStaleCaches(keep);
-      if (removed > 0) console.log(`[CACHE] pruned ${removed} stale cache file(s) for ${TICKER} ${START}→${END}`);
+      const removedWindow = pruneStaleWindowCaches(TICKER, START, END, keep);
+      const removedDay = pruneStaleDayCaches(TICKER, keep);
+      if (removedWindow > 0) console.log(`[CACHE] pruned ${removedWindow} stale window cache(s) for ${TICKER} ${START}→${END}`);
+      if (removedDay > 0) console.log(`[CACHE] pruned ${removedDay} stale per-day cache(s) for ${TICKER}`);
     }
 
     printComparison(baseline, candidate);
