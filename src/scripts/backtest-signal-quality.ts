@@ -51,8 +51,11 @@ function _initCache(): void {
   if (existsSync(_cachePath)) {
     const cached = loadCachedJSON<SignalQualityCacheEntry>(_cachePath);
     if (cached && cached.ticker === CACHE_KEY_TICKER && cached.start === START && cached.end === END && cached.hash === hash) {
-      process.stdout.write(cached.stdout);
-      process.exit(0);
+      // When stdout is piped to a parent process, process.stdout.write is async
+      // and process.exit(0) terminates before the pipe drains — truncating the
+      // output the parent receives. Use the write callback to defer exit.
+      process.stdout.write(cached.stdout, () => process.exit(0));
+      return;
     }
   }
   _cacheBuffer = [];

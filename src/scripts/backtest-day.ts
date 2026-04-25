@@ -74,9 +74,10 @@ function _initCache(): void {
     const cached = loadCachedJSON<DayCacheEntry>(_cachePath);
     if (cached && cached.ticker === TICKER && cached.date === TARGET_DATE && cached.hash === hash) {
       // Replay the cached stdout verbatim and exit. Use process.stdout.write to
-      // bypass the tee'd console.log (which would re-buffer).
-      process.stdout.write(cached.stdout);
-      process.exit(0);
+      // bypass the tee'd console.log (which would re-buffer). Defer exit until
+      // the pipe has drained — otherwise piped parents receive truncated output.
+      process.stdout.write(cached.stdout, () => process.exit(0));
+      return;
     }
   }
   // Cache miss: tee everything written to stdout so we can save at the end.
