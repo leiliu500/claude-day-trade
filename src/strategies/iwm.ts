@@ -256,8 +256,11 @@ function iwmShouldAllowEntry(ctx: EntryContext): true | string {
 
   if (direction === 'bullish' && _lastRegimeScore <= 50) return `bullish lowRegime ${_lastRegimeScore} <= 50`;
 
-  // Mid-strength kill zone — mirrors SPY.
-  if (ctx.strengthScore >= 70 && ctx.strengthScore < 80) {
+  // Mid-strength kill zone — mirrors SPY, with carve-out for strength=73 which
+  // rejected-goods mining showed is AB-rich on IWM specifically: 11 entries blocked
+  // 3A/5B/2C/0D/1F (73% AB-share, adj cost +1.9). Mirrors QQQ's strength=71/77
+  // carve-outs (each ticker has its own AB-rich strengths within the 70-79 band).
+  if (ctx.strengthScore >= 70 && ctx.strengthScore < 80 && ctx.strengthScore !== 73) {
     return `mid-strength kill zone ${ctx.strengthScore}`;
   }
 

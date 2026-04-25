@@ -62,8 +62,9 @@ function iwmShouldAllowEntry(ctx: EntryContext): true | string {
 
   if (direction === 'bullish' && regime <= 50) return `bullish lowRegime ${regime} <= 50`;
 
-  // Mid-strength kill zone — mirrors SPY.
-  if (ctx.strengthScore >= 70 && ctx.strengthScore < 80) {
+  // Mid-strength kill zone — mirrors SPY, with carve-out for strength=73
+  // (AB-rich on IWM — see strategies/iwm.ts comment).
+  if (ctx.strengthScore >= 70 && ctx.strengthScore < 80 && ctx.strengthScore !== 73) {
     return `mid-strength kill zone ${ctx.strengthScore}`;
   }
 
