@@ -314,6 +314,14 @@ function iwmShouldAllowEntry(ctx: EntryContext): true | string {
     return `bearish low atrPct+strength ${atrPct.toFixed(3)}% < 0.10 s=${ctx.strengthScore}`;
   }
 
+  // IWM-specific: deep triangle-contraction penalty (2026-04-25).
+  // 15-month breakdown mining: trContractionPenalty <= -0.05 blocks 18 entries,
+  // 1A/1B/2C/1D/13F (F=72%, AB-loss=2%, adj +0.036). Broadens the existing
+  // bearish+macd-gated filter to catch both directions and macd-neutral cases.
+  if (ctx.breakdown.trContractionPenalty <= -0.05) {
+    return `deep trContraction ${ctx.breakdown.trContractionPenalty.toFixed(2)} <= -0.05`;
+  }
+
   // IWM-specific: high priceVelocityBonus catches rising-ADX late-chase (2026-04-25).
   // 15-month breakdown mining: priceVelocityBonus > 0.05 blocks 11 entries, 0A/0B/0C/0D/11F
   // (zero AB-loss, 100% F-catch, adj +0.045). Additive to the trendPhase<=0 regime gate,

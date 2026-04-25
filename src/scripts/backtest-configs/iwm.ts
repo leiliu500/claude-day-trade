@@ -117,6 +117,11 @@ function iwmShouldAllowEntry(ctx: EntryContext): true | string {
     return `bearish low atrPct+strength ${atrPct.toFixed(3)}% < 0.10 s=${ctx.strengthScore}`;
   }
 
+  // IWM-specific: deep triangle-contraction — see strategies/iwm.ts comment.
+  if (ctx.breakdown.trContractionPenalty <= -0.05) {
+    return `deep trContraction ${ctx.breakdown.trContractionPenalty.toFixed(2)} <= -0.05`;
+  }
+
   // IWM-specific: high priceVelocityBonus — see strategies/iwm.ts comment.
   if (ctx.breakdown.priceVelocityBonus > 0.05) {
     return `priceVelocityBonus ${ctx.breakdown.priceVelocityBonus.toFixed(3)} > 0.05 (late chase)`;
