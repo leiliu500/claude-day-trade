@@ -12,10 +12,16 @@
 import 'dotenv/config';
 import { exec } from 'child_process';
 import { promisify } from 'util';
+import { existsSync } from 'fs';
+import {
+  hashStashPathsInWorkingTree, signalQualityCachePathFor,
+  loadCachedJSON, saveCachedJSON,
+} from './lib/backtest-cache.js';
 
 const execAsync = promisify(exec);
 
 const EMIT_JSON = process.argv.includes('--json');
+const NO_CACHE = process.argv.includes('--no-cache');
 const concurrencyFlag = process.argv.find(a => a.startsWith('--concurrency='));
 const CONCURRENCY = concurrencyFlag ? Math.max(1, parseInt(concurrencyFlag.split('=')[1]!, 10)) : 8;
 const positionalArgs = process.argv.slice(2).filter(a => !a.startsWith('--'));
@@ -23,6 +29,55 @@ const START = positionalArgs[0] || '2025-10-01';
 const END = positionalArgs[1] || '2026-03-25';
 const TICKER_ARG = positionalArgs[2]?.toUpperCase(); // optional: SPY, QQQ, or omit for both
 const TICKERS = TICKER_ARG ? [TICKER_ARG] : ['SPY', 'QQQ', 'IWM', 'NVDA'];
+
+// ── Aggregate stdout cache ───────────────────────────────────────────────────
+// Mirrors backtest-day.ts pattern. Cache key = SHA1 of STASH_PATHS content.
+// Eligible only when --json (validate-change consumer) is set, --no-cache is
+// not set, and no env vars that override behavior. Multi-ticker runs use a
+// joined key; single-ticker uses the bare ticker.
+const CACHE_KEY_TICKER = TICKERS.join('+');
+const CACHE_ELIGIBLE = EMIT_JSON && !NO_CACHE
+  && !process.env.BT_THRESHOLD && !process.env.BT_DEBUG && !process.env.BT_RECONNECT_TIMES;
+
+interface SignalQualityCacheEntry { ticker: string; start: string; end: string; hash: string; stdout: string }
+
+let _cacheBuffer: string[] | null = null;
+let _cachePath: string | null = null;
+
+function _initCache(): void {
+  if (!CACHE_ELIGIBLE) return;
+  const hash = hashStashPathsInWorkingTree();
+  _cachePath = signalQualityCachePathFor(CACHE_KEY_TICKER, START, END, hash);
+  if (existsSync(_cachePath)) {
+    const cached = loadCachedJSON<SignalQualityCacheEntry>(_cachePath);
+    if (cached && cached.ticker === CACHE_KEY_TICKER && cached.start === START && cached.end === END && cached.hash === hash) {
+      process.stdout.write(cached.stdout);
+      process.exit(0);
+    }
+  }
+  _cacheBuffer = [];
+  const origWrite = process.stdout.write.bind(process.stdout);
+  process.stdout.write = ((chunk: string | Uint8Array, ...rest: unknown[]): boolean => {
+    if (_cacheBuffer) {
+      _cacheBuffer.push(typeof chunk === 'string' ? chunk : Buffer.from(chunk).toString('utf-8'));
+    }
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    return origWrite(chunk as any, ...(rest as any));
+  }) as typeof process.stdout.write;
+}
+
+function _saveCache(): void {
+  if (!CACHE_ELIGIBLE || !_cacheBuffer || !_cachePath) return;
+  const hash = hashStashPathsInWorkingTree();
+  // Skip save if working tree changed during the run.
+  const expectedPath = signalQualityCachePathFor(CACHE_KEY_TICKER, START, END, hash);
+  if (expectedPath !== _cachePath) return;
+  saveCachedJSON(_cachePath, {
+    ticker: CACHE_KEY_TICKER, start: START, end: END, hash, stdout: _cacheBuffer.join(''),
+  });
+}
+
+_initCache();
 
 // ── Generate trading days (weekdays) in range ────────────────────────────────
 function getTradingDays(start: string, end: string): string[] {
@@ -501,3 +556,5 @@ if (EMIT_JSON) {
   console.log(JSON.stringify(summary));
   console.log('<!--VALIDATE-JSON-END-->');
 }
+
+_saveCache();

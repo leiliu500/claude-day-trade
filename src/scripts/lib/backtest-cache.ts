@@ -65,6 +65,10 @@ export function dayCachePathFor(ticker: string, date: string, hash: string): str
   return pathJoin(AUTO_CACHE_DIR, `day-${ticker}-${date}-${hash}.json`);
 }
 
+export function signalQualityCachePathFor(ticker: string, start: string, end: string, hash: string): string {
+  return pathJoin(AUTO_CACHE_DIR, `signal-${ticker}-${start}-${end}-${hash}.json`);
+}
+
 export function loadCachedJSON<T = unknown>(path: string): T | null {
   try {
     return JSON.parse(readFileSync(path, 'utf-8')) as T;
