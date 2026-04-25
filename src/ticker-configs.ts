@@ -15,6 +15,7 @@ import { defaultStrategy } from './strategies/default.js';
 import { qqqStrategy } from './strategies/qqq.js';
 import { spyStrategy } from './strategies/spy.js';
 import { iwmStrategy } from './strategies/iwm.js';
+import { diaStrategy } from './strategies/dia.js';
 import { nvdaStrategy } from './strategies/nvda.js';
 import { aaplStrategy } from './strategies/aapl.js';
 
@@ -116,6 +117,17 @@ const TICKER_OVERRIDES: Record<string, Partial<Omit<TickerConfig, 'ticker' | 'st
     strategy: iwmStrategy,
 
     // Mirror SPY entry window: block first 30 min after open + last 30 min before close
+    entryWindowStartMin: 30,
+    entryWindowEndMin: 360,
+  },
+  DIA: {
+    // Enabled 2026-04-25: SPY filters cloned as starting baseline; tuning in progress.
+    minConfidence: 0.65,
+
+    maxContracts: 5,
+    enabled: true,
+    strategy: diaStrategy,
+
     entryWindowStartMin: 30,
     entryWindowEndMin: 360,
   },

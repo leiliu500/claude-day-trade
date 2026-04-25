@@ -6,6 +6,7 @@ import { DEFAULT_BT_CONFIG, type TickerBacktestConfig } from './types.js';
 import { SPY_CONFIG } from './spy.js';
 import { QQQ_CONFIG } from './qqq.js';
 import { IWM_CONFIG } from './iwm.js';
+import { DIA_CONFIG } from './dia.js';
 import { NVDA_CONFIG } from './nvda.js';
 import { AAPL_CONFIG } from './aapl.js';
 
@@ -13,6 +14,7 @@ const CONFIGS: Record<string, Partial<TickerBacktestConfig>> = {
   SPY: SPY_CONFIG,
   QQQ: QQQ_CONFIG,
   IWM: IWM_CONFIG,
+  DIA: DIA_CONFIG,
   NVDA: NVDA_CONFIG,
   AAPL: AAPL_CONFIG,
 };

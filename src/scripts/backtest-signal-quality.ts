@@ -28,7 +28,7 @@ const positionalArgs = process.argv.slice(2).filter(a => !a.startsWith('--'));
 const START = positionalArgs[0] || '2025-10-01';
 const END = positionalArgs[1] || '2026-03-25';
 const TICKER_ARG = positionalArgs[2]?.toUpperCase(); // optional: SPY, QQQ, or omit for both
-const TICKERS = TICKER_ARG ? [TICKER_ARG] : ['SPY', 'QQQ', 'IWM', 'NVDA'];
+const TICKERS = TICKER_ARG ? [TICKER_ARG] : ['SPY', 'QQQ', 'IWM', 'DIA', 'NVDA'];
 
 // ── Aggregate stdout cache ───────────────────────────────────────────────────
 // Mirrors backtest-day.ts pattern. Cache key = SHA1 of STASH_PATHS content.
