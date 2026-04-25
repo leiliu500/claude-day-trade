@@ -108,12 +108,16 @@ const TICKER_OVERRIDES: Record<string, Partial<Omit<TickerConfig, 'ticker' | 'st
     strategy: qqqStrategy,
   },
   IWM: {
-    // Initial config — no backtest tuning yet
+    // Enabled 2026-04-25: SPY filters cloned as starting baseline; tuning in progress.
     minConfidence: 0.65,
 
     maxContracts: 5,
-    enabled: false,
+    enabled: true,
     strategy: iwmStrategy,
+
+    // Mirror SPY entry window: block first 30 min after open + last 30 min before close
+    entryWindowStartMin: 30,
+    entryWindowEndMin: 360,
   },
   NVDA: {
     // Tuned Q4 2025 + Q1 2026: 6B/1C/2F (67% good)

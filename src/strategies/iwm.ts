@@ -1,14 +1,9 @@
 /**
  * IWM-specific trading strategy.
  *
- * Tuned from Q4 2025 + Q1 2026 backtest (Oct 2025 – Mar 2026):
- *   Baseline: 5A/1B/6C/10F → tuned to 4A/1B/4C/0F (0% bad)
- *
- * IWM-specific filters:
- *   - Block trend entries chasing accelerating displacement (dvel > 0.05)
- *   - Block trend exhausted+choppy (rExh > 7 + chop >= 2.0)
- *   - Block bullish entries with strong reversion (dvel < -0.04)
- *   - Block breakout entries at high regime (>= 80)
+ * Baseline cloned from strategies/spy.ts on 2026-04-25 — SPY filters and
+ * confidence adjustments are the starting point for tuning IWM. Replace /
+ * extend below as IWM-specific backtest evidence emerges.
  */
 
 import type { PartialTickerStrategy, EntryContext } from './strategy.js';
@@ -17,18 +12,30 @@ import type { TimeframeIndicators } from '../types/indicators.js';
 import type { SignalDirection } from '../types/signal.js';
 
 // ── Module-level state: regime score computed in detectMode, read in shouldAllowEntry ──
+// Safe because IWM pipeline runs serially (one tick at a time per symbol).
 let _lastRegimeScore = 50;
+
+// ── IWM Mode Detection ──────────────────────────────────────────────────────
+// Same as default but also computes and caches the regime score.
+
+import { defaultStrategy } from './default.js';
 
 /**
  * Compute intraday regime score — same hybrid algorithm as SPY/QQQ.
- * Candle-based (choppiness, displacement velocity, trend strength) + ADX anchor + VWAP distance.
+ *
+ * Bars are filtered to today's regular session to avoid warmup-data corruption.
+ * `todayStr` is derived from the LAST bar's timestamp so this works identically
+ * in live mode (last bar = wall-clock today) and backtest mode (last bar = the
+ * simulated historical date).
  */
 function computeRegimeScore(
   bars: readonly { timestamp: string; open: number; high: number; low: number; close: number }[],
   vwapPriceVs: number,
   adx: number,
 ): number {
-  const todayStr = new Date().toISOString().slice(0, 10);
+  const lastBar = bars[bars.length - 1];
+  if (!lastBar) return 50;
+  const todayStr = lastBar.timestamp.slice(0, 10);
   const todayBars = bars.filter(b => {
     if (!b.timestamp.startsWith(todayStr)) return false;
     const h = parseInt(b.timestamp.slice(11, 13), 10);
@@ -38,7 +45,7 @@ function computeRegimeScore(
   });
   if (todayBars.length < 20) return 50;
 
-  // A. Choppiness
+  // A. Choppiness — direction flips in last 30 bars (real-time)
   const recent30 = todayBars.slice(-30);
   let flips = 0;
   let prevDir: 'up' | 'down' | null = null;
@@ -51,7 +58,7 @@ function computeRegimeScore(
   const choppiness = Math.max(0, Math.min(4, flips / expectedFlips));
   const choppinessComponent = (1 - choppiness) * 15;
 
-  // B. Displacement velocity
+  // B. Displacement velocity — recent 5 bars vs prior 5 bars (real-time)
   const dayOpen = todayBars[0]!.open;
   let velocityComponent = 0;
   if (dayOpen > 0 && todayBars.length >= 10) {
@@ -62,7 +69,7 @@ function computeRegimeScore(
     velocityComponent = Math.min(10, Math.max(-10, (avgRecent - avgPrior) * 15));
   }
 
-  // C. Trend strength
+  // C. Trend strength — consecutive directional closes (real-time)
   const last10 = todayBars.slice(-10);
   let consecUp = 0, consecDown = 0, maxConsecUp = 0, maxConsecDown = 0;
   for (let i = 1; i < last10.length; i++) {
@@ -76,20 +83,16 @@ function computeRegimeScore(
   }
   const trendStrComponent = Math.min(10, Math.max(maxConsecUp, maxConsecDown) * 2.5);
 
-  // D. ADX anchor
+  // D. ADX anchor — confirms trend is established (lagged but stabilizing)
   const adxComponent = adx >= 20 ? Math.min(15, (adx - 20) * 1.0) : 0;
 
-  // E. VWAP distance
+  // E. VWAP distance — how extended from mean (minimal lag)
   const vwapComponent = Math.min(10, Math.abs(vwapPriceVs) / 0.20 * 10);
 
   return Math.round(Math.max(0, Math.min(100,
     50 + choppinessComponent + velocityComponent + trendStrComponent + adxComponent + vwapComponent
   )));
 }
-
-// ── IWM Mode Detection ──────────────────────────────────────────────────────
-
-import { defaultStrategy } from './default.js';
 
 function iwmDetectMode(
   tfIndicators: TimeframeIndicators[],
@@ -105,53 +108,88 @@ function iwmDetectMode(
     );
   }
 
-  // Delegate to default mode detection
+  // Delegate to default mode detection (no changes to mode logic)
   return defaultStrategy.detectMode(tfIndicators, direction, currentPrice);
 }
 
-// ── IWM Confidence Adjustment ───────────────────────────────────────────────
+// ── IWM Confidence Adjustment (cloned from SPY) ─────────────────────────────
 
-function iwmAdjustConfidence(cb: ConfidenceBreakdown, ctx: EntryContext): ConfidenceBreakdown {
-  const adjusted = { ...cb };
+function iwmAdjustConfidence(breakdown: ConfidenceBreakdown, ctx: EntryContext): ConfidenceBreakdown {
+  let bd = breakdown;
 
-  // Suppress PA bonus for bullish trend entries at high regime — ported from SPY/QQQ.
-  // At regime >= 75, confirming candles are exhaustion signals, not fresh momentum.
-  if (ctx.signalMode === 'trend' && ctx.direction === 'bullish'
-      && _lastRegimeScore >= 75 && adjusted.recentPriceActionBonus > 0) {
-    adjusted.total -= adjusted.recentPriceActionBonus;
-    adjusted.recentPriceActionBonus = 0;
-    adjusted.total = Math.max(0, adjusted.total);
+  // Regime-gated suppression of perverse-signed momentum factors when ADX is
+  // flat/declining (trendPhaseBonus <= 0) — see strategies/spy.ts for the
+  // factor-orthogonality evidence that motivated this gate.
+  if (bd.trendPhaseBonus <= 0) {
+    if (bd.priceVelocityBonus !== 0) {
+      bd = bd === breakdown ? { ...bd } : bd;
+      bd.total -= bd.priceVelocityBonus;
+      bd.priceVelocityBonus = 0;
+      bd.total = Math.max(0, Math.min(1, bd.total));
+    }
+    if (bd.pricePositionAdjustment !== 0) {
+      bd = bd === breakdown ? { ...bd } : bd;
+      bd.total -= bd.pricePositionAdjustment;
+      bd.pricePositionAdjustment = 0;
+      bd.total = Math.max(0, Math.min(1, bd.total));
+    }
+    if (bd.macdBonus !== 0) {
+      bd = bd === breakdown ? { ...bd } : bd;
+      bd.total -= bd.macdBonus;
+      bd.macdBonus = 0;
+      bd.total = Math.max(0, Math.min(1, bd.total));
+    }
   }
 
-  // Strong trend continuation relief — mirrors SPY/QQQ logic.
-  // When all timeframes align + ADX strong & rising, adxMaturity and moveExhaustion
-  // penalties over-penalize genuine continuation (especially on gap days where
-  // prior-day warmup bars inflate maturity counts).
+  // Suppress positive PA bonus for bullish trend entries at high regime (>= 75):
+  // confirming bars in a high-regime tape are the final push, not fresh momentum.
+  if (ctx.signalMode === 'trend' && ctx.direction === 'bullish'
+      && _lastRegimeScore >= 75 && bd.recentPriceActionBonus > 0) {
+    bd = { ...bd };
+    bd.total -= bd.recentPriceActionBonus;
+    bd.recentPriceActionBonus = 0;
+    bd.total = Math.max(0, Math.min(1, bd.total));
+  }
+
+  // Reversal trap penalty: trendPhaseBonus <= 0 + strong PA (>= 0.06) = lagging
+  // indicators chasing a move that's already over.
+  if (ctx.signalMode === 'trend'
+      && bd.trendPhaseBonus <= 0
+      && bd.recentPriceActionBonus >= 0.06) {
+    bd = bd === breakdown ? { ...bd } : bd;
+    const penalty = 0.06;
+    bd.recentPriceActionBonus -= Math.min(bd.recentPriceActionBonus, penalty);
+    bd.total -= penalty;
+    bd.total = Math.max(0, Math.min(1, bd.total));
+  }
+
+  // Strong trend continuation relief: all_aligned + ADX strong & rising
+  // over-penalizes genuine continuation. Halve the severe portions of
+  // moveExhaustion and (if severe) adxMaturity, and unlock trendPersistenceBonus.
   if (ctx.signalMode === 'trend'
       && ctx.alignment === 'all_aligned'
-      && adjusted.trendPhaseBonus > 0          // ADX still rising
-      && adjusted.adxBonus >= 0.05             // ADX > 25
-      && adjusted.moveExhaustionPenalty <= -0.10) {
-    // Halve move exhaustion penalty
-    const exhRelief = -adjusted.moveExhaustionPenalty * 0.5;
-    adjusted.moveExhaustionPenalty *= 0.5;
-    adjusted.total += exhRelief;
-    // Halve ADX maturity penalty if severe
-    if (adjusted.adxMaturityPenalty <= -0.08) {
-      const matRelief = -adjusted.adxMaturityPenalty * 0.5;
-      adjusted.adxMaturityPenalty *= 0.5;
-      adjusted.total += matRelief;
+      && bd.trendPhaseBonus > 0          // ADX still rising
+      && bd.adxBonus >= 0.05             // ADX > 25
+      && bd.moveExhaustionPenalty <= -0.10) {
+    bd = bd === breakdown ? { ...bd } : bd;
+    const exhRelief = -bd.moveExhaustionPenalty * 0.5;
+    bd.moveExhaustionPenalty *= 0.5;
+    bd.total += exhRelief;
+    if (bd.adxMaturityPenalty <= -0.08) {
+      const matRelief = -bd.adxMaturityPenalty * 0.5;
+      bd.adxMaturityPenalty *= 0.5;
+      bd.total += matRelief;
     }
-    // Unlock trendPersistenceBonus on gap days
-    if (adjusted.structureBonus <= 0) {
-      adjusted.structureBonus = 0.01;
+    if (bd.structureBonus <= 0) {
+      bd.structureBonus = 0.01;
     }
-    adjusted.total = Math.max(0, Math.min(1, adjusted.total));
+    bd.total = Math.max(0, Math.min(1, bd.total));
   }
-  return adjusted;
+
+  return bd;
 }
 
-// ── IWM Entry Filter (mirrors SPY) ─────────────────────────────────────────
+// ── IWM Entry Filter (cloned from SPY) ──────────────────────────────────────
 
 function iwmShouldAllowEntry(ctx: EntryContext): true | string {
   const { signalMode, direction, atr, currentPrice } = ctx;
@@ -162,38 +200,32 @@ function iwmShouldAllowEntry(ctx: EntryContext): true | string {
   if (signalMode === 'breakout' && ctx.displacementVelocity !== undefined
       && ctx.displacementVelocity < -0.05) return `breakout dvel ${ctx.displacementVelocity.toFixed(4)} < -0.05`;
 
-  // SPY uses absolute atr < 0.70 (~0.125% of $560); equivalent atrPct for IWM
-  if (signalMode === 'trend' && atrPct < 0.125) return `trend atrPct ${atrPct.toFixed(3)}% < 0.125%`;
+  // SPY uses absolute atr < 0.45 at SPY ~$560 (~0.08%). Use atrPct for IWM
+  // since IWM (~$200) has very different absolute ATR scale.
+  if (signalMode === 'trend' && atrPct < 0.08) return `trend atrPct ${atrPct.toFixed(3)}% < 0.08%`;
 
-  // Block early trend entries before range establishes — rExh=0 + chop=0 entries were all F-grade.
-  // Mar 27 09:42 F (rExh=0.0), Apr 1 09:38 F (rExh=0.0). No good trend entries had rExh < 1.0.
-  // Excludes breakout: ORB breakouts at the open can be valid.
-  if (signalMode === 'trend' && ctx.rangeExhaustion !== undefined && ctx.rangeExhaustion < 1.0
-      && ctx.choppiness !== undefined && ctx.choppiness < 0.01) return `trend early morning rExh=${ctx.rangeExhaustion.toFixed(1)} chop=${ctx.choppiness.toFixed(2)} (insufficient range)`;
-
-  // Low-ATR trend filter relaxed: 0.22% blocked ALL IWM entries (typical ATR 0.12-0.13%).
-  // The base 0.125% check above already catches genuinely dead markets.
-
-  // Block trend entries chasing accelerating displacement.
-  // Raised 0.10 → 0.20: Apr 2 grade-A entries had dvel 0.10-0.27 during morning rally.
-  // IWM has higher dvel than SPY/QQQ during genuine trends; 0.10 blocked ALL A-grade entries.
   if (signalMode === 'trend' && ctx.displacementVelocity !== undefined
-      && ctx.displacementVelocity > 0.20) return `trend high dvel ${ctx.displacementVelocity.toFixed(4)} > 0.20 (chasing)`;
+      && ctx.displacementVelocity > 0.10) return `trend high dvel ${ctx.displacementVelocity.toFixed(4)} > 0.10 (chasing)`;
 
-  // Exhausted+choppy: lowered rExh from 7.0 to 6.0 to match SPY/QQQ.
-  // Apr 9 IWM: entries at rExh 6.0-7.0 with high chop were all F-grade.
   if (signalMode === 'trend'
       && ctx.rangeExhaustion !== undefined && ctx.rangeExhaustion > 6.0
       && ctx.choppiness !== undefined && ctx.choppiness >= 2.0) return `trend exhausted+choppy rExh=${ctx.rangeExhaustion.toFixed(1)} chop=${ctx.choppiness.toFixed(2)}`;
 
-  // Exhausted+fading: ported from SPY/QQQ. When range exhaustion is high AND displacement
-  // velocity has stalled, the trend is dying — further entries are chasing.
   if (signalMode === 'trend'
-      && ctx.rangeExhaustion !== undefined && ctx.rangeExhaustion >= 7.0
-      && ctx.displacementVelocity !== undefined && ctx.displacementVelocity < 0.04) return `trend exhausted+fading rExh=${ctx.rangeExhaustion.toFixed(1)} dvel=${ctx.displacementVelocity.toFixed(4)} (stalled)`;
+      && ctx.rangeExhaustion !== undefined && ctx.rangeExhaustion >= 8.0
+      && ctx.displacementVelocity !== undefined && ctx.displacementVelocity < 0.04
+      && ctx.alignment !== 'all_aligned') return `trend exhausted+fading rExh=${ctx.rangeExhaustion.toFixed(1)} dvel=${ctx.displacementVelocity.toFixed(4)} (stalled)`;
 
+  // Bullish high-rExh re-added at 7.5 (mirrors SPY 9ecbff7).
+  if (signalMode === 'trend' && direction === 'bullish'
+      && ctx.rangeExhaustion !== undefined && ctx.rangeExhaustion >= 7.5) {
+    return `bullish rangeExh ${ctx.rangeExhaustion.toFixed(1)} >= 7.5`;
+  }
+
+  // Bullish negative dvel narrow band [-0.05, -0.04) — mirrors SPY.
   if (direction === 'bullish'
-      && ctx.displacementVelocity !== undefined && ctx.displacementVelocity < -0.04) return `bullish dvel ${ctx.displacementVelocity.toFixed(4)} < -0.04`;
+      && ctx.displacementVelocity !== undefined
+      && ctx.displacementVelocity < -0.04 && ctx.displacementVelocity >= -0.05) return `bullish dvel ${ctx.displacementVelocity.toFixed(4)} in [-0.05, -0.04)`;
 
   if (signalMode === 'breakout'
       && ctx.rangeExhaustion !== undefined && ctx.rangeExhaustion < 1.0) return `breakout rangeExhaustion ${ctx.rangeExhaustion.toFixed(1)} < 1.0 (early morning)`;
@@ -205,10 +237,12 @@ function iwmShouldAllowEntry(ctx: EntryContext): true | string {
   if (signalMode === 'breakout' && ctx.confidence < 0.74) return `breakout confidence ${(ctx.confidence * 100).toFixed(0)}% < 74%`;
 
   if (signalMode === 'breakout'
-      && ctx.rangeExhaustion !== undefined && ctx.rangeExhaustion >= 7.0
+      && ctx.rangeExhaustion !== undefined && ctx.rangeExhaustion >= 9.0
       && ctx.choppiness !== undefined && ctx.choppiness >= 1.0) return `breakout highExh+highChop rExh=${ctx.rangeExhaustion.toFixed(1)} chop=${ctx.choppiness.toFixed(2)}`;
 
+  // Conf>=0.95 carve-out (mirrors SPY 3ced689).
   if (signalMode === 'breakout'
+      && ctx.confidence < 0.95
       && ctx.choppiness !== undefined && ctx.choppiness >= 2.0) return `breakout extremeChop ${ctx.choppiness.toFixed(2)} >= 2.0`;
 
   if (signalMode === 'breakout'
@@ -219,6 +253,66 @@ function iwmShouldAllowEntry(ctx: EntryContext): true | string {
   if (signalMode === 'breakout' && direction === 'bullish'
       && ctx.rangeExhaustion !== undefined && ctx.rangeExhaustion >= 4.5
       && _lastRegimeScore >= 65) return `bullish breakout highExh+regime rExh=${ctx.rangeExhaustion.toFixed(1)} regime=${_lastRegimeScore}`;
+
+  if (direction === 'bullish' && _lastRegimeScore <= 50) return `bullish lowRegime ${_lastRegimeScore} <= 50`;
+
+  // Mid-strength kill zone — mirrors SPY.
+  if (ctx.strengthScore >= 70 && ctx.strengthScore < 80) {
+    return `mid-strength kill zone ${ctx.strengthScore}`;
+  }
+
+  // Bullish trend + high ORB bonus — mirrors SPY.
+  if (direction === 'bullish' && signalMode === 'trend'
+      && ctx.breakdown.orbBonus >= 0.04) {
+    return `bullish trend+orb ${ctx.breakdown.orbBonus.toFixed(2)}`;
+  }
+
+  // Midday chop window 13:00-13:15 ET — mirrors SPY (mode=breakout carve-out).
+  if (signalMode !== 'breakout'
+      && ctx.minutesSinceOpen !== undefined
+      && ctx.minutesSinceOpen >= 210 && ctx.minutesSinceOpen < 225) {
+    return `midday chop window ${ctx.minutesSinceOpen}m (13:00-13:15 ET)`;
+  }
+
+  // Bearish + deep range-position penalty — mirrors SPY.
+  if (direction === 'bearish' && ctx.breakdown.pricePositionAdjustment <= -0.028) {
+    return `bearish deep pricePos ${ctx.breakdown.pricePositionAdjustment.toFixed(3)} (exhausted)`;
+  }
+
+  // Bullish top-extreme + exhausted move — mirrors SPY 9ecbff7.
+  if (direction === 'bullish'
+      && ctx.breakdown.pricePositionAdjustment <= -0.07
+      && ctx.breakdown.moveExhaustionPenalty <= -0.05) {
+    return `bullish top-extreme exhausted ppa=${ctx.breakdown.pricePositionAdjustment.toFixed(3)} mex=${ctx.breakdown.moveExhaustionPenalty.toFixed(3)}`;
+  }
+
+  // Extreme-atr filter — mirrors SPY 2bb1b39 (mode=breakout carve-out).
+  // SPY threshold 1.33 at SPY~$560 = 0.24%. For IWM (~$200) use atrPct equivalent.
+  if (signalMode !== 'breakout' && atrPct >= 0.24) {
+    return `extreme atrPct ${atrPct.toFixed(3)}% >= 0.24%`;
+  }
+
+  // Bearish saturated-strength macd filter — mirrors SPY.
+  if (direction === 'bearish' && ctx.breakdown.macdBonus > 0.03 && ctx.strengthScore === 100) {
+    return `bearish saturated macd+strength (macd=${ctx.breakdown.macdBonus.toFixed(3)})`;
+  }
+
+  // Bullish high-strength macd filter — mirrors SPY.
+  if (direction === 'bullish' && ctx.breakdown.macdBonus > 0.03 && ctx.strengthScore >= 80) {
+    return `bullish high macdBonus+strength (macd=${ctx.breakdown.macdBonus.toFixed(3)} s=${ctx.strengthScore})`;
+  }
+
+  // Bearish triangle-contraction + positive macd filter — mirrors SPY.
+  if (direction === 'bearish'
+      && ctx.breakdown.trContractionPenalty < 0
+      && ctx.breakdown.macdBonus > 0) {
+    return `bearish triangle-contract+macd trC=${ctx.breakdown.trContractionPenalty.toFixed(2)} macd=${ctx.breakdown.macdBonus.toFixed(2)}`;
+  }
+
+  // Bearish low-atr + strength filter — mirrors SPY (use atrPct for IWM).
+  if (direction === 'bearish' && atrPct < 0.10 && ctx.strengthScore >= 70) {
+    return `bearish low atrPct+strength ${atrPct.toFixed(3)}% < 0.10 s=${ctx.strengthScore}`;
+  }
 
   return true;
 }
