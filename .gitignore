@@ -9,3 +9,5 @@ coverage/
 .nyc_output/
 # Bar fixture data (large JSON files fetched from Alpaca)
 src/scripts/fixtures/*.json
+# Auto-cached baselines for src/scripts/validate-change.ts (HEAD-keyed)
+.validate-cache/

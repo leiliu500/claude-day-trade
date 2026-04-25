@@ -17,11 +17,24 @@
  * Pre-conditions:
  *   - Git working tree must have uncommitted changes (the candidate to test)
  *   - `tsc --noEmit` must pass on the candidate
+ *
+ * Phase auto-cache:
+ *   Both phases are cached under .validate-cache/ keyed by the SHA1 content hash
+ *   of the watched paths (STASH_PATHS) plus window + ticker.
+ *     - BASELINE  keyed by HEAD's tree hash of STASH_PATHS (invalidates on commit)
+ *     - CANDIDATE keyed by the working-tree content hash of STASH_PATHS
+ *   Reruns with unchanged code skip the corresponding phase entirely. When the
+ *   candidate hash equals the baseline hash (no effective change), the candidate
+ *   phase is served from the baseline cache — no second backtest runs.
+ *   Pass --no-cache to force both phases to run. An explicit --baseline-json=
+ *   still takes precedence over the auto-cache for the baseline slot.
  */
 
 import 'dotenv/config';
 import { execSync } from 'child_process';
-import { readFileSync, writeFileSync, existsSync } from 'fs';
+import { readFileSync, writeFileSync, existsSync, mkdirSync, readdirSync, unlinkSync } from 'fs';
+import { join as pathJoin } from 'path';
+import { createHash } from 'crypto';
 
 const concurrencyFlag = process.argv.find(a => a.startsWith('--concurrency='));
 const CONCURRENCY = concurrencyFlag ? Math.max(1, parseInt(concurrencyFlag.split('=')[1]!, 10)) : 8;
@@ -29,10 +42,13 @@ const baselineJsonFlag = process.argv.find(a => a.startsWith('--baseline-json=')
 const BASELINE_JSON_PATH = baselineJsonFlag ? baselineJsonFlag.split('=')[1]! : undefined;
 const writeBaselineFlag = process.argv.find(a => a.startsWith('--write-baseline-json='));
 const WRITE_BASELINE_JSON_PATH = writeBaselineFlag ? writeBaselineFlag.split('=')[1]! : undefined;
+const NO_CACHE = process.argv.includes('--no-cache');
 const positionalArgs = process.argv.slice(2).filter(a => !a.startsWith('--'));
 const START = positionalArgs[0] || '2026-01-02';
 const END = positionalArgs[1] || '2026-04-17';
 const TICKER = (positionalArgs[2] || 'SPY').toUpperCase();
+
+const AUTO_CACHE_DIR = '.validate-cache';
 
 // Verdict thresholds — tunable, keep conservative
 const EXPECTANCY_DELTA_MERGE = 0.02;        // need +0.02 expectancy gain to merge
@@ -113,6 +129,67 @@ const STASH_PATHS = [
 function hasCandidateChanges(): boolean {
   const status = sh(`git status --porcelain -- ${STASH_PATHS.join(' ')}`).trim();
   return status.length > 0;
+}
+
+// Content-hash helpers — cache key is the SHA1 of the watched paths' content.
+// BASELINE runs against HEAD's STASH_PATHS tree.
+// CANDIDATE runs against the working-tree content of STASH_PATHS (tracked + untracked).
+// If the two hashes are equal (candidate === HEAD), the candidate phase can be
+// served from the baseline cache — no duplicate backtest runs.
+function hashStashPathsAtHead(): string {
+  // git ls-tree -r lists every file in HEAD under these paths with its blob SHA.
+  const out = sh(`git ls-tree -r HEAD -- ${STASH_PATHS.join(' ')}`);
+  return createHash('sha1').update(out).digest('hex').slice(0, 12);
+}
+
+function hashStashPathsInWorkingTree(): string {
+  // Tracked + untracked (-c -o) under STASH_PATHS, respecting .gitignore.
+  // Hash file path + content so renames and content changes both invalidate.
+  const files = sh(`git ls-files -c -o --exclude-standard -- ${STASH_PATHS.join(' ')}`)
+    .trim().split('\n').filter(Boolean).sort();
+  const h = createHash('sha1');
+  for (const f of files) {
+    h.update(f);
+    h.update('\0');
+    try { h.update(readFileSync(f)); } catch { /* deleted file — just record the path */ }
+    h.update('\0');
+  }
+  return h.digest('hex').slice(0, 12);
+}
+
+function cachePathFor(hash: string): string {
+  return pathJoin(AUTO_CACHE_DIR, `backtest-${TICKER}-${START}-${END}-${hash}.json`);
+}
+
+function loadCached(path: string): TickerSummary | null {
+  try {
+    const t = JSON.parse(readFileSync(path, 'utf-8')) as TickerSummary;
+    if (t.ticker !== TICKER) return null;
+    return t;
+  } catch {
+    return null;
+  }
+}
+
+function saveCached(path: string, t: TickerSummary): void {
+  mkdirSync(AUTO_CACHE_DIR, { recursive: true });
+  writeFileSync(path, JSON.stringify(t));
+}
+
+// Prune stale cache files for the current {ticker, window}: anything not in
+// `keepHashes` (current baseline + candidate) is removed. Other windows are
+// untouched. Keeps .validate-cache/ bounded at ≤2 files per active window.
+function pruneStaleCaches(keepHashes: ReadonlyArray<string>): number {
+  if (!existsSync(AUTO_CACHE_DIR)) return 0;
+  const prefix = `backtest-${TICKER}-${START}-${END}-`;
+  let removed = 0;
+  for (const f of readdirSync(AUTO_CACHE_DIR)) {
+    if (!f.startsWith(prefix) || !f.endsWith('.json')) continue;
+    const hash = f.slice(prefix.length, -'.json'.length);
+    if (keepHashes.includes(hash)) continue;
+    try { unlinkSync(pathJoin(AUTO_CACHE_DIR, f)); removed++; } catch { /* ignore */ }
+  }
+  return removed;
 }
 
 function runBacktest(label: string): TickerSummary {
@@ -356,8 +433,23 @@ async function main(): Promise<number> {
     return 1;
   }
 
-  // Baseline: load from cache OR stash candidate, run baseline, pop
+  // Compute content hashes so both phases can be cached / shared
+  const baselineHash = !BASELINE_JSON_PATH && !NO_CACHE ? hashStashPathsAtHead() : undefined;
+  const candidateHash = !NO_CACHE ? hashStashPathsInWorkingTree() : undefined;
+  const baselineCachePath = baselineHash ? cachePathFor(baselineHash) : undefined;
+  const candidateCachePath = candidateHash ? cachePathFor(candidateHash) : undefined;
+
+  if (baselineHash && candidateHash) {
+    console.log(`\n[CACHE] baseline content hash: ${baselineHash}`);
+    console.log(`[CACHE] candidate content hash: ${candidateHash}`);
+    if (baselineHash === candidateHash) {
+      console.log(`[CACHE] ⚠  candidate bytes identical to HEAD — both phases share one backtest`);
+    }
+  }
+
+  // Baseline: load from explicit path OR auto-cache OR stash+run+save
   let baseline: TickerSummary;
+  let candidate: TickerSummary;
   let stashed = false;
   try {
     if (BASELINE_JSON_PATH) {
@@ -365,13 +457,25 @@ async function main(): Promise<number> {
         console.error(`❌ --baseline-json file not found: ${BASELINE_JSON_PATH}`);
         return 1;
       }
-      baseline = JSON.parse(readFileSync(BASELINE_JSON_PATH, 'utf-8')) as TickerSummary;
-      if (baseline.ticker !== TICKER) {
-        console.error(`❌ baseline-json is for ${baseline.ticker}, not ${TICKER}`);
+      const loaded = loadCached(BASELINE_JSON_PATH);
+      if (!loaded) {
+        console.error(`❌ baseline-json file invalid or ticker mismatch for ${TICKER}`);
         return 1;
       }
-      console.log(`[BASELINE] ✓ loaded from cache: ${baseline.totalEntries} entries, exp ${baseline.expectancy.toFixed(3)}`);
+      baseline = loaded;
+      console.log(`[BASELINE] ✓ loaded from --baseline-json: ${baseline.totalEntries} entries, exp ${baseline.expectancy.toFixed(3)}`);
+    } else if (baselineCachePath && existsSync(baselineCachePath)) {
+      const loaded = loadCached(baselineCachePath);
+      if (!loaded) {
+        console.error(`❌ auto-cache file invalid — delete ${baselineCachePath} and retry`);
+        return 1;
+      }
+      baseline = loaded;
+      console.log(`[BASELINE] ✓ auto-cache hit (HEAD content unchanged) — skipping baseline phase`);
+      console.log(`[BASELINE]   ${baselineCachePath}`);
+      console.log(`[BASELINE]   ${baseline.totalEntries} entries, exp ${baseline.expectancy.toFixed(3)}`);
     } else {
+      if (baselineCachePath) console.log(`[BASELINE] auto-cache miss — running baseline (will cache to ${baselineCachePath})`);
       sh(`git stash push -u -m validate-change-tmp -- ${STASH_PATHS.join(' ')}`);
       stashed = true;
       console.log(`[STASH] ✓ candidate stashed (${STASH_PATHS.length} watched paths)`);
@@ -379,9 +483,41 @@ async function main(): Promise<number> {
       sh('git stash pop');
       stashed = false;
       console.log('[STASH] ✓ candidate restored');
+      if (baselineCachePath) {
+        saveCached(baselineCachePath, baseline);
+        console.log(`[BASELINE] ✓ cached for future reruns at this HEAD content`);
+      }
     }
 
-    const candidate = runBacktest('CANDIDATE');
+    // Candidate: same content hash as baseline? reuse. Else check cache. Else run.
+    if (candidateCachePath && existsSync(candidateCachePath)) {
+      const loaded = loadCached(candidateCachePath);
+      if (!loaded) {
+        console.error(`❌ auto-cache file invalid — delete ${candidateCachePath} and retry`);
+        return 1;
+      }
+      candidate = loaded;
+      const why = (baselineHash && candidateHash && baselineHash === candidateHash)
+        ? 'candidate bytes identical to HEAD — reusing baseline result'
+        : 'working-tree content unchanged from a prior run';
+      console.log(`[CANDIDATE] ✓ auto-cache hit (${why}) — skipping candidate phase`);
+      console.log(`[CANDIDATE]   ${candidateCachePath}`);
+      console.log(`[CANDIDATE]   ${candidate.totalEntries} entries, exp ${candidate.expectancy.toFixed(3)}`);
+    } else {
+      if (candidateCachePath) console.log(`[CANDIDATE] auto-cache miss — running candidate (will cache to ${candidateCachePath})`);
+      candidate = runBacktest('CANDIDATE');
+      if (candidateCachePath) {
+        saveCached(candidateCachePath, candidate);
+        console.log(`[CANDIDATE] ✓ cached for future reruns at this working-tree content`);
+      }
+    }
+
+    // Prune stale caches for this window so the dir doesn't grow per commit.
+    if (!NO_CACHE) {
+      const keep = [baselineHash, candidateHash].filter((h): h is string => !!h);
+      const removed = pruneStaleCaches(keep);
+      if (removed > 0) console.log(`[CACHE] pruned ${removed} stale cache file(s) for ${TICKER} ${START}→${END}`);
+    }
 
     printComparison(baseline, candidate);
     printMonthlyBreakdown(baseline, candidate);
