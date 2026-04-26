@@ -212,7 +212,14 @@ function diaShouldAllowEntry(ctx: EntryContext): true | string {
   if (signalMode === 'breakout'
       && ctx.rangeExhaustion !== undefined && ctx.rangeExhaustion < 1.0) return `breakout rangeExhaustion ${ctx.rangeExhaustion.toFixed(1)} < 1.0 (early morning)`;
 
+  // DIA tuning 2026-04-26: conf>=0.95 carve-out added (mirrors SPY 3ced689
+  // pattern on the extremeChop filter). Apr 23 13:11 ET bearish breakout had
+  // conf=95%, chop=2.13, dvel=0.0134, MFE=0.72% Grade A — blocked here despite
+  // high conviction because this filter had no conf carve-out. SPY/QQQ caught
+  // the same move; DIA missed it. The carve-out skips this filter when the
+  // signal carries the confidence to override chop+lowDvel concerns.
   if (signalMode === 'breakout'
+      && ctx.confidence < 0.95
       && ctx.choppiness !== undefined && ctx.choppiness >= 0.90
       && ctx.displacementVelocity !== undefined && ctx.displacementVelocity < 0.10) return `breakout chop+lowDvel chop=${ctx.choppiness.toFixed(2)} dvel=${ctx.displacementVelocity.toFixed(4)}`;
 

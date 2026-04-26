@@ -43,7 +43,7 @@ function diaShouldAllowEntry(ctx: EntryContext): true | string {
     return `bullish dvel ${displacementVelocity.toFixed(4)} in [-0.05, -0.04)`;
   }
   if (signalMode === 'breakout' && ctx.rangeExhaustion < 1.0) return `breakout rangeExhaustion ${ctx.rangeExhaustion.toFixed(1)} < 1.0 (early morning)`;
-  if (signalMode === 'breakout'
+  if (signalMode === 'breakout' && ctx.confidence < 0.95
       && ctx.choppiness >= 0.90 && displacementVelocity < 0.10) return `breakout chop+lowDvel chop=${ctx.choppiness.toFixed(2)} dvel=${displacementVelocity.toFixed(4)}`;
   if (signalMode === 'breakout' && ctx.confidence < 0.74) return `breakout confidence ${(ctx.confidence * 100).toFixed(0)}% < 74%`;
   if (signalMode === 'breakout'
