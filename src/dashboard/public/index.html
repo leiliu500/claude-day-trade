@@ -514,10 +514,11 @@
           <select id="bt-ticker">
             <option value="SPY">SPY</option>
             <option value="QQQ">QQQ</option>
+            <option value="IWM">IWM</option>
+            <option value="DIA">DIA</option>
             <option value="AAPL">AAPL</option>
             <option value="MSFT">MSFT</option>
             <option value="NVDA">NVDA</option>
-            <option value="IWM">IWM</option>
           </select>
         </div>
         <div class="filter-group">
@@ -544,7 +545,7 @@
         <div class="db-cleanup-card">
           <div class="db-cleanup-info">
             <h3>Purge Bar Cache</h3>
-            <p>Clears the <strong>in-memory 1-min bar ring buffer</strong> for all tickers (SPY, QQQ). The next pipeline run will fall back to REST and the cache repopulates automatically as new bars stream in.</p>
+            <p>Clears the <strong>in-memory 1-min bar ring buffer</strong> for all enabled tickers. The next pipeline run will fall back to REST and the cache repopulates automatically as new bars stream in.</p>
             <p class="db-safe-note">✅ No database data is deleted. Safe to run at any time.</p>
           </div>
           <button class="btn-cleanup-signals" id="btn-purge-cache" onclick="purgeCache()">🗑️ Purge Cache</button>
