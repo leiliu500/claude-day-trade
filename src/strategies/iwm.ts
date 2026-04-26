@@ -194,18 +194,37 @@ function iwmAdjustConfidence(breakdown: ConfidenceBreakdown, ctx: EntryContext):
 function iwmShouldAllowEntry(ctx: EntryContext): true | string {
   const { signalMode, direction, atr, currentPrice } = ctx;
 
+  // ── Fast-trend bypass (4-of-4) ───────────────────────────────────────────
+  // Narrow override for the chasing / extremeChop / chop+lowDvel filters when
+  // ALL of the following are true:
+  //   - atrRatio >= 1.4 (fresh vol expansion ahead of ADX)
+  //   - confidence >= 0.75 (already high-conviction signal)
+  //   - direction-aligned swing extreme (bearish & rp<=0.20 OR bullish & rp>=0.80)
+  //   - alignment confirmed (all_aligned or htf_mtf_aligned)
+  // Mirrors the conf>=0.95 carve-out pattern (3ced689). Designed for fast
+  // trend-day catch-up entries (Apr 1 14:00-14:18 IWM bearish breakout cluster)
+  // where the chasing-filter heuristic is wrong on big-move days.
+  // Earlier OR-form (Variant B v2) caused 15-mo dilution (-0.036 REVERT 2026-04-26).
+  const rp = ctx.rangePosition;
+  const fastTrendBypass =
+    (ctx.atrRatio ?? 0) >= 1.4
+    && ctx.confidence >= 0.74
+    && rp !== undefined
+    && ((direction === 'bearish' && rp <= 0.20) || (direction === 'bullish' && rp >= 0.80))
+    && (ctx.alignment === 'all_aligned' || ctx.alignment === 'htf_mtf_aligned');
+
   const atrPct = currentPrice > 0 ? (atr / currentPrice) * 100 : 0;
   if (signalMode === 'breakout' && atrPct < 0.08) return `breakout atrPct ${atrPct.toFixed(3)}% < 0.08%`;
 
   if (signalMode === 'breakout' && ctx.displacementVelocity !== undefined
-      && ctx.displacementVelocity < -0.05) return `breakout dvel ${ctx.displacementVelocity.toFixed(4)} < -0.05`;
+      && ctx.displacementVelocity < -0.05 && !fastTrendBypass) return `breakout dvel ${ctx.displacementVelocity.toFixed(4)} < -0.05`;
 
   // SPY uses absolute atr < 0.45 at SPY ~$560 (~0.08%). Use atrPct for IWM
   // since IWM (~$200) has very different absolute ATR scale.
   if (signalMode === 'trend' && atrPct < 0.08) return `trend atrPct ${atrPct.toFixed(3)}% < 0.08%`;
 
   if (signalMode === 'trend' && ctx.displacementVelocity !== undefined
-      && ctx.displacementVelocity > 0.10) return `trend high dvel ${ctx.displacementVelocity.toFixed(4)} > 0.10 (chasing)`;
+      && ctx.displacementVelocity > 0.10 && !fastTrendBypass) return `trend high dvel ${ctx.displacementVelocity.toFixed(4)} > 0.10 (chasing)`;
 
   if (signalMode === 'trend'
       && ctx.rangeExhaustion !== undefined && ctx.rangeExhaustion > 6.0
@@ -232,7 +251,8 @@ function iwmShouldAllowEntry(ctx: EntryContext): true | string {
 
   if (signalMode === 'breakout'
       && ctx.choppiness !== undefined && ctx.choppiness >= 0.90
-      && ctx.displacementVelocity !== undefined && ctx.displacementVelocity < 0.10) return `breakout chop+lowDvel chop=${ctx.choppiness.toFixed(2)} dvel=${ctx.displacementVelocity.toFixed(4)}`;
+      && ctx.displacementVelocity !== undefined && ctx.displacementVelocity < 0.10
+      && !fastTrendBypass) return `breakout chop+lowDvel chop=${ctx.choppiness.toFixed(2)} dvel=${ctx.displacementVelocity.toFixed(4)}`;
 
   if (signalMode === 'breakout' && ctx.confidence < 0.74) return `breakout confidence ${(ctx.confidence * 100).toFixed(0)}% < 74%`;
 
@@ -240,10 +260,12 @@ function iwmShouldAllowEntry(ctx: EntryContext): true | string {
       && ctx.rangeExhaustion !== undefined && ctx.rangeExhaustion >= 9.0
       && ctx.choppiness !== undefined && ctx.choppiness >= 1.0) return `breakout highExh+highChop rExh=${ctx.rangeExhaustion.toFixed(1)} chop=${ctx.choppiness.toFixed(2)}`;
 
-  // Conf>=0.95 carve-out (mirrors SPY 3ced689).
+  // Conf>=0.95 carve-out (mirrors SPY 3ced689) + fast-trend 4-of-4 bypass
+  // for the Apr 23 13:07 IWM bearish breakout cluster (75% A blocked by chop=2.27).
   if (signalMode === 'breakout'
       && ctx.confidence < 0.95
-      && ctx.choppiness !== undefined && ctx.choppiness >= 2.0) return `breakout extremeChop ${ctx.choppiness.toFixed(2)} >= 2.0`;
+      && ctx.choppiness !== undefined && ctx.choppiness >= 2.0
+      && !fastTrendBypass) return `breakout extremeChop ${ctx.choppiness.toFixed(2)} >= 2.0`;
 
   if (signalMode === 'breakout'
       && ctx.rangeExhaustion !== undefined && ctx.rangeExhaustion >= 9.0) return `breakout extremeExhaustion ${ctx.rangeExhaustion.toFixed(1)} >= 9.0`;

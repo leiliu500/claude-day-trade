@@ -5,7 +5,7 @@ import type { SignalPayload } from '../types/signal.js';
 import type { OptionEvaluation } from '../types/options.js';
 import type { AnalysisResult, ConfidenceBreakdown } from '../types/analysis.js';
 import { getRecentSignals } from '../db/repositories/signals.js';
-import { computeEntryMetrics } from '../lib/entry-context.js';
+import { computeEntryMetrics, computeAtrRatio } from '../lib/entry-context.js';
 import { computePriceTopology } from '../topology/price-topology.js';
 
 const openai = new OpenAI({ apiKey: config.OPENAI_API_KEY });
@@ -1283,6 +1283,28 @@ function computeConfidence(signal: SignalPayload, option: OptionEvaluation): Con
   // overrides lagging indicator concerns (exhaustion, low ADX, etc.)
   const flowConfirms = orderFlowBonus >= 0.10;
 
+  // Volatility expansion confirms low-ADX signal — same effect as flow but
+  // observable in backtest. Requires ALL of:
+  //   - ATR(5)/ATR(20) >= 1.4 (fresh vol expansion)
+  //   - diSpreadBonus >= 0.04 (DI gap >= 10pts — real DI cross)
+  //   - adxSlope > 0 (ADX rising, not fading)
+  //   - alignment confirmed (all_aligned or htf_mtf_aligned)
+  //   - direction-aligned swing extreme (bearish & rp<=0.20 or bullish & rp>=0.80)
+  // This 5-of-5 gate is much stricter than the OR-form (which diluted IWM 15-mo
+  // with C/D-grade entries — REVERTED 2026-04-26). Only the very narrow
+  // "fast-trend forming AND at extreme" combo qualifies.
+  const ltfBars = ltf.bars;
+  const atrRatio = ltfBars && ltfBars.length >= 21 ? computeAtrRatio(ltfBars) : undefined;
+  const rpRaw = htf.priceStructure.rangePosition;
+  const dirAtExtreme = signal.direction === 'bearish' ? rpRaw <= 0.20
+    : signal.direction === 'bullish' ? rpRaw >= 0.80 : false;
+  const fastTrendActive =
+    (atrRatio ?? 0) >= 1.4
+    && diSpreadBonus >= 0.04
+    && htf.dmi.adxSlope > 0
+    && (signal.alignment === 'all_aligned' || signal.alignment === 'htf_mtf_aligned')
+    && dirAtExtreme;
+
   // Hard gate: no structure support — every backtest winner had Structure >= +0.06.
   // Losers often had 0 or negative structure (wrong side of prior-day levels).
   if (structureBonus <= 0) total = Math.min(total, flowConfirms ? 0.72 : 0.68);
@@ -1290,9 +1312,10 @@ function computeConfidence(signal: SignalPayload, option: OptionEvaluation): Con
 
   // Hard gate: low ADX strength — weak trend, unreliable signal.
   // ADX < 15: no established trend to ride. ADX 15-20: marginal, cap below threshold.
-  // Relaxed when order flow confirms: institutions can accumulate before ADX catches up.
-  if (htf.dmi.adx < 15) total = Math.min(total, flowConfirms ? 0.68 : 0.55);
-  else if (htf.dmi.adx < 20) total = Math.min(total, flowConfirms ? 0.72 : 0.64);
+  // Relaxed when order flow confirms OR fast-trend (5-of-5 multi-condition) confirms:
+  // both indicate momentum that ADX(14) hasn't yet absorbed.
+  if (htf.dmi.adx < 15) total = Math.min(total, (flowConfirms || fastTrendActive) ? 0.68 : 0.55);
+  else if (htf.dmi.adx < 20) total = Math.min(total, (flowConfirms || fastTrendActive) ? 0.72 : 0.64);
 
   // Hard gate: TR contraction (instant momentum fade) without price confirmation
   // is a dying trend — cap confidence below entry threshold (0.65).
@@ -2132,6 +2155,7 @@ export class AnalysisAgent {
     let rangeExhaustion: number | undefined;
     let choppiness: number | undefined;
     let trendConsolidationBreakout: boolean | undefined;
+    let atrRatio: number | undefined;
     {
       const ltfBars = signal.timeframes[0]?.bars;
       const htfAtr = (signal.timeframes[2] ?? signal.timeframes[0])?.atr.atr ?? 0;
@@ -2144,6 +2168,7 @@ export class AnalysisAgent {
           rangeExhaustion = metrics.rangeExhaustion;
           choppiness = metrics.choppiness;
           trendConsolidationBreakout = metrics.trendConsolidationBreakout;
+          atrRatio = metrics.atrRatio;
         }
       }
     }
@@ -2176,6 +2201,9 @@ export class AnalysisAgent {
       choppiness,
       trendConsolidationBreakout,
       minutesSinceOpen,
+      atrRatio,
+      rangePosition: signal.timeframes[2]?.priceStructure?.rangePosition
+        ?? signal.timeframes[0]?.priceStructure?.rangePosition,
     };
 
     // Per-symbol confidence adjustment hook

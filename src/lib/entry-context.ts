@@ -15,6 +15,10 @@ export interface EntryMetrics {
   choppiness: number;
   /** True when last 10+ bars form a tight consolidation that the current bar breaks out of. */
   trendConsolidationBreakout: boolean;
+  /** Volatility expansion ratio: ATR(5) / ATR(20) on 1-min LTF bars.
+   *  >= 1.4 indicates fast vol expansion (fresh trend forming) ahead of ADX(14).
+   *  ~1.0 = stable, < 0.8 = vol contracting. Undefined if <21 bars. */
+  atrRatio?: number;
 }
 
 /**
@@ -96,5 +100,38 @@ export function computeEntryMetrics(
     }
   }
 
-  return { displacementVelocity, rangeExhaustion, choppiness, trendConsolidationBreakout };
+  // ── ATR ratio (volatility expansion) ──
+  const atrRatio = computeAtrRatio(todayBars);
+
+  return { displacementVelocity, rangeExhaustion, choppiness, trendConsolidationBreakout, atrRatio };
+}
+
+/**
+ * Compute volatility expansion ratio: ATR(5) / ATR(20) on 1-min bars.
+ *
+ * Fires faster than ADX(14): a 1% move in 5 minutes lifts the ratio above
+ * 1.4 immediately, while ADX needs 5-8 bars to climb past 15. Used to lift
+ * the low-ADX confidence cap and to gate the chasing filter.
+ *
+ * @param bars — Sequence of bars (must be sorted ascending). Need >=21 for output.
+ * @returns ratio, or undefined if insufficient bars / zero baseline.
+ */
+export function computeAtrRatio(
+  bars: ReadonlyArray<{ high: number; low: number; close: number }>,
+): number | undefined {
+  if (bars.length < 21) return undefined;
+  const tr = (i: number): number => {
+    const b = bars[i]!;
+    const prevClose = bars[i - 1]!.close;
+    return Math.max(b.high - b.low, Math.abs(b.high - prevClose), Math.abs(b.low - prevClose));
+  };
+  let sumShort = 0;
+  let sumLong = 0;
+  const last = bars.length - 1;
+  for (let i = last - 4; i <= last; i++) sumShort += tr(i);
+  for (let i = last - 19; i <= last; i++) sumLong += tr(i);
+  const atrShort = sumShort / 5;
+  const atrLong = sumLong / 20;
+  if (atrLong <= 0) return undefined;
+  return atrShort / atrLong;
 }

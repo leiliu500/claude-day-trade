@@ -48,6 +48,14 @@ export interface EntryContext {
    *  works identically in live mode (last bar = wall-clock now) and backtest
    *  mode (last bar = simulated time). Use for time-of-day-based filters. */
   minutesSinceOpen?: number;
+  /** Volatility expansion ratio: ATR(5) / ATR(20) on 1-min LTF bars.
+   *  >= 1.4 = fresh vol expansion ahead of ADX, ~1.0 = stable, < 0.8 = contracting.
+   *  Used to lift low-ADX confidence cap and gate chasing filter. */
+  atrRatio?: number;
+  /** HTF swing range position: 0.0 = at swing low, 1.0 = at swing high.
+   *  When direction-aligned (bearish + rp<=0.20 or bullish + rp>=0.80) the
+   *  signal is at the trend extreme, not chasing. Used to gate chasing filter. */
+  rangePosition?: number;
 }
 
 // ── Mode detection result ────────────────────────────────────────────────────

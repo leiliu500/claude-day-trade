@@ -758,6 +758,7 @@ async function main() {
     const rangeExhaustion = entryMetrics?.rangeExhaustion ?? 0;
     const choppiness = entryMetrics?.choppiness ?? 0;
     const trendConsolidationBreakout = entryMetrics?.trendConsolidationBreakout ?? false;
+    const atrRatio = entryMetrics?.atrRatio;
     const minutesSinceOpen = (currentTs - openTime.getTime()) / 60_000;
 
     // Intraday trend tracking: consecutive directional closes
@@ -817,7 +818,9 @@ async function main() {
     const entryCtx = {
       signalMode, direction, alignment, confidence: cbRaw.total,
       breakdown: cbRaw, strengthScore, currentPrice, atr,
-      rangeExhaustion, displacementVelocity, choppiness, trendConsolidationBreakout,
+      rangeExhaustion, displacementVelocity, choppiness, trendConsolidationBreakout, atrRatio,
+      rangePosition: tfIndicators[2]?.priceStructure?.rangePosition
+        ?? tfIndicators[0]?.priceStructure?.rangePosition,
       intradayTrendStrength, regimeScore, dailyEntryCount,
       minutesSinceOpen: (currentTs - openTime.getTime()) / 60_000,
       ltfBars,
@@ -923,7 +926,8 @@ async function main() {
       const rp = htfTf.priceStructure.rangePosition;
       const nearExt = (direction === 'bullish' && rp >= 0.85) || (direction === 'bearish' && rp <= 0.15);
       if (nearExt) hardGates.push(`extreme_rp=${rp.toFixed(2)}`);
-      process.stdout.write(`  DBG ${timeET} $${currentPrice.toFixed(2)} ${direction} [${signalMode}] conf=${cb.total.toFixed(3)} eff=${effectiveThreshold.toFixed(3)} | base=0.380 ${factors} | gates: ${hardGates.join(', ') || 'none'} | adx=${htfTf.dmi.adx.toFixed(1)} adxSlope=${htfTf.dmi.adxSlope.toFixed(1)} adxBars25=${htfTf.dmi.adxBarsAbove25} rp=${rp.toFixed(2)}\n`);
+      const atrRatioDbg = atrRatio !== undefined ? atrRatio.toFixed(2) : 'na';
+      process.stdout.write(`  DBG ${timeET} $${currentPrice.toFixed(2)} ${direction} [${signalMode}] conf=${cb.total.toFixed(3)} eff=${effectiveThreshold.toFixed(3)} | base=0.380 ${factors} | gates: ${hardGates.join(', ') || 'none'} | adx=${htfTf.dmi.adx.toFixed(1)} adxSlope=${htfTf.dmi.adxSlope.toFixed(1)} adxBars25=${htfTf.dmi.adxBarsAbove25} rp=${rp.toFixed(2)} atrR=${atrRatioDbg} dvel=${displacementVelocity.toFixed(3)}\n`);
     }
 
     // ── Entry decision ──────────────────────────────────────────────────────────
