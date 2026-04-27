@@ -1,31 +1,37 @@
 /**
  * DIA-specific trading strategy.
  *
- * Baseline cloned from strategies/spy.ts on 2026-04-25 — SPY filters and
- * confidence adjustments are the starting point for tuning DIA. Replace /
- * extend below as DIA-specific backtest evidence emerges.
+ * Built from scratch 2026-04-27 (NOT a SPY clone). DIA tracks 30 large-cap
+ * blue-chip Dow components — different microstructure from SPY's broad-500
+ * basket. Even though both are large-cap ETFs, DIA's narrower constituent set
+ * + price-weighted index produce different intraday signal distributions:
+ *   - Heavier concentration in industrials/financials/healthcare vs SPY's
+ *     tech-heavy weighting
+ *   - Lower absolute price (~$425 vs ~$560) means similar atrPct% maps to
+ *     smaller absolute moves — entry filters tuned in dollar terms drift
+ *   - Slightly lower options liquidity than SPY, wider effective spreads
+ *   - 30-stock basket reacts more linearly to broad macro / Fed headlines
+ *     than SPY's tech-influenced moves
  *
- * DIA (~$425) is a large-cap blue-chip ETF, behaviorally similar to SPY but
- * at ~0.65x absolute price. Absolute-ATR thresholds in SPY are converted to
- * atrPct for DIA — same pattern as the IWM clone.
+ * Approach: start with no entry filters (only the structural regime score
+ * computation), mine F-clusters from 15-mo backtest data, then add filters
+ * incrementally based on what DIA's data actually shows. SPY's filter set is
+ * intentionally NOT cloned — prior DIA tuning session (2026-04-25/26 commits
+ * 57659fa..41fef00) tried that approach and produced 4 reverts + 1 marginal
+ * merge before being discarded.
  */
 
 import type { PartialTickerStrategy, EntryContext } from './strategy.js';
-import type { ConfidenceBreakdown } from '../types/analysis.js';
 import type { TimeframeIndicators } from '../types/indicators.js';
 import type { SignalDirection } from '../types/signal.js';
-
-// Module-level state: regime score computed in detectMode, read in shouldAllowEntry.
-// Safe because DIA pipeline runs serially (one tick at a time per symbol).
-let _lastRegimeScore = 50;
-
 import { defaultStrategy } from './default.js';
 
-/**
- * Compute intraday regime score — same hybrid algorithm as SPY/QQQ/IWM.
- * `todayStr` is derived from the LAST bar's timestamp so this works identically
- * in live and backtest mode.
- */
+// ── Module-level state ──────────────────────────────────────────────────────
+let _lastRegimeScore = 50;
+
+// ── Regime score ────────────────────────────────────────────────────────────
+// Same hybrid algorithm as SPY/QQQ/IWM/TSLA — kept identical because regime is
+// a structural breadth signal, not ticker-specific.
 function computeRegimeScore(
   bars: readonly { timestamp: string; open: number; high: number; low: number; close: number }[],
   vwapPriceVs: number,
@@ -39,7 +45,7 @@ function computeRegimeScore(
     const h = parseInt(b.timestamp.slice(11, 13), 10);
     const m = parseInt(b.timestamp.slice(14, 16), 10);
     const mins = h * 60 + m;
-    return mins >= 810 && mins < 1200; // 13:30–20:00 UTC
+    return mins >= 810 && mins < 1200;
   });
   if (todayBars.length < 20) return 50;
 
@@ -77,7 +83,6 @@ function computeRegimeScore(
     }
   }
   const trendStrComponent = Math.min(10, Math.max(maxConsecUp, maxConsecDown) * 2.5);
-
   const adxComponent = adx >= 20 ? Math.min(15, (adx - 20) * 1.0) : 0;
   const vwapComponent = Math.min(10, Math.abs(vwapPriceVs) / 0.20 * 10);
 
@@ -86,6 +91,7 @@ function computeRegimeScore(
   )));
 }
 
+// ── DIA Mode Detection ──────────────────────────────────────────────────────
 function diaDetectMode(
   tfIndicators: TimeframeIndicators[],
   direction: SignalDirection,
@@ -102,212 +108,73 @@ function diaDetectMode(
   return defaultStrategy.detectMode(tfIndicators, direction, currentPrice);
 }
 
-// ── DIA Confidence Adjustment (cloned from SPY) ─────────────────────────────
-
-function diaAdjustConfidence(breakdown: ConfidenceBreakdown, ctx: EntryContext): ConfidenceBreakdown {
-  let bd = breakdown;
-
-  // Regime-gated suppression of perverse-signed momentum factors when ADX is
-  // flat/declining — see strategies/spy.ts for factor-orthogonality evidence.
-  if (bd.trendPhaseBonus <= 0) {
-    if (bd.priceVelocityBonus !== 0) {
-      bd = bd === breakdown ? { ...bd } : bd;
-      bd.total -= bd.priceVelocityBonus;
-      bd.priceVelocityBonus = 0;
-      bd.total = Math.max(0, Math.min(1, bd.total));
-    }
-    if (bd.pricePositionAdjustment !== 0) {
-      bd = bd === breakdown ? { ...bd } : bd;
-      bd.total -= bd.pricePositionAdjustment;
-      bd.pricePositionAdjustment = 0;
-      bd.total = Math.max(0, Math.min(1, bd.total));
-    }
-    if (bd.macdBonus !== 0) {
-      bd = bd === breakdown ? { ...bd } : bd;
-      bd.total -= bd.macdBonus;
-      bd.macdBonus = 0;
-      bd.total = Math.max(0, Math.min(1, bd.total));
-    }
-  }
-
-  // Suppress positive PA bonus for bullish trend entries at high regime (>= 75).
-  if (ctx.signalMode === 'trend' && ctx.direction === 'bullish'
-      && _lastRegimeScore >= 75 && bd.recentPriceActionBonus > 0) {
-    bd = { ...bd };
-    bd.total -= bd.recentPriceActionBonus;
-    bd.recentPriceActionBonus = 0;
-    bd.total = Math.max(0, Math.min(1, bd.total));
-  }
-
-  // Reversal trap penalty: trendPhaseBonus <= 0 + strong PA (>= 0.06).
-  if (ctx.signalMode === 'trend'
-      && bd.trendPhaseBonus <= 0
-      && bd.recentPriceActionBonus >= 0.06) {
-    bd = bd === breakdown ? { ...bd } : bd;
-    const penalty = 0.06;
-    bd.recentPriceActionBonus -= Math.min(bd.recentPriceActionBonus, penalty);
-    bd.total -= penalty;
-    bd.total = Math.max(0, Math.min(1, bd.total));
-  }
-
-  // Strong trend continuation relief: all_aligned + ADX strong & rising.
-  if (ctx.signalMode === 'trend'
-      && ctx.alignment === 'all_aligned'
-      && bd.trendPhaseBonus > 0
-      && bd.adxBonus >= 0.05
-      && bd.moveExhaustionPenalty <= -0.10) {
-    bd = bd === breakdown ? { ...bd } : bd;
-    const exhRelief = -bd.moveExhaustionPenalty * 0.5;
-    bd.moveExhaustionPenalty *= 0.5;
-    bd.total += exhRelief;
-    if (bd.adxMaturityPenalty <= -0.08) {
-      const matRelief = -bd.adxMaturityPenalty * 0.5;
-      bd.adxMaturityPenalty *= 0.5;
-      bd.total += matRelief;
-    }
-    if (bd.structureBonus <= 0) {
-      bd.structureBonus = 0.01;
-    }
-    bd.total = Math.max(0, Math.min(1, bd.total));
-  }
-
-  return bd;
-}
-
-// ── DIA Entry Filter (cloned from SPY) ──────────────────────────────────────
-
+// ── DIA Entry Filter ────────────────────────────────────────────────────────
+// Filters added 2026-04-27 from 15-mo F-cluster mining + time-of-day analysis.
+// Order matches backtest-configs/dia.ts (single source of truth).
 function diaShouldAllowEntry(ctx: EntryContext): true | string {
-  const { signalMode, direction, atr, currentPrice } = ctx;
-
-  const atrPct = currentPrice > 0 ? (atr / currentPrice) * 100 : 0;
-  if (signalMode === 'breakout' && atrPct < 0.08) return `breakout atrPct ${atrPct.toFixed(3)}% < 0.08%`;
-
-  if (signalMode === 'breakout' && ctx.displacementVelocity !== undefined
-      && ctx.displacementVelocity < -0.05) return `breakout dvel ${ctx.displacementVelocity.toFixed(4)} < -0.05`;
-
-  // SPY uses absolute atr < 0.45 at SPY ~$560 (~0.08%). Use atrPct for DIA scale.
-  if (signalMode === 'trend' && atrPct < 0.08) return `trend atrPct ${atrPct.toFixed(3)}% < 0.08%`;
-
-  if (signalMode === 'trend' && ctx.displacementVelocity !== undefined
-      && ctx.displacementVelocity > 0.10) return `trend high dvel ${ctx.displacementVelocity.toFixed(4)} > 0.10 (chasing)`;
-
-  if (signalMode === 'trend'
-      && ctx.rangeExhaustion !== undefined && ctx.rangeExhaustion > 6.0
-      && ctx.choppiness !== undefined && ctx.choppiness >= 2.0) return `trend exhausted+choppy rExh=${ctx.rangeExhaustion.toFixed(1)} chop=${ctx.choppiness.toFixed(2)}`;
-
-  if (signalMode === 'trend'
-      && ctx.rangeExhaustion !== undefined && ctx.rangeExhaustion >= 8.0
-      && ctx.displacementVelocity !== undefined && ctx.displacementVelocity < 0.04
-      && ctx.alignment !== 'all_aligned') return `trend exhausted+fading rExh=${ctx.rangeExhaustion.toFixed(1)} dvel=${ctx.displacementVelocity.toFixed(4)} (stalled)`;
-
-  if (signalMode === 'trend' && direction === 'bullish'
-      && ctx.rangeExhaustion !== undefined && ctx.rangeExhaustion >= 7.5) {
-    return `bullish rangeExh ${ctx.rangeExhaustion.toFixed(1)} >= 7.5`;
+  // Open window — first 30 min (9:30-10:00 ET). Backtest enforces this via
+  // entryWindowStartMin/EndMin in DIA_CONFIG; explicit filter ensures live
+  // pipeline agrees. 15-mo bucket: n=202, exp -0.762, F-rate 60%.
+  if (ctx.minutesSinceOpen !== undefined && ctx.minutesSinceOpen < 30) {
+    return `open window ${ctx.minutesSinceOpen}m < 30 (first 30 min)`;
   }
 
-  if (direction === 'bullish'
-      && ctx.displacementVelocity !== undefined
-      && ctx.displacementVelocity < -0.04 && ctx.displacementVelocity >= -0.05) return `bullish dvel ${ctx.displacementVelocity.toFixed(4)} in [-0.05, -0.04)`;
-
-  if (signalMode === 'breakout'
-      && ctx.rangeExhaustion !== undefined && ctx.rangeExhaustion < 1.0) return `breakout rangeExhaustion ${ctx.rangeExhaustion.toFixed(1)} < 1.0 (early morning)`;
-
-  // DIA tuning 2026-04-26: conf>=0.95 carve-out added (mirrors SPY 3ced689
-  // pattern on the extremeChop filter). Apr 23 13:11 ET bearish breakout had
-  // conf=95%, chop=2.13, dvel=0.0134, MFE=0.72% Grade A — blocked here despite
-  // high conviction because this filter had no conf carve-out. SPY/QQQ caught
-  // the same move; DIA missed it. The carve-out skips this filter when the
-  // signal carries the confidence to override chop+lowDvel concerns.
-  if (signalMode === 'breakout'
-      && ctx.confidence < 0.95
-      && ctx.choppiness !== undefined && ctx.choppiness >= 0.90
-      && ctx.displacementVelocity !== undefined && ctx.displacementVelocity < 0.10) return `breakout chop+lowDvel chop=${ctx.choppiness.toFixed(2)} dvel=${ctx.displacementVelocity.toFixed(4)}`;
-
-  if (signalMode === 'breakout' && ctx.confidence < 0.74) return `breakout confidence ${(ctx.confidence * 100).toFixed(0)}% < 74%`;
-
-  if (signalMode === 'breakout'
-      && ctx.rangeExhaustion !== undefined && ctx.rangeExhaustion >= 9.0
-      && ctx.choppiness !== undefined && ctx.choppiness >= 1.0) return `breakout highExh+highChop rExh=${ctx.rangeExhaustion.toFixed(1)} chop=${ctx.choppiness.toFixed(2)}`;
-
-  if (signalMode === 'breakout'
-      && ctx.confidence < 0.95
-      && ctx.choppiness !== undefined && ctx.choppiness >= 2.0) return `breakout extremeChop ${ctx.choppiness.toFixed(2)} >= 2.0`;
-
-  if (signalMode === 'breakout'
-      && ctx.rangeExhaustion !== undefined && ctx.rangeExhaustion >= 9.0) return `breakout extremeExhaustion ${ctx.rangeExhaustion.toFixed(1)} >= 9.0`;
-
-  if (signalMode === 'breakout' && _lastRegimeScore >= 80) return `breakout regime ${_lastRegimeScore} >= 80`;
-
-  if (signalMode === 'breakout' && direction === 'bullish'
-      && ctx.rangeExhaustion !== undefined && ctx.rangeExhaustion >= 4.5
-      && _lastRegimeScore >= 65) return `bullish breakout highExh+regime rExh=${ctx.rangeExhaustion.toFixed(1)} regime=${_lastRegimeScore}`;
-
-  if (direction === 'bullish' && _lastRegimeScore <= 50) return `bullish lowRegime ${_lastRegimeScore} <= 50`;
-
-  // Mid-strength kill zone — mirrors SPY.
-  if (ctx.strengthScore >= 70 && ctx.strengthScore < 80) {
-    return `mid-strength kill zone ${ctx.strengthScore}`;
+  // EOD window — last 30 min (15:30-16:00 ET). 15-mo bucket: n=27, exp -1.319,
+  // F-rate 74% (highest of any time bucket).
+  if (ctx.minutesSinceOpen !== undefined && ctx.minutesSinceOpen >= 360) {
+    return `EOD window ${ctx.minutesSinceOpen}m >= 360 (last 30 min)`;
   }
 
-  // Bullish trend + high ORB bonus — mirrors SPY.
-  if (direction === 'bullish' && signalMode === 'trend'
-      && ctx.breakdown.orbBonus >= 0.04) {
-    return `bullish trend+orb ${ctx.breakdown.orbBonus.toFixed(2)}`;
+  // Midday-deep window — 12:30-13:00 ET. 15-mo: n=80, exp -1.038, F-rate 56%.
+  if (ctx.minutesSinceOpen !== undefined
+      && ctx.minutesSinceOpen >= 180 && ctx.minutesSinceOpen < 210) {
+    return `midday-deep ${ctx.minutesSinceOpen}m (12:30-13:00 ET)`;
   }
 
-  // Midday chop window 13:00-13:15 ET (mode=breakout carve-out) — mirrors SPY.
-  if (signalMode !== 'breakout'
-      && ctx.minutesSinceOpen !== undefined
-      && ctx.minutesSinceOpen >= 210 && ctx.minutesSinceOpen < 225) {
-    return `midday chop window ${ctx.minutesSinceOpen}m (13:00-13:15 ET)`;
+  // Mid-afternoon window — 14:00-15:30 ET. 15-mo baseline: 14:00 n=51 exp -0.961,
+  // 14:30 n=42 exp -1.048, 15:00 n=41 exp -0.780. Combined n=134, exp -0.943,
+  // F-rate 53%. Pre-Fed-headline waiting / lower-volume regime on Dow basket.
+  if (ctx.minutesSinceOpen !== undefined
+      && ctx.minutesSinceOpen >= 270 && ctx.minutesSinceOpen < 360) {
+    return `mid-afternoon ${ctx.minutesSinceOpen}m (14:00-15:30 ET)`;
   }
 
-  // Bearish + deep range-position penalty — mirrors SPY.
-  if (direction === 'bearish' && ctx.breakdown.pricePositionAdjustment <= -0.028) {
-    return `bearish deep pricePos ${ctx.breakdown.pricePositionAdjustment.toFixed(3)} (exhausted)`;
+  // F-cluster filter: absolute ATR < 0.35 (DIA at ~$425 → ~0.08% atrPct).
+  // Mined 2026-04-27 progressively from baseline → v1 (+time blocks) → v2
+  // (+bullish-breakout block). v2 mining showed F-density concentrated below
+  // 0.35: 51 entries at [0.30, 0.32) are 1A/6B/3C/1D/40F (78% F), 50 entries
+  // at [0.32, 0.35) are 7A/2B/8C/7D/26F (52% F). Below 0.30: 6A/4B/17C/12D/104F
+  // from baseline mining. Total <0.35 catches ~140 F entries with modest AB cost.
+  if (ctx.atr < 0.35) {
+    return `atr ${ctx.atr.toFixed(2)} < 0.35 (dead zone)`;
   }
 
-  // Bullish top-extreme + exhausted move — mirrors SPY 9ecbff7.
-  if (direction === 'bullish'
-      && ctx.breakdown.pricePositionAdjustment <= -0.07
-      && ctx.breakdown.moveExhaustionPenalty <= -0.05) {
-    return `bullish top-extreme exhausted ppa=${ctx.breakdown.pricePositionAdjustment.toFixed(3)} mex=${ctx.breakdown.moveExhaustionPenalty.toFixed(3)}`;
+  // Bullish breakout block — direction × mode mining 2026-04-27:
+  // BULLISH/BREAKOUT n=144, exp -0.736, F-rate 49%. Bad in 14/16 monthly buckets
+  // (only 2025-04 +0.143 and 2026-03 +0.444 positive). DIA Dow basket is
+  // structurally bad at bullish breakout signals — without SPY's tuned breakout
+  // filter chain, every confidence band ≤ 80% loses badly. Bearish breakouts
+  // (exp -0.531) are kept since they match bearish-trend (no directional bias).
+  if (ctx.direction === 'bullish' && ctx.signalMode === 'breakout') {
+    return `bullish breakout (15-mo exp -0.736)`;
   }
 
-  // Extreme atrPct — mirrors SPY 2bb1b39 (mode=breakout carve-out).
-  // SPY threshold abs 1.33 at SPY~$560 = ~0.24%. Use atrPct for DIA scale.
-  if (signalMode !== 'breakout' && atrPct >= 0.24) {
-    return `extreme atrPct ${atrPct.toFixed(3)}% >= 0.24%`;
-  }
-
-  // Bearish saturated-strength macd filter — mirrors SPY.
-  if (direction === 'bearish' && ctx.breakdown.macdBonus > 0.03 && ctx.strengthScore === 100) {
-    return `bearish saturated macd+strength (macd=${ctx.breakdown.macdBonus.toFixed(3)})`;
-  }
-
-  // Bullish high-strength macd filter — mirrors SPY.
-  if (direction === 'bullish' && ctx.breakdown.macdBonus > 0.03 && ctx.strengthScore >= 80) {
-    return `bullish high macdBonus+strength (macd=${ctx.breakdown.macdBonus.toFixed(3)} s=${ctx.strengthScore})`;
-  }
-
-  // Bearish triangle-contraction + positive macd filter — mirrors SPY.
-  if (direction === 'bearish'
-      && ctx.breakdown.trContractionPenalty < 0
-      && ctx.breakdown.macdBonus > 0) {
-    return `bearish triangle-contract+macd trC=${ctx.breakdown.trContractionPenalty.toFixed(2)} macd=${ctx.breakdown.macdBonus.toFixed(2)}`;
-  }
-
-  // Bearish low-atr + strength filter — use atrPct for DIA scale.
-  // SPY threshold abs 0.6 at SPY~$560 = ~0.107%.
-  if (direction === 'bearish' && atrPct < 0.10 && ctx.strengthScore >= 70) {
-    return `bearish low atrPct+strength ${atrPct.toFixed(3)}% < 0.10 s=${ctx.strengthScore}`;
+  // Bearish 10:30-11:00 ET window — time × direction mining 2026-04-27:
+  // n=68, exp -0.779, F-rate 53%. Significant cluster of bearish entries that
+  // fail in the late-morning bounce window. Same direction in earlier (10:00-10:30
+  // exp -0.275) and later (11:00-11:30 exp -0.516) windows is materially better.
+  if (ctx.direction === 'bearish' && ctx.minutesSinceOpen !== undefined
+      && ctx.minutesSinceOpen >= 60 && ctx.minutesSinceOpen < 90) {
+    return `bearish 10:30-11:00 ET window ${ctx.minutesSinceOpen}m`;
   }
 
   return true;
 }
 
+// ── Export ───────────────────────────────────────────────────────────────────
 export const diaStrategy: PartialTickerStrategy = {
   detectMode: diaDetectMode,
-  adjustConfidence: diaAdjustConfidence,
   shouldAllowEntry: diaShouldAllowEntry,
 };
+
+export { _lastRegimeScore };
