@@ -18,6 +18,7 @@ import { iwmStrategy } from './strategies/iwm.js';
 import { diaStrategy } from './strategies/dia.js';
 import { nvdaStrategy } from './strategies/nvda.js';
 import { aaplStrategy } from './strategies/aapl.js';
+import { tslaStrategy } from './strategies/tsla.js';
 
 export interface TickerConfig {
   /** Ticker symbol (e.g. 'SPY') */
@@ -145,6 +146,20 @@ const TICKER_OVERRIDES: Record<string, Partial<Omit<TickerConfig, 'ticker' | 'st
     maxContracts: 5,
     enabled: false,
     strategy: aaplStrategy,
+  },
+  TSLA: {
+    // Enabled 2026-04-27: building strategy from TSLA data via F-cluster mining,
+    // NOT cloned from SPY. Initial filter set is minimal (atrPct < 0.20% only).
+    // Filters added incrementally based on what 15-mo backtest data reveals.
+    minConfidence: 0.65,
+
+    maxContracts: 5,           // smaller size — high-vol single stock, expensive premiums
+    enabled: true,
+    strategy: tslaStrategy,
+
+    // Single-stock entry window: block first 30 min after open + last 30 min before close
+    entryWindowStartMin: 30,
+    entryWindowEndMin: 360,
   },
 };
 

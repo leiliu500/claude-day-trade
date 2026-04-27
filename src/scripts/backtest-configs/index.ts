@@ -9,6 +9,7 @@ import { IWM_CONFIG } from './iwm.js';
 import { DIA_CONFIG } from './dia.js';
 import { NVDA_CONFIG } from './nvda.js';
 import { AAPL_CONFIG } from './aapl.js';
+import { TSLA_CONFIG } from './tsla.js';
 
 const CONFIGS: Record<string, Partial<TickerBacktestConfig>> = {
   SPY: SPY_CONFIG,
@@ -17,6 +18,7 @@ const CONFIGS: Record<string, Partial<TickerBacktestConfig>> = {
   DIA: DIA_CONFIG,
   NVDA: NVDA_CONFIG,
   AAPL: AAPL_CONFIG,
+  TSLA: TSLA_CONFIG,
 };
 
 export function loadBacktestConfig(ticker: string): TickerBacktestConfig {
