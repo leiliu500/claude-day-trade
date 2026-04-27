@@ -2400,6 +2400,7 @@ export class AnalysisAgent {
       desiredRight,
       rangeExhaustion,
       trendConsolidationBreakout,
+      atrRatio,
       createdAt: new Date().toISOString(),
     };
   }

@@ -456,6 +456,8 @@ export class DecisionOrchestrator {
           context.lastTrailingStopExit && context.lastTrailingStopExit.direction === signal.direction
             ? Math.max(0, (nowMs - new Date(context.lastTrailingStopExit.closedAt).getTime()) / 1000)
             : null,
+        atrRatio: analysis.atrRatio,
+        ticker: signal.ticker,
       };
 
       const gate = evaluateEntryGate(gateInput);

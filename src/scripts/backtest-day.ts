@@ -1306,6 +1306,8 @@ async function main() {
           lastBreakoutEntryAgeMin: lastBreakoutEntryTs === 0 ? null : (currentTs - lastBreakoutEntryTs) / 60_000,
           vwapRevEntryCount,
           lastVwapRevEntryAgeMin: lastVwapRevEntryTs === 0 ? null : (currentTs - lastVwapRevEntryTs) / 60_000,
+          atrRatio,
+          ticker: TICKER,
           // Risk budget checked outside the gate (below), matching live safety-gates approach.
           hasRecentPhaseChangeEntry: false, // backtest doesn't track phase-change history
           trendConsolidationBreakout,

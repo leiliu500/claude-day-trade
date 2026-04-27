@@ -58,5 +58,7 @@ export interface AnalysisResult {
   rangeExhaustion?: number;        // (dayHigh - dayLow) / htfATR — how much of daily range is consumed
   /** True when LTF bars show a tight consolidation breakout in signal direction. */
   trendConsolidationBreakout?: boolean;
+  /** ATR(5)/ATR(20) on 1-min LTF bars — fast vol-expansion indicator. */
+  atrRatio?: number;
   createdAt: string;
 }

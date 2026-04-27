@@ -92,6 +92,18 @@ export interface GateInput {
    * the reversal. Stage-2 confirmation still allows entry if the signal re-establishes.
    */
   sameSideTrailingStopAgeSec: number | null;
+
+  /** ATR(5)/ATR(20) on 1-min LTF bars — fast vol expansion indicator.
+   *  Used in breakout fast-trend bypass to admit early-phase entries that
+   *  fail the adxOk/strengthOk thresholds because ADX hasn't caught up. */
+  atrRatio?: number;
+
+  /** Ticker symbol — used to scope the breakout fast-trend bypass.
+   *  DIA 15-mo validation showed 1 false-positive bypass entry in 2025-06
+   *  (1F added → -0.006 regression). Other tickers (IWM/SPY/QQQ) net
+   *  positive from the bypass. Excluded explicitly until DIA-specific
+   *  patterns are identified. */
+  ticker?: string;
 }
 
 // ── Gate evaluation ─────────────────────────────────────────────────────────
@@ -225,8 +237,33 @@ export function evaluateEntryGate(input: GateInput): GateDecision {
     const notExhausted = rangeExhaustion == null || rangeExhaustion <= 10.0;
     const underLimit = breakoutEntryCount < 2;
     const cooldownOk = lastBreakoutEntryAgeMin == null || lastBreakoutEntryAgeMin >= 30;
-    breakoutBypass = pastWaitPeriod && underLimit && cooldownOk && notTooLate &&
-      alignmentOk && trendPhaseOk && adxOk && strengthOk && notExhausted;
+
+    // Fast-trend bypass — when ADX(14) hasn't caught up to a fresh vol-expansion
+    // breakout, the standard adxOk/strengthOk/trendPhaseOk thresholds reject the
+    // signal even though the move is real. Mirrors iwm.ts shouldAllowEntry 4-of-4.
+    // Apr 23 IWM 13:07 bearish breakout: adxBonus=0.02 (adx=13.6), strengthScore≈30,
+    // trendPhaseBonus=0 — fails 3 of 7 standard conditions, but atrR=1.52,
+    // conf=0.75, rp=0.12, all_aligned all confirm a genuine fast trend.
+    const rp = input.htf?.rangePosition ?? 0.5;
+    const dirAtExtreme = (direction === 'bearish' && rp <= 0.20)
+      || (direction === 'bullish' && rp >= 0.80);
+    const fastTrendOverride =
+      (input.atrRatio ?? 0) >= 1.4
+      && confidence >= 0.74
+      && dirAtExtreme
+      && alignment === 'all_aligned'
+      && input.ticker !== 'DIA';
+
+    if (fastTrendOverride) {
+      // Fast trend: keep wait-period, cooldown, under-limit, not-exhausted, not-too-late.
+      // Skip adxOk/strengthOk/trendPhaseOk — those are exactly the lagging-indicator
+      // requirements that ADX(14) can't satisfy in the first 5-8 bars of a move.
+      breakoutBypass = pastWaitPeriod && underLimit && cooldownOk && notTooLate &&
+        alignmentOk && notExhausted;
+    } else {
+      breakoutBypass = pastWaitPeriod && underLimit && cooldownOk && notTooLate &&
+        alignmentOk && trendPhaseOk && adxOk && strengthOk && notExhausted;
+    }
   }
 
   // ── VWAP reversion bypass ──
