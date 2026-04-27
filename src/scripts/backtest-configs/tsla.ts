@@ -22,6 +22,10 @@ function tslaShouldAllowEntry(ctx: EntryContext): true | string {
   if (ctx.minutesSinceOpen !== undefined && ctx.minutesSinceOpen < 30) {
     return `open window ${ctx.minutesSinceOpen}m < 30 (first 30 min)`;
   }
+  if (ctx.minutesSinceOpen !== undefined
+      && ctx.minutesSinceOpen >= 240 && ctx.minutesSinceOpen < 300) {
+    return `mid-afternoon lull ${ctx.minutesSinceOpen}m (13:30-14:30 ET)`;
+  }
   if (ctx.minutesSinceOpen !== undefined && ctx.minutesSinceOpen >= 360) {
     return `EOD window ${ctx.minutesSinceOpen}m >= 360 (last 30 min)`;
   }

@@ -131,6 +131,15 @@ function tslaShouldAllowEntry(ctx: EntryContext): true | string {
     return `open window ${ctx.minutesSinceOpen}m < 30 (first 30 min)`;
   }
 
+  // Mid-afternoon lull (13:30-14:30 ET, 240-300 min) — post-merge profile shows
+  // exp +0.293 vs 0.538-0.687 in other buckets. TSLA-specific behavior likely
+  // tied to lunch-hour drift / pre-Fed-headline waiting / lower volume regime.
+  // Net positive but well below average; removing pulls overall expectancy up.
+  if (ctx.minutesSinceOpen !== undefined
+      && ctx.minutesSinceOpen >= 240 && ctx.minutesSinceOpen < 300) {
+    return `mid-afternoon lull ${ctx.minutesSinceOpen}m (13:30-14:30 ET)`;
+  }
+
   // Last 30 min (15:30-16:00 ET) — only TSLA bucket with negative expectancy.
   // Profile mined 2026-04-27 from 15-mo data: 40 entries, exp -0.325 (10A/4B/6C/3D/17F).
   // Mostly EOD chase / liquidity-sweep moves that fade. ETF tickers also block this
