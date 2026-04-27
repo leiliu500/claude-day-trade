@@ -110,14 +110,27 @@ function tslaDetectMode(
 }
 
 // ── TSLA Entry Filter ───────────────────────────────────────────────────────
-// Minimal filter — only blocks pathologically thin atr (TSLA at <0.20% atrPct
+// Minimal filter — only blocks pathologically thin atr (TSLA at <0.18% atrPct
 // is typically pre-market drift or post-earnings exhaustion, neither tradeable).
-// All other filters will be added based on empirical F-cluster mining.
+// Threshold tuned 2026-04-27 from rejected-goods mining: at 0.20% the filter
+// blocked 47+ A-grade entries in the 0.18-0.20 band (atrPct 0.187%: 39A/2F
+// alone) while only catching ~16 F entries in the deeper 0.15-0.18 band.
+// All other filters TBD from F-cluster mining (currently no single-indicator
+// threshold discriminates F from A+B per mine-f-signatures verdict).
 function tslaShouldAllowEntry(ctx: EntryContext): true | string {
   const atrPct = ctx.currentPrice > 0 ? (ctx.atr / ctx.currentPrice) * 100 : 0;
 
-  // TSLA's normal ATR is 1-3%; below 0.20% is unusual and typically dead-zone.
-  if (atrPct < 0.20) return `atrPct ${atrPct.toFixed(3)}% < 0.20% (dead zone)`;
+  // TSLA's normal ATR is 1-3%; below 0.18% is unusual and typically dead-zone.
+  if (atrPct < 0.18) return `atrPct ${atrPct.toFixed(3)}% < 0.18% (dead zone)`;
+
+  // Last 30 min (15:30-16:00 ET) — only TSLA bucket with negative expectancy.
+  // Profile mined 2026-04-27 from 15-mo data: 40 entries, exp -0.325 (10A/4B/6C/3D/17F).
+  // Mostly EOD chase / liquidity-sweep moves that fade. ETF tickers also block this
+  // via entryWindowEndMin: 360 (config-level), but TSLA backtests show those signals
+  // still firing — explicit strategy filter ensures both live and backtest agree.
+  if (ctx.minutesSinceOpen !== undefined && ctx.minutesSinceOpen >= 360) {
+    return `EOD window ${ctx.minutesSinceOpen}m >= 360 (last 30 min)`;
+  }
 
   return true;
 }

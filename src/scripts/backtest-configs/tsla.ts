@@ -18,7 +18,10 @@ import { simulateOrderAgentTsla } from '../../lib/order-agent-sim-tsla.js';
 
 function tslaShouldAllowEntry(ctx: EntryContext): true | string {
   const atrPct = ctx.currentPrice > 0 ? (ctx.atr / ctx.currentPrice) * 100 : 0;
-  if (atrPct < 0.20) return `atrPct ${atrPct.toFixed(3)}% < 0.20% (dead zone)`;
+  if (atrPct < 0.18) return `atrPct ${atrPct.toFixed(3)}% < 0.18% (dead zone)`;
+  if (ctx.minutesSinceOpen !== undefined && ctx.minutesSinceOpen >= 360) {
+    return `EOD window ${ctx.minutesSinceOpen}m >= 360 (last 30 min)`;
+  }
   return true;
 }
 
@@ -28,7 +31,7 @@ function tslaAdjustConfidence(cb: ConfidenceBreakdown, _ctx: EntryContext): Conf
 
 export const TSLA_CONFIG: Partial<TickerBacktestConfig> = {
   minConfidence: 0.65,
-  minAtrPct: 0.20,
+  minAtrPct: 0.18,
   dailyRiskBudgetPct: 0.05,
   // TSLA-appropriate breakout/trend params — start with NVDA-style (single stock,
   // high-vol baseline). Will tune from F-cluster mining.
