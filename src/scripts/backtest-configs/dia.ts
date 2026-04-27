@@ -31,10 +31,31 @@ function diaShouldAllowEntry(ctx: EntryContext): true | string {
       && ctx.minutesSinceOpen >= 60 && ctx.minutesSinceOpen < 90) {
     return `bearish 10:30-11:00 ET window ${ctx.minutesSinceOpen}m`;
   }
+  if (ctx.direction === 'bearish' && ctx.signalMode === 'breakout' && ctx.atr < 0.50) {
+    return `bearish breakout low-atr ${ctx.atr.toFixed(2)} < 0.50`;
+  }
+  if (ctx.direction === 'bearish' && ctx.signalMode !== 'breakout'
+      && (ctx.atr < 0.40 || ctx.regimeScore < 50)) {
+    return `bearish trend weak (atr=${ctx.atr.toFixed(2)} regime=${ctx.regimeScore})`;
+  }
+  if (ctx.direction === 'bullish' && ctx.signalMode !== 'breakout' && ctx.atr < 0.40) {
+    return `bullish trend low-atr ${ctx.atr.toFixed(2)} < 0.40 (no-A zone)`;
+  }
+  if (ctx.direction === 'bullish' && ctx.signalMode !== 'breakout'
+      && ctx.rangeExhaustion >= 7.0 && ctx.choppiness >= 2.0) {
+    return `bullish trend exhausted+choppy rExh=${ctx.rangeExhaustion.toFixed(1)} chop=${ctx.choppiness.toFixed(2)}`;
+  }
   return true;
 }
 
 function diaAdjustConfidence(cb: ConfidenceBreakdown, _ctx: EntryContext): ConfidenceBreakdown {
+  if (cb.trendPhaseBonus <= 0 && cb.moveExhaustionPenalty !== 0) {
+    const bd = { ...cb };
+    bd.total -= bd.moveExhaustionPenalty;
+    bd.moveExhaustionPenalty = 0;
+    bd.total = Math.max(0, Math.min(1, bd.total));
+    return bd;
+  }
   return cb;
 }
 

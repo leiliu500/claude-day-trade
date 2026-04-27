@@ -22,6 +22,7 @@
  */
 
 import type { PartialTickerStrategy, EntryContext } from './strategy.js';
+import type { ConfidenceBreakdown } from '../types/analysis.js';
 import type { TimeframeIndicators } from '../types/indicators.js';
 import type { SignalDirection } from '../types/signal.js';
 import { defaultStrategy } from './default.js';
@@ -168,13 +169,80 @@ function diaShouldAllowEntry(ctx: EntryContext): true | string {
     return `bearish 10:30-11:00 ET window ${ctx.minutesSinceOpen}m`;
   }
 
+  // Bearish breakout low-atr cluster — bearish-breakout subgroup mining 2026-04-27:
+  // bearish-breakout overall n=101, exp -0.504. Splitting on atr=0.50: high-atr
+  // (n=53) +0.094 vs low-atr (n=48) -0.979 — 1.07-point spread on same dir/mode.
+  // Worst-month forensics: bad months (2025-05/07/08) have median atr=0.44 vs
+  // good months 0.57; the bearish-breakout-low-atr pool is over-represented in
+  // bad months. This filter removes the F-cluster while preserving high-atr
+  // bearish breakouts that are net-positive.
+  if (ctx.direction === 'bearish' && ctx.signalMode === 'breakout' && ctx.atr < 0.50) {
+    return `bearish breakout low-atr ${ctx.atr.toFixed(2)} < 0.50`;
+  }
+
+  // Bearish trend weak-conditions — sub-cut mining of v6 bearish-trend (n=287
+  // exp -0.314). Two disjoint F-clusters with similar magnitude:
+  //   atr<0.40 only (no regime<50): n=29 exp -0.690 (4A/5B/3C/1D/16F)
+  //   regime<50 only (no atr<0.40): n=27 exp -0.815 (1A/4B/7C/2D/13F)
+  //   both:                          n=8  exp -2.000 (all F)
+  // Combined OR: 64 entries blocked, every disjoint piece is independently
+  // negative enough to justify the union. Bearish thrust without volatility OR
+  // without supportive breadth fails systematically on Dow components.
+  if (ctx.direction === 'bearish' && ctx.signalMode !== 'breakout'
+      && (ctx.atr < 0.40 || _lastRegimeScore < 50)) {
+    return `bearish trend weak (atr=${ctx.atr.toFixed(2)} regime=${_lastRegimeScore})`;
+  }
+
+  // Bullish trend low-atr — sub-cut mining of v7 bullish-trend (n=385 exp -0.153).
+  // atr<0.40 cluster: n=50 exp -0.900 with 0A/10B/8C/9D/23F. Striking absence
+  // of A-grades — 0/50 reach grade A in this volatility band. The 10B loss is
+  // real (≥-10 score) but 23*-2=-46F savings dominate. Sub-cuts (regime/rangeExh
+  // /chop) all stay below -0.5 — no meaningful "rescue pool" within the cluster.
+  if (ctx.direction === 'bullish' && ctx.signalMode !== 'breakout' && ctx.atr < 0.40) {
+    return `bullish trend low-atr ${ctx.atr.toFixed(2)} < 0.40 (no-A zone)`;
+  }
+
+  // Bullish trend exhausted+choppy — v9 compound mining of bullish-trend (n=383
+  // exp -0.075 after adjustConfidence). rangeExh>=7.0 & chop>=2.0: n=55 exp
+  // -0.636 (8A/6B/11C/3D/27F). The "trend" signal is unreliable when the
+  // intraday range is already largely consumed AND the price action is flipping
+  // direction frequently — classic late-day bull trap pattern on Dow components.
+  if (ctx.direction === 'bullish' && ctx.signalMode !== 'breakout'
+      && ctx.rangeExhaustion !== undefined && ctx.choppiness !== undefined
+      && ctx.rangeExhaustion >= 7.0 && ctx.choppiness >= 2.0) {
+    return `bullish trend exhausted+choppy rExh=${ctx.rangeExhaustion.toFixed(1)} chop=${ctx.choppiness.toFixed(2)}`;
+  }
+
   return true;
+}
+
+// ── DIA Confidence Adjustment ───────────────────────────────────────────────
+// Regime-gated zeroing of perverse-signed moveExhaustionPenalty. v8 factor
+// analysis on 642 confirmed entries:
+//   tpb<=0 (n=181, AB=76 F=62): mex AB mean=-0.0250 F=-0.0134 Δmean(F-AB)=+0.0116
+//   tpb>0  (n=461, AB=195 F=163): mex AB=-0.0647 F=-0.0562 Δmean=+0.0085
+// AB entries get MORE move-exhaustion penalty than F entries — the penalty is
+// inversely correlated with eventual outcome quality. The perversity is
+// strongest in the tpb<=0 regime (no/weak trend continuation), where Δmean
+// +0.0116 is well above the +0.007 minimum-viable threshold per memory.
+// Zeroing redistributes confidence from F-bias to AB-bias by removing a
+// penalty that hits AB harder.
+function diaAdjustConfidence(breakdown: ConfidenceBreakdown, _ctx: EntryContext): ConfidenceBreakdown {
+  if (breakdown.trendPhaseBonus <= 0 && breakdown.moveExhaustionPenalty !== 0) {
+    const bd = { ...breakdown };
+    bd.total -= bd.moveExhaustionPenalty;
+    bd.moveExhaustionPenalty = 0;
+    bd.total = Math.max(0, Math.min(1, bd.total));
+    return bd;
+  }
+  return breakdown;
 }
 
 // ── Export ───────────────────────────────────────────────────────────────────
 export const diaStrategy: PartialTickerStrategy = {
   detectMode: diaDetectMode,
   shouldAllowEntry: diaShouldAllowEntry,
+  adjustConfidence: diaAdjustConfidence,
 };
 
 export { _lastRegimeScore };
