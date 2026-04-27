@@ -123,6 +123,14 @@ function tslaShouldAllowEntry(ctx: EntryContext): true | string {
   // TSLA's normal ATR is 1-3%; below 0.18% is unusual and typically dead-zone.
   if (atrPct < 0.18) return `atrPct ${atrPct.toFixed(3)}% < 0.18% (dead zone)`;
 
+  // First 30 min (9:30-10:00 ET) — opening volatility produces below-average
+  // expectancy. Profile mined 2026-04-27: 276 entries, exp +0.384 vs 0.6+ in
+  // other windows; F-rate 36% (vs 26-30% elsewhere). entryWindowStartMin: 30
+  // was set in ticker-configs but not enforced in backtest; explicit filter.
+  if (ctx.minutesSinceOpen !== undefined && ctx.minutesSinceOpen < 30) {
+    return `open window ${ctx.minutesSinceOpen}m < 30 (first 30 min)`;
+  }
+
   // Last 30 min (15:30-16:00 ET) — only TSLA bucket with negative expectancy.
   // Profile mined 2026-04-27 from 15-mo data: 40 entries, exp -0.325 (10A/4B/6C/3D/17F).
   // Mostly EOD chase / liquidity-sweep moves that fade. ETF tickers also block this
