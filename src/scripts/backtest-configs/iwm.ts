@@ -37,6 +37,13 @@ function iwmShouldAllowEntry(ctx: EntryContext): true | string {
   if (ctx.direction === 'bullish' && ctx.signalMode === 'breakout' && ctx.atr < 0.45) {
     return `bullish-breakout low atr ${ctx.atr.toFixed(2)} < 0.45`;
   }
+  // v10: bearish + cpb [0.06, 0.07) — see strategies/iwm.ts.
+  if (ctx.direction === 'bearish'
+      && ctx.breakdown.candlePatternBonus >= 0.06
+      && ctx.breakdown.candlePatternBonus < 0.07) {
+    return `bearish cpb ${ctx.breakdown.candlePatternBonus.toFixed(3)} in [0.06, 0.07)`;
+  }
+
   // v9: bullish-trend open-30m carve-out — see strategies/iwm.ts.
   if (ctx.direction === 'bullish' && ctx.signalMode === 'trend'
       && ctx.minutesSinceOpen >= 30 && ctx.minutesSinceOpen < 45

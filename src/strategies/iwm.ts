@@ -174,6 +174,23 @@ function iwmShouldAllowEntry(ctx: EntryContext): true | string {
     return `bullish-breakout low atr ${ctx.atr.toFixed(2)} < 0.45`;
   }
 
+  // v10: bearish + candlePatternBonus [0.06, 0.07) — narrow perverse band.
+  // Direction-split factor analysis on v9 cache surfaced bearish candlePatternBonus
+  // as the only factor with Δmean(F-AB) above SPY's +0.007 viable threshold:
+  // bearish d=-0.39 Δmean +0.0087 range 0.140 (perverse-signed). Fine-resolution
+  // probe revealed a narrow bad bucket:
+  //   cpb 0.04-0.045 bearish: n=28 exp +0.50  (clean)
+  //   cpb 0.05-0.055 bearish: n=3  exp +0.67
+  //   cpb 0.06-0.065 bearish: n=33 exp -0.697 (5A/4B/3C/5D/16F) — 48% F
+  //   cpb 0.08+ bearish:      n=12 exp +0.25  (clean)
+  // The 0.06-0.07 band is uniquely perverse — surrounded by positive cpb cells.
+  // Distribution well-spread (13 months affected, worst single-month -1.80 N=5).
+  if (ctx.direction === 'bearish'
+      && ctx.breakdown.candlePatternBonus >= 0.06
+      && ctx.breakdown.candlePatternBonus < 0.07) {
+    return `bearish cpb ${ctx.breakdown.candlePatternBonus.toFixed(3)} in [0.06, 0.07)`;
+  }
+
   // v9: bullish-trend in first 30-45m bucket — direction-asymmetric open window.
   // Compound probe (v7 cache, confirmed on v8): bullish 30-45m n=49 exp -0.408 vs
   // bearish 30-45m strongly positive — direction-asymmetric. Within bullish, the
