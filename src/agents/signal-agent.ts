@@ -43,14 +43,18 @@ export async function fetchBarsRest(
 
   const url = new URL(`${config.ALPACA_DATA_URL}/v2/stocks/${ticker}/bars`);
   url.searchParams.set('timeframe', ALPACA_TIMEFRAME[timeframe]);
-  url.searchParams.set('limit', String(limit));
   url.searchParams.set('adjustment', 'raw');
   url.searchParams.set('feed', 'sip'); // SIP consolidated tape (Algo Trader Plus)
-  // Alpaca requires explicit start for daily bars — without it, returns null
+  // Alpaca requires explicit start for daily bars and, when `limit` is set,
+  // returns the OLDEST N bars within the window (not the newest). To get the
+  // most-recent `limit` daily bars we drop the limit param, request a wide
+  // window, and slice locally below.
   if (timeframe === '1d') {
     const start = new Date();
-    start.setDate(start.getDate() - (limit + 4) * 1.5); // extra padding for weekends/holidays
+    start.setDate(start.getDate() - Math.max(20, limit * 3));
     url.searchParams.set('start', start.toISOString().slice(0, 10) + 'T00:00:00Z');
+  } else {
+    url.searchParams.set('limit', String(limit));
   }
 
   const res = await fetch(url.toString(), { headers, signal: AbortSignal.timeout(20_000) });
@@ -59,7 +63,8 @@ export async function fetchBarsRest(
   }
 
   const data = (await res.json()) as AlpacaBarsResponse;
-  return normalizeAlpacaBars(data);
+  const bars = normalizeAlpacaBars(data);
+  return timeframe === '1d' && bars.length > limit ? bars.slice(-limit) : bars;
 }
 
 /**
@@ -72,7 +77,18 @@ const _dailyBarsCache = new Map<string, { bars: OHLCVBar[]; utcDate: string }>()
 async function fetchDailyBarsCached(ticker: string, limit: number): Promise<OHLCVBar[]> {
   const todayUtc = new Date().toISOString().slice(0, 10);
   const cached = _dailyBarsCache.get(ticker);
-  if (cached && cached.utcDate === todayUtc) return cached.bars;
+  // Cache hit only if same UTC day AND the most-recent cached bar is recent
+  // (within ~5 calendar days). If the container started before today's bar was
+  // published, the cached bars can be days old even though `cached.utcDate ===
+  // todayUtc` — bypass and re-fetch in that case.
+  if (cached && cached.utcDate === todayUtc) {
+    const lastBar = cached.bars[cached.bars.length - 1];
+    if (lastBar) {
+      const lastBarMs = new Date(lastBar.timestamp).getTime();
+      const ageDays = (Date.now() - lastBarMs) / 86_400_000;
+      if (ageDays <= 5) return cached.bars;
+    }
+  }
 
   try {
     const bars = await fetchBarsRest(ticker, '1d', limit);
