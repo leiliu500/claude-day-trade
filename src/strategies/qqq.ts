@@ -113,6 +113,21 @@ function qqqShouldAllowEntry(ctx: EntryContext): true | string {
     return `bullish low atr ${ctx.atr.toFixed(2)} < 0.60`;
   }
 
+  // v2: bullish afternoon dead-zone (210-300m = 14:00-15:30 ET, any mode).
+  // Post-v1 mining surfaced 14:00-15:30 ET as the worst bullish pocket.
+  // Slice analysis on n=1127 post-v1:
+  //   bullish m[210,240): n=24 exp -1.208 dir-acc collapses (15F = 62%)
+  //   bullish m[240,270): n=19 exp -0.842 (11F)
+  //   bullish m[270,300): n=20 exp -0.600 (12F)
+  //   combined m[210,300): n=63 exp -0.905 (8A/7B/6C/4D/38F = 60% F)
+  // Both modes uniformly bad (trend exp -0.90, breakout exp -0.93). QQQ
+  // tech basket bullish entries during early-afternoon are the dead zone
+  // when systematic flow stalls before EOD positioning.
+  if (ctx.direction === 'bullish' && ctx.minutesSinceOpen !== undefined
+      && ctx.minutesSinceOpen >= 210 && ctx.minutesSinceOpen < 300) {
+    return `bullish afternoon ${ctx.minutesSinceOpen}m (14:00-15:30 ET)`;
+  }
+
   return true;
 }
 

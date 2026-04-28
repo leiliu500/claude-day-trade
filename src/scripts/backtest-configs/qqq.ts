@@ -15,6 +15,11 @@ function qqqShouldAllowEntry(ctx: EntryContext): true | string {
   if (ctx.direction === 'bullish' && ctx.atr < 0.60) {
     return `bullish low atr ${ctx.atr.toFixed(2)} < 0.60`;
   }
+  // v2: bullish afternoon 210-300m — see strategies/qqq.ts.
+  if (ctx.direction === 'bullish'
+      && ctx.minutesSinceOpen >= 210 && ctx.minutesSinceOpen < 300) {
+    return `bullish afternoon ${ctx.minutesSinceOpen}m (14:00-15:30 ET)`;
+  }
   return true;
 }
 
