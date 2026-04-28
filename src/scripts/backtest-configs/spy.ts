@@ -33,6 +33,11 @@ function spyShouldAllowEntry(ctx: EntryContext): true | string {
       && ctx.atr >= 0.40 && ctx.atr < 0.60) {
     return `bearish-trend mid-atr ${ctx.atr.toFixed(2)} in [0.40, 0.60)`;
   }
+  // v6: bullish-trend lunch dead-zone (105-150m) — see strategies/spy.ts.
+  if (ctx.direction === 'bullish' && ctx.signalMode === 'trend'
+      && ctx.minutesSinceOpen >= 105 && ctx.minutesSinceOpen < 150) {
+    return `bullish-trend lunch ${ctx.minutesSinceOpen}m (11:15-12:30 ET)`;
+  }
   return true;
 }
 

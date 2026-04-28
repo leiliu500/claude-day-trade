@@ -173,6 +173,19 @@ function spyShouldAllowEntry(ctx: EntryContext): true | string {
     return `bearish-trend mid-atr ${ctx.atr.toFixed(2)} in [0.40, 0.60)`;
   }
 
+  // v6: bullish-trend lunch dead-zone (105-150m = 11:15 ET-12:30 ET).
+  // v5 residual direction×mode×time probe revealed asymmetric lunch pattern:
+  //   bull-trend mins [105,150):    n=42 exp -0.714 dir 50%  (5A/4B/10C/2D/21F)
+  //   bull-breakout mins [105,150): n=16 exp +0.063 dir 69%  — POSITIVE (keep!)
+  //   bear-trend mins [105,150):    n=66 exp -0.273          (mid bad, smaller signal)
+  // Mode-specific block — bull-breakout in this window is healthy. Bull-trend
+  // alone has 50% F-rate during lunch hour, dir 50% (random).
+  if (ctx.direction === 'bullish' && ctx.signalMode === 'trend'
+      && ctx.minutesSinceOpen !== undefined
+      && ctx.minutesSinceOpen >= 105 && ctx.minutesSinceOpen < 150) {
+    return `bullish-trend lunch ${ctx.minutesSinceOpen}m (11:15-12:30 ET)`;
+  }
+
   // v3: bullish-trend low-atr extension (mode-specific tightening of v1).
   // v2b residual: bullish trend at atr 0.6-0.8 still uniformly catastrophic:
   //   atr 0.60-0.70: n=42 exp -0.952 dir 48%  (1A/7B/7C/5D/22F)
