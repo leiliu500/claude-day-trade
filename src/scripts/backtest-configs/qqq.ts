@@ -10,8 +10,11 @@ import type { TickerBacktestConfig, EntryContext } from './types.js';
 import type { ConfidenceBreakdown } from '../../types/analysis.js';
 import { simulateOrderAgentQqq } from '../../lib/order-agent-sim-qqq.js';
 
-// Bare baseline — no filters yet.
-function qqqShouldAllowEntry(_ctx: EntryContext): true | string {
+function qqqShouldAllowEntry(ctx: EntryContext): true | string {
+  // v1: bullish low-atr (any mode) — see strategies/qqq.ts.
+  if (ctx.direction === 'bullish' && ctx.atr < 0.60) {
+    return `bullish low atr ${ctx.atr.toFixed(2)} < 0.60`;
+  }
   return true;
 }
 

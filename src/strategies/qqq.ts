@@ -100,9 +100,19 @@ function qqqDetectMode(
   return defaultStrategy.detectMode(tfIndicators, direction, currentPrice);
 }
 
-// Bare baseline — no filters yet. Filters will be added incrementally from
-// 15-mo QQQ F-cluster mining. Order will match backtest-configs/qqq.ts.
-function qqqShouldAllowEntry(_ctx: EntryContext): true | string {
+// Filters added incrementally from 15-mo QQQ F-cluster mining.
+// Order matches backtest-configs/qqq.ts (single source of truth).
+function qqqShouldAllowEntry(ctx: EntryContext): true | string {
+  // v1: bullish low-atr (any mode).
+  // Bare-baseline mining (n=579 bullish, exp -0.385): bullish at atr < 0.6 is
+  // structurally bad. Discrim Δexp +0.252, blocks 135 entries (2A/9B/17C/18D/
+  // 89F = 66% F). Same low-atr family as SPY v1 (atr<0.6) and IWM v4 (atr<0.4)
+  // — Nasdaq-100 basket low-vol regime is the "drift sideways" pattern that
+  // chops up bullish entries.
+  if (ctx.direction === 'bullish' && ctx.atr < 0.60) {
+    return `bullish low atr ${ctx.atr.toFixed(2)} < 0.60`;
+  }
+
   return true;
 }
 
