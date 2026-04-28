@@ -20,6 +20,11 @@ function spyShouldAllowEntry(ctx: EntryContext): true | string {
       && ctx.confidence >= 0.70 && ctx.confidence < 0.90) {
     return `bearish-trend mid-conf ${(ctx.confidence * 100).toFixed(0)}% anti-predictive`;
   }
+  // v8: bearish-trend high-conf [0.90, 1.0) — see strategies/spy.ts.
+  if (ctx.direction === 'bearish' && ctx.signalMode === 'trend'
+      && ctx.confidence >= 0.90) {
+    return `bearish-trend high-conf ${(ctx.confidence * 100).toFixed(0)}% anti-predictive`;
+  }
   // v3: bullish-trend low-atr extension to 0.80 — see strategies/spy.ts.
   if (ctx.direction === 'bullish' && ctx.signalMode === 'trend' && ctx.atr < 0.80) {
     return `bullish-trend low atr ${ctx.atr.toFixed(2)} < 0.80`;

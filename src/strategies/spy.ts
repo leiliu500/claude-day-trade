@@ -143,6 +143,18 @@ function spyShouldAllowEntry(ctx: EntryContext): true | string {
     return `bearish-trend mid-conf ${(ctx.confidence * 100).toFixed(0)}% anti-predictive`;
   }
 
+  // v8: bearish-trend high-conf [0.90, 1.0) extension of v2's anti-predictive band.
+  // v0 mining showed conf 0.90-0.95 was a positive island (n=19 exp +0.158) but
+  // small-N. v7 cache (with v2b applied) shows the band has flipped:
+  //   conf 0.90-0.95: n=46 exp -0.326 dir 57%  — slice composition shifted
+  //   conf 0.95-1.00: n=25 exp -0.840 dir 44%  — anti-predictive
+  // Combined [0.90, 1.0): 71 entries exp -0.51. Bear-trend confidence is now
+  // monotonically anti-predictive ABOVE 0.65-0.70 (the only positive band).
+  if (ctx.direction === 'bearish' && ctx.signalMode === 'trend'
+      && ctx.confidence >= 0.90) {
+    return `bearish-trend high-conf ${(ctx.confidence * 100).toFixed(0)}% anti-predictive`;
+  }
+
   // v4: bearish-breakout low-atr — symmetric mirror of v1 for bearish.
   // v3 residual: bearish breakout × atr buckets uniformly catastrophic at low atr:
   //   atr 0.0-0.4: n=25 exp -1.160 dir 28%  (2A/3B/2C/0D/18F)
