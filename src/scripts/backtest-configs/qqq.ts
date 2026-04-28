@@ -44,6 +44,10 @@ function qqqShouldAllowEntry(ctx: EntryContext): true | string {
   if (ctx.direction === 'bearish' && ctx.atr < 0.50) {
     return `bearish low atr ${ctx.atr.toFixed(2)} < 0.50`;
   }
+  // v8: bearish top-extreme ppa block — see strategies/qqq.ts.
+  if (ctx.direction === 'bearish' && ctx.breakdown.pricePositionAdjustment <= -0.0763) {
+    return `bearish top-extreme ppa ${ctx.breakdown.pricePositionAdjustment.toFixed(3)} <= -0.076`;
+  }
   return true;
 }
 

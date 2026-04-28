@@ -208,6 +208,19 @@ function qqqShouldAllowEntry(ctx: EntryContext): true | string {
     return `bearish low atr ${ctx.atr.toFixed(2)} < 0.50`;
   }
 
+  // v8: bearish high-rp top-extreme block (pricePositionAdjustment <= -0.0763).
+  // pricePositionAdjustment is the analysis-agent penalty for trading against
+  // range position — large negative ≈ bearish signal but price near top of
+  // HTF swing range (counter-trend top-extreme setup). Mining 15-mo QQQ:
+  //   bearish ppa <= -0.0763: n=31 (5A/2B/0C/0D/24F = 77% F-rate)
+  //   F-catch 11%, AB-loss 2% (only 7 AB out of 217 across the bearish pool).
+  //   Raw exp lift +0.062, cascade-adjusted +0.028.
+  // Same field family as SPY's first breakdown-miner merge (bearish ppa <= -0.028,
+  // +0.056). QQQ distribution is tighter so threshold is more extreme.
+  if (ctx.direction === 'bearish' && ctx.breakdown.pricePositionAdjustment <= -0.0763) {
+    return `bearish top-extreme ppa ${ctx.breakdown.pricePositionAdjustment.toFixed(3)} <= -0.076`;
+  }
+
   return true;
 }
 
