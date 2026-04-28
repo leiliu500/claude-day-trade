@@ -38,6 +38,10 @@ function spyShouldAllowEntry(ctx: EntryContext): true | string {
       && ctx.minutesSinceOpen >= 105 && ctx.minutesSinceOpen < 150) {
     return `bullish-trend lunch ${ctx.minutesSinceOpen}m (11:15-12:30 ET)`;
   }
+  // v7: bullish-breakout low-atr <0.80 — see strategies/spy.ts.
+  if (ctx.direction === 'bullish' && ctx.signalMode === 'breakout' && ctx.atr < 0.80) {
+    return `bullish-breakout low atr ${ctx.atr.toFixed(2)} < 0.80`;
+  }
   return true;
 }
 

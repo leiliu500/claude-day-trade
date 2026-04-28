@@ -173,6 +173,17 @@ function spyShouldAllowEntry(ctx: EntryContext): true | string {
     return `bearish-trend mid-atr ${ctx.atr.toFixed(2)} in [0.40, 0.60)`;
   }
 
+  // v7: bullish-breakout low-atr extension <0.60 → <0.80.
+  // Symmetric to v3 (which set bull-trend atr threshold to 0.80). v6 residual:
+  //   bull-breakout × atr 0.6-0.8: n=54 exp -0.519 (5A/10B/10C/10D/19F)
+  //   bull-breakout × atr 0.8-1.0: n=32 exp -0.313 (mid bad, kept for v8 probe)
+  //   bull-breakout × atr 1.0+:    healthy (+0.22 to +1.0)
+  // Both bull modes now share atr < 0.80 floor. SPY-wide pattern: bullish at
+  // low-mid atr is anti-predictive (different from bear-trend U-shape).
+  if (ctx.direction === 'bullish' && ctx.signalMode === 'breakout' && ctx.atr < 0.80) {
+    return `bullish-breakout low atr ${ctx.atr.toFixed(2)} < 0.80`;
+  }
+
   // v6: bullish-trend lunch dead-zone (105-150m = 11:15 ET-12:30 ET).
   // v5 residual direction×mode×time probe revealed asymmetric lunch pattern:
   //   bull-trend mins [105,150):    n=42 exp -0.714 dir 50%  (5A/4B/10C/2D/21F)
