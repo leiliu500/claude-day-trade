@@ -45,18 +45,42 @@ function diaShouldAllowEntry(ctx: EntryContext): true | string {
       && ctx.rangeExhaustion >= 7.0 && ctx.choppiness >= 2.0) {
     return `bullish trend exhausted+choppy rExh=${ctx.rangeExhaustion.toFixed(1)} chop=${ctx.choppiness.toFixed(2)}`;
   }
+  if (ctx.direction === 'bearish' && ctx.signalMode !== 'breakout'
+      && ctx.strengthScore >= 40 && ctx.strengthScore < 80 && ctx.atr < 0.55) {
+    return `bearish trend mid-strength+lowAtr s=${ctx.strengthScore} atr=${ctx.atr.toFixed(2)}`;
+  }
   return true;
 }
 
-function diaAdjustConfidence(cb: ConfidenceBreakdown, _ctx: EntryContext): ConfidenceBreakdown {
-  if (cb.trendPhaseBonus <= 0 && cb.moveExhaustionPenalty !== 0) {
-    const bd = { ...cb };
+function diaAdjustConfidence(cb: ConfidenceBreakdown, ctx: EntryContext): ConfidenceBreakdown {
+  let bd = cb;
+  if (bd.trendPhaseBonus <= 0 && bd.moveExhaustionPenalty !== 0) {
+    bd = { ...bd };
     bd.total -= bd.moveExhaustionPenalty;
     bd.moveExhaustionPenalty = 0;
     bd.total = Math.max(0, Math.min(1, bd.total));
-    return bd;
   }
-  return cb;
+  if (ctx.signalMode !== 'breakout'
+      && bd.trendPhaseBonus <= 0
+      && bd.recentPriceActionBonus >= 0.06) {
+    bd = bd === cb ? { ...bd } : bd;
+    const penalty = 0.06;
+    bd.recentPriceActionBonus -= Math.min(bd.recentPriceActionBonus, penalty);
+    bd.total -= penalty;
+    bd.total = Math.max(0, Math.min(1, bd.total));
+  }
+  if (ctx.signalMode !== 'breakout'
+      && ctx.alignment === 'all_aligned'
+      && bd.trendPhaseBonus > 0
+      && bd.adxBonus >= 0.05
+      && bd.moveExhaustionPenalty <= -0.10) {
+    bd = bd === cb ? { ...bd } : bd;
+    const exhRelief = -bd.moveExhaustionPenalty * 0.5;
+    bd.moveExhaustionPenalty *= 0.5;
+    bd.total += exhRelief;
+    bd.total = Math.max(0, Math.min(1, bd.total));
+  }
+  return bd;
 }
 
 export const DIA_CONFIG: Partial<TickerBacktestConfig> = {

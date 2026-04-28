@@ -213,6 +213,18 @@ function diaShouldAllowEntry(ctx: EntryContext): true | string {
     return `bullish trend exhausted+choppy rExh=${ctx.rangeExhaustion.toFixed(1)} chop=${ctx.choppiness.toFixed(2)}`;
   }
 
+  // Bearish trend mid-strength + low-atr — v11 mining: bearish strength 40-80
+  // shows asymmetric weakness vs bullish in same range (-0.291 vs +0.082). The
+  // sub-cluster `bearish trend & strength 40-80 & atr<0.55` is n=115 exp -0.504
+  // (16A/22B/17C/8D/52F). Per-month variance is meaningful (+0.875 to -1.714
+  // across months) — bearish "moderate trend" on Dow components fails when
+  // volatility is below median. Captures the 2025-12/2026-01/2026-04 worst-month
+  // cluster while preserving high-atr bearish-trend signals.
+  if (ctx.direction === 'bearish' && ctx.signalMode !== 'breakout'
+      && ctx.strengthScore >= 40 && ctx.strengthScore < 80 && ctx.atr < 0.55) {
+    return `bearish trend mid-strength+lowAtr s=${ctx.strengthScore} atr=${ctx.atr.toFixed(2)}`;
+  }
+
   return true;
 }
 
@@ -227,15 +239,53 @@ function diaShouldAllowEntry(ctx: EntryContext): true | string {
 // +0.0116 is well above the +0.007 minimum-viable threshold per memory.
 // Zeroing redistributes confidence from F-bias to AB-bias by removing a
 // penalty that hits AB harder.
-function diaAdjustConfidence(breakdown: ConfidenceBreakdown, _ctx: EntryContext): ConfidenceBreakdown {
-  if (breakdown.trendPhaseBonus <= 0 && breakdown.moveExhaustionPenalty !== 0) {
-    const bd = { ...breakdown };
+function diaAdjustConfidence(breakdown: ConfidenceBreakdown, ctx: EntryContext): ConfidenceBreakdown {
+  let bd = breakdown;
+
+  // Adjustment 1: regime-gated zeroing of perverse-signed moveExhaustionPenalty
+  // when trendPhaseBonus<=0 (Δmean F-AB = +0.0116, perverse — AB gets more
+  // penalty than F).
+  if (bd.trendPhaseBonus <= 0 && bd.moveExhaustionPenalty !== 0) {
+    bd = { ...bd };
     bd.total -= bd.moveExhaustionPenalty;
     bd.moveExhaustionPenalty = 0;
     bd.total = Math.max(0, Math.min(1, bd.total));
-    return bd;
   }
-  return breakdown;
+
+  // Adjustment 2: reversal-trap penalty (-0.06) when tpb<=0 + rPA>=0.06.
+  // SPY-style. v10 mining: 75 entries fire (17A/13B/6C/7D/32F exp -0.320).
+  // Direction split shows bearish subset n=39 exp -0.538 vs bullish n=36 exp
+  // -0.083 — both below baseline so penalty applies to both directions.
+  // Penalty pushes 10 currently-in-band entries (conf 0.65-0.71) below gate;
+  // those 10 are exp -0.700 (clear F-bias).
+  if (ctx.signalMode !== 'breakout'
+      && bd.trendPhaseBonus <= 0
+      && bd.recentPriceActionBonus >= 0.06) {
+    bd = bd === breakdown ? { ...bd } : bd;
+    const penalty = 0.06;
+    bd.recentPriceActionBonus -= Math.min(bd.recentPriceActionBonus, penalty);
+    bd.total -= penalty;
+    bd.total = Math.max(0, Math.min(1, bd.total));
+  }
+
+  // Adjustment 3: trend-continuation relief — halve mex penalty for
+  // already-strong setups (alignment=all_aligned + tpb>0 + adxBonus>=0.05 +
+  // mex<=-0.10). v10 mining: 27 entries fire (14A/5B/3C/0D/5F exp +0.852)
+  // already-confirmed; relief mechanism raises conf for sub-gate entries with
+  // same profile, recovering positive-EV signals currently penalized too hard.
+  if (ctx.signalMode !== 'breakout'
+      && ctx.alignment === 'all_aligned'
+      && bd.trendPhaseBonus > 0
+      && bd.adxBonus >= 0.05
+      && bd.moveExhaustionPenalty <= -0.10) {
+    bd = bd === breakdown ? { ...bd } : bd;
+    const exhRelief = -bd.moveExhaustionPenalty * 0.5;
+    bd.moveExhaustionPenalty *= 0.5;
+    bd.total += exhRelief;
+    bd.total = Math.max(0, Math.min(1, bd.total));
+  }
+
+  return bd;
 }
 
 // ── Export ───────────────────────────────────────────────────────────────────
