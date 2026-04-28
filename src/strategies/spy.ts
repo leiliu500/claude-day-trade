@@ -169,6 +169,22 @@ function spyShouldAllowEntry(ctx: EntryContext): true | string {
     return `bearish-breakout low atr ${ctx.atr.toFixed(2)} < 0.60`;
   }
 
+  // v10: bearish-breakout mid-atr [0.70, 1.00) — second bad pocket above v4.
+  // v9 residual showed bear-breakout atr is non-monotonic:
+  //   atr <0.60:    blocked by v4
+  //   atr 0.60-0.70: n=25 exp -0.08  — mild bad (borderline, not filtered)
+  //   atr 0.70-0.80: n=15 exp -1.40 dir 33% — narrow anti-predictive pocket
+  //   atr 0.80-1.00: n=29 exp -0.31  — mid bad
+  //   atr 1.00-1.50: n=30 exp -0.13  — mild bad (preserved)
+  //   atr 1.50+:    n=12 exp +1.00   — KEEP (positive)
+  // Combined [0.70, 1.00): 44 entries exp -0.68, 8A+5B vs 23F.
+  // Skip [0.60, 0.70) to preserve some AB; skip [1.00, 1.50) (mild) and [1.50+]
+  // (positive). Targets only the worst non-contiguous bands.
+  if (ctx.direction === 'bearish' && ctx.signalMode === 'breakout'
+      && ctx.atr >= 0.70 && ctx.atr < 1.00) {
+    return `bearish-breakout mid-atr ${ctx.atr.toFixed(2)} in [0.70, 1.00)`;
+  }
+
   // v5: bearish-trend mid-atr U-shape — block 0.4-0.6 trough, KEEP both tails.
   // v4 residual reveals U-shape in bear-trend × atr (NOT a low-atr pattern):
   //   atr 0.0-0.4: n=43 exp +0.279 dir 65% — POSITIVE (low-atr is good for bear-trend!)
