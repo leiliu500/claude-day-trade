@@ -174,6 +174,20 @@ function iwmShouldAllowEntry(ctx: EntryContext): true | string {
     return `bullish-breakout low atr ${ctx.atr.toFixed(2)} < 0.45`;
   }
 
+  // v9: bullish-trend in first 30-45m bucket — direction-asymmetric open window.
+  // Compound probe (v7 cache, confirmed on v8): bullish 30-45m n=49 exp -0.408 vs
+  // bearish 30-45m strongly positive — direction-asymmetric. Within bullish, the
+  // trend-mode slice is the killer: n=41 exp -0.488 dir 56% (12A/1B/5C/1D/22F).
+  // atr-bucket carve-out: 0.60-0.80 is the only AB-positive sub-band (n=7 exp
+  // +0.143, 3A/1B/0C/0D/3F) — keep it.
+  // Filter blocks ~34 entries (~9A/0B/5C/1D/19F) → projected Δexp ~+0.025.
+  if (ctx.direction === 'bullish' && ctx.signalMode === 'trend'
+      && ctx.minutesSinceOpen !== undefined
+      && ctx.minutesSinceOpen >= 30 && ctx.minutesSinceOpen < 45
+      && !(ctx.atr >= 0.60 && ctx.atr < 0.80)) {
+    return `bullish-trend open-30m atr ${ctx.atr.toFixed(2)}`;
+  }
+
   // v7: bearish-breakout low-atr — symmetric mirror of v6.
   // Probe of bearish-breakout slice (n=136 exp -0.103 in v6-residual): worst
   // remaining slice. atr buckets:
