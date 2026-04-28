@@ -1,118 +1,41 @@
 /**
- * SPY backtest configuration.
+ * SPY backtest configuration — built from scratch via SPY-specific F-mining.
  *
- * Tuned from Q4 2025 + Q1 2026 backtest (Oct 2025 – Mar 2026):
- *   Q4 2025 + Q1 2026 signal quality: 4A/2B/2C/1D/6F → tuned to 4A/2B/2C/1D/0F (100% F removal)
- *
- * SPY-specific filters:
- *   - shouldAllowEntry: blocks stale-ATR breakouts, negative-displacement
- *     breakouts, bullish trend entries at very high regime (>= 80),
- *     bullish entries with high exhaustion (>= 6.0), and bullish entries
- *     with low displacement velocity (< 0.08).
- *   - adjustConfidence: suppresses PA bonus for bullish trend at regime >= 75.
- *
- * Regime scoring:
- *   Production (strategies/spy.ts): hybrid candle-based (real-time choppiness,
- *   displacement velocity, trend strength) + ADX anchor, computed from LTF bars.
- *   Backtest: ctx.regimeScore — tick-by-tick DMI-based composite (choppiness,
- *   displacement, VWAP consistency, trend strength).
- *   Both are DMI/price-derived and produce comparable 50-100 ranges.
- *   Same thresholds (75, 80) apply to both.
+ * Built from scratch 2026-04-28. All filters derived from 15-mo SPY F-cluster
+ * mining. See strategies/spy.ts for the full filter chain (single source of
+ * truth — backtest delegates to LIVE_TICKER_CFG).
  */
 
 import type { TickerBacktestConfig, EntryContext } from './types.js';
 import type { ConfidenceBreakdown } from '../../types/analysis.js';
 import { simulateOrderAgentSpy } from '../../lib/order-agent-sim-spy.js';
 
-/**
- * SPY entry filter — mirrors strategies/spy.ts spyShouldAllowEntry.
- */
 function spyShouldAllowEntry(ctx: EntryContext): true | string {
-  const { signalMode, direction, atr, currentPrice, displacementVelocity } = ctx;
-  const regime = ctx.regimeScore;
-
-  const atrPct = currentPrice > 0 ? (atr / currentPrice) * 100 : 0;
-  if (signalMode === 'breakout' && atrPct < 0.08) return `breakout atrPct ${atrPct.toFixed(3)}% < 0.08%`;
-  if (signalMode === 'breakout' && displacementVelocity < -0.05) return `breakout dvel ${displacementVelocity.toFixed(4)} < -0.05`;
-  if (signalMode === 'trend' && atr < 0.45) return `trend atr ${atr.toFixed(3)} < 0.45`;
-  // trend_regime >= 80 removed: Q4+Q1 counterfactual net +12 costly
-  if (signalMode === 'trend'
-      && ctx.rangeExhaustion > 6.0
-      && ctx.choppiness >= 2.0) return `trend exhausted+choppy rExh=${ctx.rangeExhaustion.toFixed(1)} chop=${ctx.choppiness.toFixed(2)}`;
-  // Exhausted + fading velocity: rExh >= 8.0 + dvel < 0.05 = move spent and stalled.
-  // All-aligned bypass: all TFs confirming = genuine continuation, not stall.
-  // Apr 15: blocked 2 B-grade entries (all_aligned) without this bypass.
-  if (signalMode === 'trend'
-      && ctx.rangeExhaustion >= 8.0
-      && displacementVelocity < 0.04
-      && ctx.alignment !== 'all_aligned') return `trend exhausted+fading rExh=${ctx.rangeExhaustion.toFixed(1)} dvel=${displacementVelocity.toFixed(4)} (stalled)`;
-  // bullish rangeExhaustion >= 6.0 removed for trends: Q1 counterfactual net costly
-  if (direction === 'bullish' && displacementVelocity < -0.04) return `bullish dvel ${displacementVelocity.toFixed(4)} < -0.04`;
-  if (signalMode === 'breakout' && ctx.rangeExhaustion < 1.0) return `breakout rangeExhaustion ${ctx.rangeExhaustion.toFixed(1)} < 1.0 (early morning)`;
-  if (signalMode === 'breakout'
-      && ctx.choppiness >= 0.90 && ctx.displacementVelocity < 0.10) return `breakout chop+lowDvel chop=${ctx.choppiness.toFixed(2)} dvel=${ctx.displacementVelocity.toFixed(4)}`;
-  if (signalMode === 'breakout' && ctx.confidence < 0.74) return `breakout confidence ${(ctx.confidence * 100).toFixed(0)}% < 74%`;
-  if (signalMode === 'breakout'
-      && ctx.rangeExhaustion >= 9.0 && ctx.choppiness >= 1.0) return `breakout highExh+highChop rExh=${ctx.rangeExhaustion.toFixed(1)} chop=${ctx.choppiness.toFixed(2)}`;
-  if (signalMode === 'breakout' && ctx.choppiness >= 2.0) return `breakout extremeChop ${ctx.choppiness.toFixed(2)} >= 2.0`;
-  if (signalMode === 'breakout' && ctx.rangeExhaustion >= 9.0) return `breakout extremeExhaustion ${ctx.rangeExhaustion.toFixed(1)} >= 9.0`;
-  if (signalMode === 'breakout' && regime >= 80) return `breakout regime ${regime} >= 80`;
-  // breakout_atr < 0.80 removed: Q4+Q1 counterfactual net +9 costly
-  if (signalMode === 'breakout' && direction === 'bullish'
-      && ctx.rangeExhaustion >= 4.5 && regime >= 65) return `bullish breakout highExh+regime rExh=${ctx.rangeExhaustion.toFixed(1)} regime=${regime}`;
-
+  // v1: bullish low-atr (any mode) — see strategies/spy.ts.
+  if (ctx.direction === 'bullish' && ctx.atr < 0.60) {
+    return `bullish low atr ${ctx.atr.toFixed(2)} < 0.60`;
+  }
+  // v2: bearish-trend mid-conf [0.70, 0.90) — see strategies/spy.ts.
+  if (ctx.direction === 'bearish' && ctx.signalMode === 'trend'
+      && ctx.confidence >= 0.70 && ctx.confidence < 0.90) {
+    return `bearish-trend mid-conf ${(ctx.confidence * 100).toFixed(0)}% anti-predictive`;
+  }
   return true;
 }
 
-/**
- * SPY confidence adjustment — mirrors strategies/spy.ts spyAdjustConfidence.
- * Suppress PA bonus for bullish trend entries at high regime (>= 75).
- */
-function spyAdjustConfidence(breakdown: ConfidenceBreakdown, ctx: EntryContext): ConfidenceBreakdown {
-  let bd = breakdown;
-  const regime = ctx.regimeScore;
-
-  // Reversal trap penalty: trendPhase flat/declining + strong PA = stale signal.
-  if (ctx.signalMode === 'trend'
-      && bd.trendPhaseBonus <= 0
-      && bd.recentPriceActionBonus >= 0.06) {
-    bd = { ...bd };
-    const penalty = 0.06;
-    bd.recentPriceActionBonus -= Math.min(bd.recentPriceActionBonus, penalty);
-    bd.total -= penalty;
-    bd.total = Math.max(0, Math.min(1, bd.total));
-  }
-
-  if (ctx.signalMode === 'trend' && ctx.direction === 'bullish'
-      && regime >= 75 && bd.recentPriceActionBonus > 0) {
-    bd = bd === breakdown ? { ...bd } : bd;
-    bd.total -= bd.recentPriceActionBonus;
-    bd.recentPriceActionBonus = 0;
-    bd.total = Math.max(0, Math.min(1, bd.total));
-  }
-  return bd;
+function spyAdjustConfidence(cb: ConfidenceBreakdown, _ctx: EntryContext): ConfidenceBreakdown {
+  return cb;
 }
 
 export const SPY_CONFIG: Partial<TickerBacktestConfig> = {
-  // trendMaxExhaustion effectively disabled: Q4+Q1 counterfactual net +9 costly (14 good vs 5 bad).
-  // Entries at rExh 20-30 were 10 good, 0 bad. trend_exhausted_reverting (dvel<0) catches actual reversals.
-  trendMaxExhaustion: 999,
-
+  minConfidence: 0.65,
   dailyRiskBudgetPct: 0.05,
 
-  // Strict trend phase for breakouts: require trendPhase >= 0, NO high-conf bypass.
-  breakoutStrictTrendPhase: true,
-
-  // Entry window: block first 30 min after open + last 30 min before close
+  // Entry window: block first 30 min after open + last 30 min before close.
   entryWindowStartMin: 30,
   entryWindowEndMin: 360,
 
-  // SPY-specific confidence adjustment (suppress PA at high bullish regime)
-  adjustConfidence: spyAdjustConfidence,
-
-  // SPY entry filter (stale ATR + neg displacement + bullish trend regime)
   shouldAllowEntry: spyShouldAllowEntry,
-
-  // SPY-specific order simulation (higher premium floor, trailing stop floor)
+  adjustConfidence: spyAdjustConfidence,
   simulate: simulateOrderAgentSpy,
 };
