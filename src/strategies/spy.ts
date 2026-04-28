@@ -225,6 +225,21 @@ function spyShouldAllowEntry(ctx: EntryContext): true | string {
     return `bullish-trend post-lunch ${ctx.minutesSinceOpen}m (12:00-13:30 ET)`;
   }
 
+  // v11: bearish-trend pre-lunch dead-zone (105-135m = 11:15-11:45 ET).
+  // v10 residual: bear-trend × time pockets surfaced largest single bad slice:
+  //   mins [105,135): n=40 exp -0.525 dir 48%  (10A/4B/2C/3D/21F)
+  //   mins [120,150): n=35 exp -0.400          (overlaps, similar pattern)
+  //   mins [180,210): n=16 exp -0.500          (smaller, separate pocket)
+  //   mins [270,300): n=14 exp -1.071 dir 36%  (small N, very anti-predictive)
+  // The 105-135m window targets the cleanest bear-trend bad block. Symmetric
+  // to v6 (bull-trend at same window) but slightly earlier (105-135 vs 105-150).
+  // Bear-trend at 12:00-13:30 ET is actually positive — different pattern from bull.
+  if (ctx.direction === 'bearish' && ctx.signalMode === 'trend'
+      && ctx.minutesSinceOpen !== undefined
+      && ctx.minutesSinceOpen >= 105 && ctx.minutesSinceOpen < 135) {
+    return `bearish-trend pre-lunch ${ctx.minutesSinceOpen}m (11:15-11:45 ET)`;
+  }
+
   // v6: bullish-trend lunch dead-zone (105-150m = 11:15 ET-12:30 ET).
   // v5 residual direction×mode×time probe revealed asymmetric lunch pattern:
   //   bull-trend mins [105,150):    n=42 exp -0.714 dir 50%  (5A/4B/10C/2D/21F)
