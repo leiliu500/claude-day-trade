@@ -143,6 +143,20 @@ function spyShouldAllowEntry(ctx: EntryContext): true | string {
     return `bearish-trend mid-conf ${(ctx.confidence * 100).toFixed(0)}% anti-predictive`;
   }
 
+  // v4: bearish-breakout low-atr — symmetric mirror of v1 for bearish.
+  // v3 residual: bearish breakout × atr buckets uniformly catastrophic at low atr:
+  //   atr 0.0-0.4: n=25 exp -1.160 dir 28%  (2A/3B/2C/0D/18F)
+  //   atr 0.4-0.5: n=19 exp -1.684 dir 16%  (0A/1B/1C/1D/16F) — dir 16%, 84% F
+  //   atr 0.5-0.6: n=17 exp -0.882 dir 41%
+  //   atr 0.6-0.8: -0.64 (recovery)
+  //   atr 0.8+:    -0.19 to +0.91
+  // Combined atr<0.60 in bearish-breakout: 61 entries exp ~-1.27, dir 28-41%.
+  // The atr 0.4-0.5 dir 16% means system is wrong 84% of the time at these
+  // confidence levels — clear anti-predictive zone.
+  if (ctx.direction === 'bearish' && ctx.signalMode === 'breakout' && ctx.atr < 0.60) {
+    return `bearish-breakout low atr ${ctx.atr.toFixed(2)} < 0.60`;
+  }
+
   // v3: bullish-trend low-atr extension (mode-specific tightening of v1).
   // v2b residual: bullish trend at atr 0.6-0.8 still uniformly catastrophic:
   //   atr 0.60-0.70: n=42 exp -0.952 dir 48%  (1A/7B/7C/5D/22F)
