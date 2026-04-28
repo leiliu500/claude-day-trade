@@ -178,6 +178,22 @@ function qqqShouldAllowEntry(ctx: EntryContext): true | string {
     return `bearish-trend afternoon ${ctx.minutesSinceOpen}m (14:00-15:30 ET)`;
   }
 
+  // v6: bullish-trend pre-lunch dead-zone (120-150m = 11:30-12:00 ET).
+  // Adjacent-and-extending v3 (bullish 12:00-13:30 ET any mode), but in
+  // bullish-trend mode only. Post-v5 mining (n=954 exp -0.002) revealed
+  // the 11:30-12:00 ET bin is mode-asymmetric:
+  //   bullish-trend m[120,150):    n=46 (4A/7B/14C/6D/15F = 33% F) exp -0.457
+  //   bullish-breakout m[120,150): n=8  (2A/4B/1C/1D/0F = 0% F)    exp +1.0
+  // Bullish breakout in same window is actually POSITIVE, so any-mode
+  // block would over-fire and hurt; restricting to trend mode catches the
+  // sharp F cluster cleanly. Together with v3 (any-mode 12:00-13:30 ET),
+  // bullish-trend now blocked through entire 11:30-13:30 ET stretch.
+  if (ctx.direction === 'bullish' && ctx.signalMode === 'trend'
+      && ctx.minutesSinceOpen !== undefined
+      && ctx.minutesSinceOpen >= 120 && ctx.minutesSinceOpen < 150) {
+    return `bullish-trend pre-lunch ${ctx.minutesSinceOpen}m (11:30-12:00 ET)`;
+  }
+
   return true;
 }
 

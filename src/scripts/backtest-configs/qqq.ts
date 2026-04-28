@@ -35,6 +35,11 @@ function qqqShouldAllowEntry(ctx: EntryContext): true | string {
       && ctx.minutesSinceOpen >= 270 && ctx.minutesSinceOpen < 360) {
     return `bearish-trend afternoon ${ctx.minutesSinceOpen}m (14:00-15:30 ET)`;
   }
+  // v6: bullish-trend pre-lunch dead-zone — see strategies/qqq.ts.
+  if (ctx.direction === 'bullish' && ctx.signalMode === 'trend'
+      && ctx.minutesSinceOpen >= 120 && ctx.minutesSinceOpen < 150) {
+    return `bullish-trend pre-lunch ${ctx.minutesSinceOpen}m (11:30-12:00 ET)`;
+  }
   return true;
 }
 
