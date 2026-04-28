@@ -43,6 +43,12 @@ function spyShouldAllowEntry(ctx: EntryContext): true | string {
       && ctx.atr >= 0.40 && ctx.atr < 0.60) {
     return `bearish-trend mid-atr ${ctx.atr.toFixed(2)} in [0.40, 0.60)`;
   }
+  // v12: bearish-trend lunch-flank × mid-atr — see strategies/spy.ts.
+  if (ctx.direction === 'bearish' && ctx.signalMode === 'trend'
+      && ctx.minutesSinceOpen >= 90 && ctx.minutesSinceOpen < 150
+      && ctx.atr >= 0.60 && ctx.atr < 0.80) {
+    return `bearish-trend lunch-flank × mid-atr ${ctx.atr.toFixed(2)} ${ctx.minutesSinceOpen}m`;
+  }
   // v11: bearish-trend pre-lunch (105-135m) — see strategies/spy.ts.
   if (ctx.direction === 'bearish' && ctx.signalMode === 'trend'
       && ctx.minutesSinceOpen >= 105 && ctx.minutesSinceOpen < 135) {

@@ -225,6 +225,19 @@ function spyShouldAllowEntry(ctx: EntryContext): true | string {
     return `bullish-trend post-lunch ${ctx.minutesSinceOpen}m (12:00-13:30 ET)`;
   }
 
+  // v12: bearish-trend lunch-flank × mid-atr compound (90-150m, atr 0.6-0.8).
+  // v11 residual surfaced this as the worst-remaining 2-axis cell:
+  //   bear-trend [90,150) atr [0.6,0.8): n=22 exp -0.773 dir 46% (3A/4B/0C/3D/12F)
+  // Time range complements v11 ([105, 135) blocked) — captures lunch-flanks
+  // (90-105m AND 135-150m) intersected with the specific atr 0.6-0.8 band.
+  // Other atr bands in same time window are positive — surgical compound rule.
+  if (ctx.direction === 'bearish' && ctx.signalMode === 'trend'
+      && ctx.minutesSinceOpen !== undefined
+      && ctx.minutesSinceOpen >= 90 && ctx.minutesSinceOpen < 150
+      && ctx.atr >= 0.60 && ctx.atr < 0.80) {
+    return `bearish-trend lunch-flank × mid-atr ${ctx.atr.toFixed(2)} ${ctx.minutesSinceOpen}m`;
+  }
+
   // v11: bearish-trend pre-lunch dead-zone (105-135m = 11:15-11:45 ET).
   // v10 residual: bear-trend × time pockets surfaced largest single bad slice:
   //   mins [105,135): n=40 exp -0.525 dir 48%  (10A/4B/2C/3D/21F)
