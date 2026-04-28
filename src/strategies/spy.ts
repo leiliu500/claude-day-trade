@@ -253,6 +253,17 @@ function spyShouldAllowEntry(ctx: EntryContext): true | string {
     return `bearish-trend lunch-flank × mid-atr ${ctx.atr.toFixed(2)} ${ctx.minutesSinceOpen}m`;
   }
 
+  // v14: bearish-trend mid-afternoon dead-zone (270-300m = 14:00-14:30 ET).
+  // v13 residual: bear-trend has another isolated bad afternoon pocket:
+  //   mins [270,300): n=15 exp -0.800 dir 40% (2A/2B/2C/0D/9F) — 60% F
+  // Anti-predictive afternoon hour for bear-trend specifically — surrounded
+  // by positive zones at 240-270m and 300-330m. Narrow surgical filter.
+  if (ctx.direction === 'bearish' && ctx.signalMode === 'trend'
+      && ctx.minutesSinceOpen !== undefined
+      && ctx.minutesSinceOpen >= 270 && ctx.minutesSinceOpen < 300) {
+    return `bearish-trend mid-afternoon ${ctx.minutesSinceOpen}m (14:00-14:30 ET)`;
+  }
+
   // v11: bearish-trend pre-lunch dead-zone (105-135m = 11:15-11:45 ET).
   // v10 residual: bear-trend × time pockets surfaced largest single bad slice:
   //   mins [105,135): n=40 exp -0.525 dir 48%  (10A/4B/2C/3D/21F)
