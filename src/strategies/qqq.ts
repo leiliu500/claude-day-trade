@@ -143,6 +143,24 @@ function qqqShouldAllowEntry(ctx: EntryContext): true | string {
     return `bullish post-lunch ${ctx.minutesSinceOpen}m (12:00-13:30 ET)`;
   }
 
+  // v4: bullish-breakout U-shape carve-out — block both atr extremes.
+  // Post-v3 mining (n=1007 exp -0.053) on bullish-breakout × atr revealed
+  // a clean U-shape: middle 0.7-1.0 is positive, tails [0.6,0.7) and
+  // [1.0,1.2) are bad (atr[1.2,1.3) is positive again so excluded):
+  //   bullish-breakout atr[0.6,0.7): n=19 exp -0.474 (8F = 42% F)
+  //   bullish-breakout atr[0.7,1.0): n=31 exp +0.484 (4F = 13% F)  — KEEP
+  //   bullish-breakout atr[1.0,1.2): n=13 exp -1.231 (10F = 77% F)
+  //   bullish-breakout atr[1.2,1.3): n=7 exp +0.143 (3A/2F)         — KEEP
+  // Combined block atr[0.6,0.7) ∪ atr[1.0,1.2) targets the two bad pockets
+  // surrounding the positive 0.7-1.0 sweet spot — bullish breakouts only
+  // work in QQQ when atr is in the 0.7-1.0 expansion range. Below 0.7
+  // breakout lacks momentum; in [1.0,1.2) it's exhaustion of an already-
+  // extended move (atr>=1.2 recovers, suggesting the regime shifts).
+  if (ctx.direction === 'bullish' && ctx.signalMode === 'breakout'
+      && ((ctx.atr >= 0.60 && ctx.atr < 0.70) || (ctx.atr >= 1.0 && ctx.atr < 1.2))) {
+    return `bullish-breakout U-shape atr ${ctx.atr.toFixed(2)} (bad tail)`;
+  }
+
   return true;
 }
 

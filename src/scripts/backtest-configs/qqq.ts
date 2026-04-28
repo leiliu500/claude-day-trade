@@ -25,6 +25,11 @@ function qqqShouldAllowEntry(ctx: EntryContext): true | string {
       && ctx.minutesSinceOpen >= 150 && ctx.minutesSinceOpen < 210) {
     return `bullish post-lunch ${ctx.minutesSinceOpen}m (12:00-13:30 ET)`;
   }
+  // v4: bullish-breakout U-shape atr — see strategies/qqq.ts.
+  if (ctx.direction === 'bullish' && ctx.signalMode === 'breakout'
+      && ((ctx.atr >= 0.60 && ctx.atr < 0.70) || (ctx.atr >= 1.0 && ctx.atr < 1.2))) {
+    return `bullish-breakout U-shape atr ${ctx.atr.toFixed(2)} (bad tail)`;
+  }
   return true;
 }
 
