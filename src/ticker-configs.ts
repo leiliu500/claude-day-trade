@@ -110,14 +110,13 @@ const TICKER_OVERRIDES: Record<string, Partial<Omit<TickerConfig, 'ticker' | 'st
     strategy: qqqStrategy,
   },
   IWM: {
-    // Enabled 2026-04-25: SPY filters cloned as starting baseline; tuning in progress.
+    // Rebuilt from scratch 2026-04-28 via IWM-specific F-cluster mining.
     minConfidence: 0.65,
 
     maxContracts: 5,
     enabled: true,
     strategy: iwmStrategy,
 
-    // Mirror SPY entry window: block first 30 min after open + last 30 min before close
     entryWindowStartMin: 30,
     entryWindowEndMin: 360,
   },

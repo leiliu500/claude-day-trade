@@ -1,9 +1,11 @@
 /**
  * order-agent-sim-iwm.ts — IWM-specific order simulation.
  *
- * IWM 0DTE options are similar to SPY but with higher volatility.
- * Uses 4x premium floor (between SPY's 5x and shared 3x) to reflect
- * IWM's lower absolute price (~$200 vs SPY ~$650) but similar ATR%.
+ * Built from scratch 2026-04-28 (NOT a SPY clone). IWM trades around $215 vs
+ * SPY ~$560 (~0.38x). IWM ATM weeklies typically run $1.50-3.00 with thinner
+ * liquidity than SPY at the same delta — small-cap basket sees less institutional
+ * flow than large-cap broad index. Premium floor multiplier set to 4x — same as
+ * DIA, between SPY's 5x (high liquidity) and the shared 3x default.
  */
 
 import {
@@ -11,8 +13,6 @@ import {
   toPremium, pnlPct, trailFactor, profitFloor, estimateEntryPremium,
 } from './order-agent-sim.js';
 
-// IWM premium floor multiplier: 4x optionAtr.
-// IWM ATM 0DTE options cost ~$1.50-3.50 with ATR ~$0.80-1.20.
 const IWM_PREMIUM_FLOOR_MULT = 4;
 
 export function simulateOrderAgentIwm(
@@ -30,7 +30,6 @@ export function simulateOrderAgentIwm(
     atr, delta, cfg.recentBars, IWM_PREMIUM_FLOOR_MULT,
   );
 
-  // Initial stop: ATR-based, with trailing stop floor
   const atrStop = entryPremium - stopMult * recentVolatility;
   const trailingFloor = entryPremium * 0.87;
   let currentStop = Math.max(0.01, Math.min(atrStop, trailingFloor));
@@ -67,7 +66,6 @@ export function simulateOrderAgentIwm(
     const bestPremium = entryPremium + bestUnderlying * delta;
     const worstPremium = entryPremium + worstUnderlying * delta;
 
-    // Rule 1: Initial hard stop (first 3 bars)
     if (i < 3 && peakPnlPct_ < 3) {
       const checkPrice = i === 0 ? currentPremium : worstPremium;
       if (checkPrice <= currentStop) {
@@ -76,11 +74,8 @@ export function simulateOrderAgentIwm(
       }
     }
 
-    if (currentPremium < prevPremium) {
-      consecutiveDeclines++;
-    } else {
-      consecutiveDeclines = 0;
-    }
+    if (currentPremium < prevPremium) consecutiveDeclines++;
+    else consecutiveDeclines = 0;
     prevPremium = currentPremium;
 
     if (currentPremium > highestPrice) highestPrice = currentPremium;
@@ -89,95 +84,43 @@ export function simulateOrderAgentIwm(
     const drawdown = ((highestPrice - currentPremium) / highestPrice) * 100;
     if (drawdown > maxDrawdownPct_) maxDrawdownPct_ = drawdown;
 
-    // Rule 2: Take-profit hit
-    if (bestPremium >= tpTarget) {
-      return mkResult(i, 'TP', tpTarget);
-    }
+    if (bestPremium >= tpTarget) return mkResult(i, 'TP', tpTarget);
+    if (consecutiveDeclines >= 9 && currentPnl <= -6) return mkResult(i, 'RAPID_DECLINE', currentPremium);
 
-    // Rule 9: Rapid decline
-    if (consecutiveDeclines >= 9 && currentPnl <= -6) {
-      return mkResult(i, 'RAPID_DECLINE', currentPremium);
-    }
-
-    // PROFIT PROTECTION
     const timeBonus = i >= 10 ? Math.min((i - 10) * 1, 10) : 0;
-
     if (peakPnlPct_ >= 15) {
       const retain = Math.min(0.65 + timeBonus / 100, 0.85);
-      if (currentPnl <= peakPnlPct_ * retain && currentPnl < peakPnlPct_) {
-        return mkResult(i, 'TRAILING_DECAY', currentPremium);
-      }
+      if (currentPnl <= peakPnlPct_ * retain && currentPnl < peakPnlPct_) return mkResult(i, 'TRAILING_DECAY', currentPremium);
     } else if (peakPnlPct_ >= 10) {
       const retain = Math.min(0.60 + timeBonus / 100, 0.80);
-      if (currentPnl <= peakPnlPct_ * retain && currentPnl < peakPnlPct_) {
-        return mkResult(i, 'TRAILING_DECAY', currentPremium);
-      }
+      if (currentPnl <= peakPnlPct_ * retain && currentPnl < peakPnlPct_) return mkResult(i, 'TRAILING_DECAY', currentPremium);
     } else if (peakPnlPct_ >= 5) {
       const retain = Math.min(0.60 + timeBonus / 100, 0.80);
-      if (currentPnl <= peakPnlPct_ * retain && currentPnl < peakPnlPct_) {
-        return mkResult(i, 'TRAILING_DECAY', currentPremium);
-      }
+      if (currentPnl <= peakPnlPct_ * retain && currentPnl < peakPnlPct_) return mkResult(i, 'TRAILING_DECAY', currentPremium);
     } else if (peakPnlPct_ >= 3) {
-      if (currentPnl <= peakPnlPct_ * 0.55 && currentPnl < peakPnlPct_ && i >= 2) {
-        return mkResult(i, 'TRAILING_DECAY', currentPremium);
-      }
+      if (currentPnl <= peakPnlPct_ * 0.55 && currentPnl < peakPnlPct_ && i >= 2) return mkResult(i, 'TRAILING_DECAY', currentPremium);
     }
 
-    // Rule 7: Small-gain locks
-    if (peakPnlPct_ >= 2 && peakPnlPct_ < 3 && currentPnl <= 0.5 && i >= 3) {
-      return mkResult(i, 'SMALL_GAIN_LOCK', currentPremium);
-    }
-    if (peakPnlPct_ >= 1 && peakPnlPct_ < 2 && currentPnl <= 0.3 && i >= 3) {
-      return mkResult(i, 'SMALL_GAIN_LOCK', currentPremium);
-    }
+    if (peakPnlPct_ >= 2 && peakPnlPct_ < 3 && currentPnl <= 0.5 && i >= 3) return mkResult(i, 'SMALL_GAIN_LOCK', currentPremium);
+    if (peakPnlPct_ >= 1 && peakPnlPct_ < 2 && currentPnl <= 0.3 && i >= 3) return mkResult(i, 'SMALL_GAIN_LOCK', currentPremium);
+    if (peakPnlPct_ >= 1 && peakPnlPct_ < 3 && currentPnl <= 0 && i >= 3) return mkResult(i, 'PROFIT_REVERSAL', currentPremium);
+    if (currentPnl <= -10 && i >= 9) return mkResult(i, 'PRE_EMPTIVE', currentPremium);
+    if (peakPnlPct_ < 0.3 && currentPnl <= -3 && i >= 3 && i <= 8) return mkResult(i, 'BAD_ENTRY', currentPremium);
+    if (peakPnlPct_ < 0.5 && currentPnl <= -5 && consecutiveDeclines >= 3 && i >= 3) return mkResult(i, 'BAD_ENTRY', currentPremium);
+    if (peakPnlPct_ < 1 && currentPnl <= -3 && i >= 5) return mkResult(i, 'BAD_ENTRY', currentPremium);
+    if (peakPnlPct_ < 1 && currentPnl <= -5 && i >= 4) return mkResult(i, 'BAD_ENTRY', currentPremium);
 
-    // LOSS DETECTION
-    if (peakPnlPct_ >= 1 && peakPnlPct_ < 3 && currentPnl <= 0 && i >= 3) {
-      return mkResult(i, 'PROFIT_REVERSAL', currentPremium);
-    }
-    if (currentPnl <= -10 && i >= 9) {
-      return mkResult(i, 'PRE_EMPTIVE', currentPremium);
-    }
-    if (peakPnlPct_ < 0.3 && currentPnl <= -3 && i >= 3 && i <= 8) {
-      return mkResult(i, 'BAD_ENTRY', currentPremium);
-    }
-    if (peakPnlPct_ < 0.5 && currentPnl <= -5 && consecutiveDeclines >= 3 && i >= 3) {
-      return mkResult(i, 'BAD_ENTRY', currentPremium);
-    }
-    if (peakPnlPct_ < 1 && currentPnl <= -3 && i >= 5) {
-      return mkResult(i, 'BAD_ENTRY', currentPremium);
-    }
-    if (peakPnlPct_ < 1 && currentPnl <= -5 && i >= 4) {
-      return mkResult(i, 'BAD_ENTRY', currentPremium);
-    }
-
-    // Rules 3 & 4: Trailing stop + profit floors
     const tf = trailFactor(peakPnlPct_);
     const rawTrailingStop = highestPrice * tf;
     const pf = profitFloor(peakPnlPct_, entryPremium);
     const trailingStop = Math.max(rawTrailingStop, pf);
-    if (trailingStop > currentStop && (i >= 4 || peakPnlPct_ >= 5)) {
-      currentStop = trailingStop;
-    }
-
-    if (currentPremium <= currentStop) {
-      return mkResult(i, 'STOP', currentStop);
-    }
+    if (trailingStop > currentStop && (i >= 4 || peakPnlPct_ >= 5)) currentStop = trailingStop;
+    if (currentPremium <= currentStop) return mkResult(i, 'STOP', currentStop);
   }
 
-  // Market close
   const lastBar = futureBars[futureBars.length - 1];
-  if (!lastBar) {
-    return { exitPrice: entryPrice, exitReason: 'CLOSE', holdMinutes: 0, pnlPct: 0, peakPnlPct: 0, maxDrawdownPct: 0 };
-  }
+  if (!lastBar) return { exitPrice: entryPrice, exitReason: 'CLOSE', holdMinutes: 0, pnlPct: 0, peakPnlPct: 0, maxDrawdownPct: 0 };
   const finalPremium = toPremium(entryPrice, entryPremium, lastBar.close, direction, delta);
   const finalPnl = pnlPct(finalPremium, entryPremium);
-  return {
-    exitPrice: lastBar.close,
-    exitReason: 'CLOSE',
-    holdMinutes: futureBars.length,
-    pnlPct: finalPnl,
-    peakPnlPct: peakPnlPct_,
-    maxDrawdownPct: maxDrawdownPct_,
-  };
+  return { exitPrice: lastBar.close, exitReason: 'CLOSE', holdMinutes: futureBars.length, pnlPct: finalPnl, peakPnlPct: peakPnlPct_, maxDrawdownPct: maxDrawdownPct_ };
 }
