@@ -143,6 +143,18 @@ function spyShouldAllowEntry(ctx: EntryContext): true | string {
     return `bearish-trend mid-conf ${(ctx.confidence * 100).toFixed(0)}% anti-predictive`;
   }
 
+  // v3: bullish-trend low-atr extension (mode-specific tightening of v1).
+  // v2b residual: bullish trend at atr 0.6-0.8 still uniformly catastrophic:
+  //   atr 0.60-0.70: n=42 exp -0.952 dir 48%  (1A/7B/7C/5D/22F)
+  //   atr 0.70-0.80: n=31 exp -1.000 dir 48%  (2A/2B/6C/5D/16F)
+  //   atr 0.80-1.00: n=67 exp -0.239 dir 66%  (recovery)
+  // Combined 0.60-0.80 in bull-trend: n=73 exp -0.97, 3A+9B vs 38F.
+  // Mode-specific because bull-breakout at atr 0.6-0.8 is only mildly bad
+  // (-0.35 in v0). Effective bull-trend atr threshold: 0.80.
+  if (ctx.direction === 'bullish' && ctx.signalMode === 'trend' && ctx.atr < 0.80) {
+    return `bullish-trend low atr ${ctx.atr.toFixed(2)} < 0.80`;
+  }
+
   return true;
 }
 
