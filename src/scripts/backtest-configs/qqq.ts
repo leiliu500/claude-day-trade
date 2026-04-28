@@ -40,6 +40,10 @@ function qqqShouldAllowEntry(ctx: EntryContext): true | string {
       && ctx.minutesSinceOpen >= 120 && ctx.minutesSinceOpen < 150) {
     return `bullish-trend pre-lunch ${ctx.minutesSinceOpen}m (11:30-12:00 ET)`;
   }
+  // v7: bearish low-atr (any mode) — see strategies/qqq.ts.
+  if (ctx.direction === 'bearish' && ctx.atr < 0.50) {
+    return `bearish low atr ${ctx.atr.toFixed(2)} < 0.50`;
+  }
   return true;
 }
 

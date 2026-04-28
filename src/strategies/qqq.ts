@@ -194,6 +194,20 @@ function qqqShouldAllowEntry(ctx: EntryContext): true | string {
     return `bullish-trend pre-lunch ${ctx.minutesSinceOpen}m (11:30-12:00 ET)`;
   }
 
+  // v7: bearish low-atr block (any mode, atr < 0.50).
+  // Bearish counterpart to v1 (bullish atr<0.60), but tighter threshold.
+  // Post-v6 mining ranked bearish atr<0.60 highest (adj +0.026), but the
+  // wider cut REVERT'd via 2025-10 cascade (-0.215 month, 52→51 entries
+  // but -2A/-1B/-1C and +3F). Falling back to the lower-cascade variant:
+  //   bearish atr<0.50: n=46 (6A/7B/4C/1D/28F = 61% F) exp -0.957
+  //   bearish atr<0.60: n=93 (14A/10B/12C/8D/49F = 53% F) exp -0.731  [REVERT'd]
+  // Tighter threshold catches the densest F-cluster (61% F vs 53%), with
+  // cascade risk 32% (vs 38%) since fewer entries are freed for backfill.
+  // Same low-vol "drift sideways" regime as bullish v1, just on downside.
+  if (ctx.direction === 'bearish' && ctx.atr < 0.50) {
+    return `bearish low atr ${ctx.atr.toFixed(2)} < 0.50`;
+  }
+
   return true;
 }
 
