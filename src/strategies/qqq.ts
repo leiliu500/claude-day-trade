@@ -128,6 +128,21 @@ function qqqShouldAllowEntry(ctx: EntryContext): true | string {
     return `bullish afternoon ${ctx.minutesSinceOpen}m (14:00-15:30 ET)`;
   }
 
+  // v3: bullish post-lunch dead-zone (150-210m = 12:00-13:30 ET, any mode).
+  // Post-v2 mining (n=1075 exp -0.101): bullish 12:00-13:30 ET is the second
+  // bad pocket adjacent to v2's afternoon block:
+  //   bullish m[150,180): n=44 exp -0.682 (20F = 45% F)
+  //   bullish m[180,210): n=30 exp -0.467 (15F = 50% F)
+  //   combined m[150,210): n=74 exp -0.595 (~35F)
+  // Mid-day flow lull on tech basket — same family as SPY v9 (12:00-13:30 ET)
+  // but QQQ's worst-pocket window 150-210m matches SPY's window exactly.
+  // Combined with v2 (210-300m), the full 12:00-15:30 ET bullish dead zone
+  // is now blocked.
+  if (ctx.direction === 'bullish' && ctx.minutesSinceOpen !== undefined
+      && ctx.minutesSinceOpen >= 150 && ctx.minutesSinceOpen < 210) {
+    return `bullish post-lunch ${ctx.minutesSinceOpen}m (12:00-13:30 ET)`;
+  }
+
   return true;
 }
 

@@ -20,6 +20,11 @@ function qqqShouldAllowEntry(ctx: EntryContext): true | string {
       && ctx.minutesSinceOpen >= 210 && ctx.minutesSinceOpen < 300) {
     return `bullish afternoon ${ctx.minutesSinceOpen}m (14:00-15:30 ET)`;
   }
+  // v3: bullish post-lunch 150-210m — see strategies/qqq.ts.
+  if (ctx.direction === 'bullish'
+      && ctx.minutesSinceOpen >= 150 && ctx.minutesSinceOpen < 210) {
+    return `bullish post-lunch ${ctx.minutesSinceOpen}m (12:00-13:30 ET)`;
+  }
   return true;
 }
 
