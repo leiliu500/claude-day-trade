@@ -159,15 +159,19 @@ function iwmShouldAllowEntry(ctx: EntryContext): true | string {
     return `bearish-trend low atr ${ctx.atr.toFixed(2)} < 0.40`;
   }
 
-  // v6: bullish-breakout low-atr.
-  // Probe of bullish-breakout slice (n=153 exp -0.183 in v5-residual):
+  // v6+v8: bullish-breakout low-atr (extended <0.40 → <0.45 in v8).
+  // v6 probe of bullish-breakout slice (n=153 exp -0.183 in v5-residual):
   //   atr < 0.30:   n=44  exp -0.614 dir 55% (3A/9B/10C/2D/20F)
   //   atr 0.30-40:  n=46  exp -0.239 dir 63% (9A/9B/7C/4D/17F)
-  //   atr 0.40-50:  n=33  exp -0.455 dir 67% (small-N outlier, skipped)
-  //   atr 0.50+:    healthy (+0.632 to +0.857)
-  // Combined atr<0.40 → 90 entries exp -0.42, 12AB+18AB vs 20F+17F.
-  if (ctx.direction === 'bullish' && ctx.signalMode === 'breakout' && ctx.atr < 0.40) {
-    return `bullish-breakout low atr ${ctx.atr.toFixed(2)} < 0.40`;
+  //   atr 0.40+:    healthy
+  // v8 probe (post-v7 cache) revealed a 2nd bad pocket just above the v6 boundary:
+  //   atr 0.40-0.42: n=5  exp -0.40 (1A/0B/2C/0D/2F)
+  //   atr 0.42-0.45: n=10 exp -1.20 dir 40% (0A/1B/2C/1D/6F) — terrible
+  //   atr 0.45+:    +0.04 to +0.95 (clean)
+  // Combined 0.40-0.45 → 15 entries exp -0.93, 1A+1B vs 8F. mine-rejected-goods
+  // confirmed v6 boundary was not blocking AB-rich entries at the upper edge.
+  if (ctx.direction === 'bullish' && ctx.signalMode === 'breakout' && ctx.atr < 0.45) {
+    return `bullish-breakout low atr ${ctx.atr.toFixed(2)} < 0.45`;
   }
 
   // v7: bearish-breakout low-atr — symmetric mirror of v6.

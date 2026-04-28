@@ -33,9 +33,9 @@ function iwmShouldAllowEntry(ctx: EntryContext): true | string {
   if (ctx.direction === 'bearish' && ctx.signalMode === 'trend' && ctx.atr < 0.40) {
     return `bearish-trend low atr ${ctx.atr.toFixed(2)} < 0.40`;
   }
-  // v6: bullish-breakout low-atr — see strategies/iwm.ts.
-  if (ctx.direction === 'bullish' && ctx.signalMode === 'breakout' && ctx.atr < 0.40) {
-    return `bullish-breakout low atr ${ctx.atr.toFixed(2)} < 0.40`;
+  // v6+v8: bullish-breakout low-atr <0.45 — see strategies/iwm.ts.
+  if (ctx.direction === 'bullish' && ctx.signalMode === 'breakout' && ctx.atr < 0.45) {
+    return `bullish-breakout low atr ${ctx.atr.toFixed(2)} < 0.45`;
   }
   // v7: bearish-breakout low-atr — see strategies/iwm.ts.
   if (ctx.direction === 'bearish' && ctx.signalMode === 'breakout' && ctx.atr < 0.40) {
