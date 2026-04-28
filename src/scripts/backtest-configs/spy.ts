@@ -43,6 +43,11 @@ function spyShouldAllowEntry(ctx: EntryContext): true | string {
       && ctx.minutesSinceOpen >= 105 && ctx.minutesSinceOpen < 150) {
     return `bullish-trend lunch ${ctx.minutesSinceOpen}m (11:15-12:30 ET)`;
   }
+  // v9: bullish-trend post-lunch (150-210m) — see strategies/spy.ts.
+  if (ctx.direction === 'bullish' && ctx.signalMode === 'trend'
+      && ctx.minutesSinceOpen >= 150 && ctx.minutesSinceOpen < 210) {
+    return `bullish-trend post-lunch ${ctx.minutesSinceOpen}m (12:00-13:30 ET)`;
+  }
   // v7: bullish-breakout low-atr <0.80 — see strategies/spy.ts.
   if (ctx.direction === 'bullish' && ctx.signalMode === 'breakout' && ctx.atr < 0.80) {
     return `bullish-breakout low atr ${ctx.atr.toFixed(2)} < 0.80`;

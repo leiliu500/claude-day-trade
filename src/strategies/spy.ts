@@ -196,6 +196,19 @@ function spyShouldAllowEntry(ctx: EntryContext): true | string {
     return `bullish-breakout low atr ${ctx.atr.toFixed(2)} < 0.80`;
   }
 
+  // v9: bullish-trend post-lunch dead-zone (150-210m = 12:00-13:30 ET) extension of v6.
+  // v8 residual: bull-trend lunch+early-afternoon uniformly bad:
+  //   mins [105,150): blocked by v6
+  //   mins [150,180): n=21 exp -0.429 dir 57% (2A/7B/1C/2D/9F)
+  //   mins [180,210): n=19 exp -0.421 dir 63% (3A/1B/7C/1D/7F)
+  //   mins [210+):    smaller N, similar bad pattern
+  // Bull-trend lunch+post-lunch combined ([105, 210)) is now blocked.
+  if (ctx.direction === 'bullish' && ctx.signalMode === 'trend'
+      && ctx.minutesSinceOpen !== undefined
+      && ctx.minutesSinceOpen >= 150 && ctx.minutesSinceOpen < 210) {
+    return `bullish-trend post-lunch ${ctx.minutesSinceOpen}m (12:00-13:30 ET)`;
+  }
+
   // v6: bullish-trend lunch dead-zone (105-150m = 11:15 ET-12:30 ET).
   // v5 residual direction×mode×time probe revealed asymmetric lunch pattern:
   //   bull-trend mins [105,150):    n=42 exp -0.714 dir 50%  (5A/4B/10C/2D/21F)
