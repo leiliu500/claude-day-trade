@@ -30,6 +30,11 @@ function qqqShouldAllowEntry(ctx: EntryContext): true | string {
       && ((ctx.atr >= 0.60 && ctx.atr < 0.70) || (ctx.atr >= 1.0 && ctx.atr < 1.2))) {
     return `bullish-breakout U-shape atr ${ctx.atr.toFixed(2)} (bad tail)`;
   }
+  // v5: bearish-trend afternoon dead-zone — see strategies/qqq.ts.
+  if (ctx.direction === 'bearish' && ctx.signalMode === 'trend'
+      && ctx.minutesSinceOpen >= 270 && ctx.minutesSinceOpen < 360) {
+    return `bearish-trend afternoon ${ctx.minutesSinceOpen}m (14:00-15:30 ET)`;
+  }
   return true;
 }
 

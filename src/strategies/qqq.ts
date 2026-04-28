@@ -161,6 +161,23 @@ function qqqShouldAllowEntry(ctx: EntryContext): true | string {
     return `bullish-breakout U-shape atr ${ctx.atr.toFixed(2)} (bad tail)`;
   }
 
+  // v5: bearish-trend afternoon dead-zone (270-360m = 14:00-15:30 ET).
+  // Bearish version of v2's afternoon dead-zone, but trend-mode-only to
+  // limit cascade exposure. Prior any-mode any-atr atr<0.60 attempt blew
+  // out 2025-10 (-0.245) via cluster cascade; this rule narrows scope:
+  //   bearish-trend m[270,300): n=20 exp -0.7 (11F = 55% F)
+  //   bearish-trend m[300,330): n=13 exp -0.154 (4F)
+  //   bearish-trend m[330,360): n=10 exp -1.0 (7F = 70% F)
+  //   combined m[270,360): n=43 (8A/6B/5C/3D/21F = 49% F) exp -0.535
+  // Bearish breakout in same window is also negative but milder; restricting
+  // to trend-mode catches the sharpest F cluster while leaving more entries
+  // to backfill if cascade replacement does fire.
+  if (ctx.direction === 'bearish' && ctx.signalMode === 'trend'
+      && ctx.minutesSinceOpen !== undefined
+      && ctx.minutesSinceOpen >= 270 && ctx.minutesSinceOpen < 360) {
+    return `bearish-trend afternoon ${ctx.minutesSinceOpen}m (14:00-15:30 ET)`;
+  }
+
   return true;
 }
 
