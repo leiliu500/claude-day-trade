@@ -201,6 +201,21 @@ function spyShouldAllowEntry(ctx: EntryContext): true | string {
     return `bearish-trend mid-atr ${ctx.atr.toFixed(2)} in [0.40, 0.60)`;
   }
 
+  // v13: bearish-trend high-atr valley [1.20, 1.50) — second U-shape trough.
+  // Bear-trend atr is now confirmed as multi-valley pattern (post-v12 cache):
+  //   atr 0.0-0.4:  +0.325  positive (filtered low end preserved)
+  //   atr 0.4-0.6:  blocked by v5 (lower valley)
+  //   atr 0.6-1.2:  +0.04 to +0.58  recovery zone
+  //   atr 1.2-1.3:  n=14 exp -0.214
+  //   atr 1.3-1.4:  n=7  exp -1.143  upper valley
+  //   atr 1.5+:     n=22 exp +1.091  positive again
+  // Combined [1.2, 1.5): 21 entries exp -0.524 (4A/1B/4C/4D/8F).
+  // Symmetric to v5 — bear-trend has bimodal good zones with valleys between.
+  if (ctx.direction === 'bearish' && ctx.signalMode === 'trend'
+      && ctx.atr >= 1.20 && ctx.atr < 1.50) {
+    return `bearish-trend high-atr ${ctx.atr.toFixed(2)} in [1.20, 1.50)`;
+  }
+
   // v7: bullish-breakout low-atr extension <0.60 → <0.80.
   // Symmetric to v3 (which set bull-trend atr threshold to 0.80). v6 residual:
   //   bull-breakout × atr 0.6-0.8: n=54 exp -0.519 (5A/10B/10C/10D/19F)
