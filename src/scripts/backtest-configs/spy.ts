@@ -28,6 +28,11 @@ function spyShouldAllowEntry(ctx: EntryContext): true | string {
   if (ctx.direction === 'bearish' && ctx.signalMode === 'breakout' && ctx.atr < 0.60) {
     return `bearish-breakout low atr ${ctx.atr.toFixed(2)} < 0.60`;
   }
+  // v5: bearish-trend mid-atr [0.40, 0.60) — see strategies/spy.ts.
+  if (ctx.direction === 'bearish' && ctx.signalMode === 'trend'
+      && ctx.atr >= 0.40 && ctx.atr < 0.60) {
+    return `bearish-trend mid-atr ${ctx.atr.toFixed(2)} in [0.40, 0.60)`;
+  }
   return true;
 }
 

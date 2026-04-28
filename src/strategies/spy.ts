@@ -157,6 +157,22 @@ function spyShouldAllowEntry(ctx: EntryContext): true | string {
     return `bearish-breakout low atr ${ctx.atr.toFixed(2)} < 0.60`;
   }
 
+  // v5: bearish-trend mid-atr U-shape — block 0.4-0.6 trough, KEEP both tails.
+  // v4 residual reveals U-shape in bear-trend × atr (NOT a low-atr pattern):
+  //   atr 0.0-0.4: n=43 exp +0.279 dir 65% — POSITIVE (low-atr is good for bear-trend!)
+  //   atr 0.4-0.5: n=31 exp -0.645 dir 48%  — BAD trough start
+  //   atr 0.5-0.6: n=50 exp -0.680 dir 60%  — BAD trough
+  //   atr 0.6-0.8: n=98 exp -0.194 dir 65%  — recovery
+  //   atr 0.8+:    +0.04 to +0.38           — clean
+  // Bear-trend uniquely has positive expectancy at very low atr (unlike bull
+  // modes and bear-breakout which are uniformly bad at low atr). Filter
+  // targets only the 0.40-0.60 trough — preserves both the low-atr good zone
+  // and the high-atr good zone.
+  if (ctx.direction === 'bearish' && ctx.signalMode === 'trend'
+      && ctx.atr >= 0.40 && ctx.atr < 0.60) {
+    return `bearish-trend mid-atr ${ctx.atr.toFixed(2)} in [0.40, 0.60)`;
+  }
+
   // v3: bullish-trend low-atr extension (mode-specific tightening of v1).
   // v2b residual: bullish trend at atr 0.6-0.8 still uniformly catastrophic:
   //   atr 0.60-0.70: n=42 exp -0.952 dir 48%  (1A/7B/7C/5D/22F)
