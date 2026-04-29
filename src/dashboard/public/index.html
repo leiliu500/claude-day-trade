@@ -87,6 +87,7 @@
     </nav>
     <nav class="tabs" id="tabs-backtest" style="display:none">
       <button class="tab active" data-tab="backtest-chart">Chart</button>
+      <button class="tab" data-tab="missed-entries">Missed Entries</button>
     </nav>
 
     <!-- Filter bar (shown only for filterable tabs) -->
@@ -537,6 +538,54 @@
 
       <!-- Backtest result (charts + report) rendered in iframe -->
       <iframe id="bt-iframe" class="bt-iframe" style="display:none"></iframe>
+    </section>
+
+    <!-- ── Missed Entries Report ── -->
+    <section id="tab-missed-entries" class="tab-content">
+      <div class="bt-controls">
+        <div class="filter-group">
+          <label for="me-ticker">Ticker</label>
+          <select id="me-ticker">
+            <option value="SPY">SPY</option>
+            <option value="QQQ">QQQ</option>
+            <option value="IWM">IWM</option>
+            <option value="DIA">DIA</option>
+            <option value="AAPL">AAPL</option>
+            <option value="MSFT">MSFT</option>
+            <option value="NVDA">NVDA</option>
+            <option value="TSLA">TSLA</option>
+          </select>
+        </div>
+        <div class="filter-group">
+          <label for="me-date">Date</label>
+          <input type="date" id="me-date">
+        </div>
+        <div class="filter-group">
+          <label for="me-min-mfe">Min MFE %</label>
+          <input type="number" id="me-min-mfe" value="0.20" step="0.05" style="width:80px">
+        </div>
+        <div class="filter-group">
+          <label for="me-max-mae">Max MAE %</label>
+          <input type="number" id="me-max-mae" value="0.15" step="0.05" style="width:80px">
+        </div>
+        <div class="filter-group">
+          <label for="me-min-r">Min R</label>
+          <input type="number" id="me-min-r" value="2.0" step="0.5" style="width:70px">
+        </div>
+        <div class="filter-group" style="display:flex;align-items:center;gap:6px">
+          <input type="checkbox" id="me-skip-backtest">
+          <label for="me-skip-backtest" style="margin:0">Skip backtest (faster)</label>
+        </div>
+        <button class="btn-run-backtest" id="btn-run-missed" onclick="runMissedEntries()">Find Missed Entries</button>
+        <span id="me-status" class="bt-status"></span>
+      </div>
+
+      <div id="me-summary" style="margin:0 24px 12px;color:#8b949e;font-size:13px"></div>
+      <div id="me-chart-wrap" style="position:relative;margin:0 24px 12px;background:#0d1117;border:1px solid #21262d;border-radius:6px;display:none">
+        <canvas id="me-chart" style="width:100%;display:block"></canvas>
+        <div id="me-chart-tooltip" style="position:absolute;background:#161b22;border:1px solid #30363d;border-radius:4px;padding:6px 10px;font-size:11px;color:#c9d1d9;display:none;pointer-events:none;white-space:nowrap;z-index:10"></div>
+      </div>
+      <div id="me-table-wrap" style="margin:0 24px 24px;overflow-x:auto"></div>
     </section>
 
     <section id="tab-database" class="tab-content">

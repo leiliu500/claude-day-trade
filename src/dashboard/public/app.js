@@ -2080,6 +2080,7 @@ function loadTab(tab) {
     case 'agent-analysis':  loadAgentAnalysis();  break;
     case 'database':        /* static panel, nothing to load */ break;
     case 'backtest-chart':  /* loaded on demand via runBacktest() */ break;
+    case 'missed-entries':  /* loaded on demand via runMissedEntries() */ break;
   }
 }
 
@@ -2144,6 +2145,365 @@ async function runBacktest() {
     dateInput.value = today.toISOString().slice(0, 10);
   }
 })();
+
+// ── Missed Entries Report ──────────────────────────────────────────────────
+// Three-phase report: ideal entries (market data) × backtest verdict × live verdict.
+
+(function initMissedDate() {
+  const dateInput = document.getElementById('me-date');
+  if (dateInput) dateInput.value = new Date().toISOString().slice(0, 10);
+})();
+
+const VERDICT_DISPLAY = {
+  BOTH_EXEC:   { label: '✅ BOTH-EXEC',   bg: '#1a2f1a', border: '#2ea043' },
+  PARITY_GAP:  { label: '⚠️  PARITY GAP', bg: '#3a2a17', border: '#d29922' },
+  ALGO_GAP:    { label: '🔴 ALGO GAP',    bg: '#3a1d1d', border: '#f85149' },
+  BLIND:       { label: '👻 BLIND',       bg: '#21262d', border: '#6e7681' },
+  BT_ONLY_DETECT_LIVE_EXEC: { label: '🟡 LIVE-ONLY', bg: '#332a17', border: '#bb8009' },
+  NO_DATA:     { label: '— —',            bg: '#21262d', border: '#30363d' },
+};
+
+async function runMissedEntries() {
+  const ticker = document.getElementById('me-ticker').value;
+  const date = document.getElementById('me-date').value;
+  if (!date) { alert('Select a date'); return; }
+  const minMfe = document.getElementById('me-min-mfe').value;
+  const maxMae = document.getElementById('me-max-mae').value;
+  const minR = document.getElementById('me-min-r').value;
+  const skipBt = document.getElementById('me-skip-backtest').checked;
+
+  const btn = document.getElementById('btn-run-missed');
+  const status = document.getElementById('me-status');
+  const summary = document.getElementById('me-summary');
+  const tableWrap = document.getElementById('me-table-wrap');
+  btn.disabled = true;
+  status.textContent = skipBt ? 'Running (live only)...' : 'Running (backtest + live, ~30-90s)...';
+  summary.textContent = '';
+  tableWrap.innerHTML = '';
+
+  try {
+    const params = new URLSearchParams({ ticker, date, minMfe, maxMae, minR });
+    if (skipBt) params.set('skipBacktest', '1');
+    const resp = await fetch(`${API}/api/missed-entries?${params.toString()}`);
+    const data = await resp.json();
+    if (!resp.ok) throw new Error(data.error || 'Request failed');
+
+    renderMissedSummary(data, summary);
+    renderMissedChart(data);
+    renderMissedTable(data, tableWrap);
+    status.textContent = `${ticker} ${date} — ${data.entries.length} ideal entries`;
+  } catch (err) {
+    status.textContent = 'Error: ' + err.message;
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+function renderMissedSummary(data, el) {
+  const verifyParts = [];
+  if (data.verify?.backtest) verifyParts.push('backtest=ok');
+  else verifyParts.push('backtest=skipped');
+  if (data.verify?.live) verifyParts.push('live=ok');
+  else verifyParts.push('live=skipped');
+
+  const t = data.thresholds || {};
+  const vc = { BOTH_EXEC: 0, PARITY_GAP: 0, ALGO_GAP: 0, BLIND: 0, BT_ONLY_DETECT_LIVE_EXEC: 0, NO_DATA: 0 };
+  for (const e of (data.entries || [])) vc[e.verdict] = (vc[e.verdict] || 0) + 1;
+  const gc = { A: 0, B: 0, C: 0 };
+  let totalMfe = 0;
+  for (const e of (data.entries || [])) { gc[e.grade] = (gc[e.grade] || 0) + 1; totalMfe += (e.mfePct || 0); }
+
+  const verdictLine = ['BOTH_EXEC', 'PARITY_GAP', 'ALGO_GAP', 'BLIND', 'BT_ONLY_DETECT_LIVE_EXEC']
+    .filter(k => vc[k] > 0)
+    .map(k => `${VERDICT_DISPLAY[k].label}: ${vc[k]}`)
+    .join('  •  ');
+
+  el.innerHTML = `
+    <div>thresholds: window=${t.windowMin}m  minMFE=${t.minMfe}%  maxMAE=${t.maxMae}%  minR=${t.minR}  •  bars: ${data.barCount}  •  ${verifyParts.join(' • ')}</div>
+    <div style="margin-top:6px">grades: A:${gc.A}  B:${gc.B}  C:${gc.C}  •  total MFE ${totalMfe.toFixed(2)}%${verdictLine ? '  •  ' + verdictLine : ''}</div>
+  `;
+}
+
+function renderMissedTable(data, el) {
+  if (!data.entries || data.entries.length === 0) {
+    el.innerHTML = '<div style="color:#8b949e;padding:20px">No ideal entries found (flat session, or thresholds too tight).</div>';
+    return;
+  }
+
+  const rows = data.entries.map(e => {
+    const arrow = e.direction === 'long' ? '↑' : '↓';
+    const dirColor = e.direction === 'long' ? '#3fb950' : '#f85149';
+    const verdictStyle = VERDICT_DISPLAY[e.verdict] || VERDICT_DISPLAY.NO_DATA;
+    const btCell = renderBtCell(e.backtest);
+    const liveCell = renderLiveCell(e.live);
+    const gradeBadge = renderGradeBadge(e.grade);
+    return `
+      <tr>
+        <td style="white-space:nowrap;font-family:monospace">
+          <div>${e.entryTimeET}</div>
+          <div style="color:#6e7681;font-size:11px">→ ${e.peakTimeET}</div>
+        </td>
+        <td style="color:${dirColor};font-weight:600">${arrow} ${e.direction}</td>
+        <td style="font-family:monospace">$${e.entryPrice.toFixed(2)}<br><span style="color:#6e7681;font-size:11px">→$${e.peakPrice.toFixed(2)}</span></td>
+        <td style="font-family:monospace">${e.mfePct.toFixed(2)}%</td>
+        <td style="font-family:monospace">${e.maePct.toFixed(2)}%</td>
+        <td style="font-family:monospace">${e.rMultiple.toFixed(1)}</td>
+        <td style="font-family:monospace">${e.ttpMin.toFixed(0)}m</td>
+        <td>${gradeBadge}</td>
+        <td style="font-size:12px">${btCell}</td>
+        <td style="font-size:12px">${liveCell}</td>
+        <td style="background:${verdictStyle.bg};border-left:3px solid ${verdictStyle.border};font-weight:600;white-space:nowrap">${verdictStyle.label}</td>
+      </tr>`;
+  }).join('');
+
+  el.innerHTML = `
+    <table class="data-table" style="width:100%;border-collapse:collapse">
+      <thead>
+        <tr style="background:#161b22;color:#8b949e">
+          <th style="text-align:left;padding:8px">Entry / Peak ET</th>
+          <th style="text-align:left;padding:8px">Dir</th>
+          <th style="text-align:left;padding:8px">Price</th>
+          <th style="text-align:left;padding:8px">MFE</th>
+          <th style="text-align:left;padding:8px">MAE</th>
+          <th style="text-align:left;padding:8px">R</th>
+          <th style="text-align:left;padding:8px">TTP</th>
+          <th style="text-align:left;padding:8px">Grade</th>
+          <th style="text-align:left;padding:8px">Backtest</th>
+          <th style="text-align:left;padding:8px">Live</th>
+          <th style="text-align:left;padding:8px">Verdict</th>
+        </tr>
+      </thead>
+      <tbody>${rows}</tbody>
+    </table>`;
+}
+
+function renderBtCell(bt) {
+  if (!bt) return '<span style="color:#6e7681">— skipped</span>';
+  if (!bt.entry) return '<div style="color:#6e7681">❓ NO MATCH</div><div style="color:#8b949e;font-size:11px">no same-direction signal within ±5m</div>';
+  const e = bt.entry;
+  const conf = (e.confidence * 100).toFixed(0);
+  const grade = e.grade ? ` G${e.grade}` : '';
+  let icon, color;
+  if (e.status === 'confirmed') { icon = '✅ ENTRY'; color = '#3fb950'; }
+  else if (e.status === 'blocked') { icon = '⛔ BLOCKED'; color = '#d29922'; }
+  else { icon = '⚠️ FILTERED'; color = '#d29922'; }
+  const rule = e.filterRule ? `<div style="color:#8b949e;font-size:11px">${escapeHtml(e.filterRule)}</div>` : '';
+  return `<div style="color:${color};font-weight:600">${icon}</div>
+          <div style="color:#c9d1d9">${e.timeET} ${e.mode} ${e.direction} conf=${conf}%${grade}</div>
+          ${rule}`;
+}
+
+function renderLiveCell(live) {
+  if (!live) return '<span style="color:#6e7681">—</span>';
+  if (live.enterDispatch) {
+    return `<div style="color:#3fb950;font-weight:600">✅ ENTER</div>
+            <div style="color:#c9d1d9">${live.enterDispatch.timeET}</div>`;
+  }
+  if (!live.peakSignal) {
+    return '<div style="color:#6e7681">NO SIGNAL</div>';
+  }
+  const s = live.peakSignal;
+  const meets = s.meets ? 'meets' : 'meets=false';
+  const meetsColor = s.meets ? '#3fb950' : '#f85149';
+  return `<div style="color:#f85149;font-weight:600">❌ NO ENTRY</div>
+          <div style="color:#c9d1d9">peak ${s.confidence.toFixed(3)} @ ${s.timeET}</div>
+          <div><span style="color:${meetsColor}">${meets}</span> <span style="color:#8b949e">${s.alignment}</span></div>`;
+}
+
+function renderGradeBadge(grade) {
+  const colors = { A: '#3fb950', B: '#58a6ff', C: '#8b949e' };
+  return `<span style="background:${colors[grade] || '#6e7681'};color:#0d1117;padding:2px 8px;border-radius:4px;font-weight:700">${grade}</span>`;
+}
+
+function escapeHtml(s) {
+  return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
+// ── Missed Entries Candlestick Chart ───────────────────────────────────────
+// Vanilla canvas: 1-min bars + entry markers + verdict color rings.
+
+function renderMissedChart(data) {
+  const wrap = document.getElementById('me-chart-wrap');
+  const canvas = document.getElementById('me-chart');
+  const tip = document.getElementById('me-chart-tooltip');
+  if (!data.bars || data.bars.length === 0) { wrap.style.display = 'none'; return; }
+  wrap.style.display = 'block';
+
+  const dpr = window.devicePixelRatio || 1;
+  const cssW = wrap.clientWidth - 2;
+  const cssH = 360;
+  canvas.width = cssW * dpr;
+  canvas.height = cssH * dpr;
+  canvas.style.width = cssW + 'px';
+  canvas.style.height = cssH + 'px';
+  const ctx = canvas.getContext('2d');
+  ctx.scale(dpr, dpr);
+  ctx.clearRect(0, 0, cssW, cssH);
+
+  const padL = 56, padR = 12, padT = 12, padB = 24;
+  const plotW = cssW - padL - padR;
+  const plotH = cssH - padT - padB;
+
+  const bars = data.bars;
+  const entries = data.entries || [];
+
+  // Y range from bars
+  let lo = Infinity, hi = -Infinity;
+  for (const b of bars) { if (b.l < lo) lo = b.l; if (b.h > hi) hi = b.h; }
+  const ypad = (hi - lo) * 0.05 || 0.5;
+  lo -= ypad; hi += ypad;
+
+  // X scale: bar index → px
+  const barW = Math.max(1, (plotW / bars.length) * 0.85);
+  const xOf = i => padL + (i + 0.5) * (plotW / bars.length);
+  const yOf = price => padT + (1 - (price - lo) / (hi - lo)) * plotH;
+
+  // Grid + Y labels
+  ctx.strokeStyle = '#21262d';
+  ctx.fillStyle = '#6e7681';
+  ctx.font = '10px ui-monospace, SF Mono, Consolas, monospace';
+  ctx.textAlign = 'right';
+  ctx.textBaseline = 'middle';
+  const gridSteps = 5;
+  for (let g = 0; g <= gridSteps; g++) {
+    const y = padT + (g / gridSteps) * plotH;
+    const price = hi - (g / gridSteps) * (hi - lo);
+    ctx.beginPath();
+    ctx.moveTo(padL, y); ctx.lineTo(padL + plotW, y);
+    ctx.stroke();
+    ctx.fillText(price.toFixed(2), padL - 6, y);
+  }
+
+  // X labels (every ~30 min of session)
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'top';
+  const tickEvery = Math.max(1, Math.floor(bars.length / 8));
+  for (let i = 0; i < bars.length; i += tickEvery) {
+    const x = xOf(i);
+    const t = new Date(bars[i].t);
+    const hh = new Intl.DateTimeFormat('en-US', { timeZone: 'America/New_York', hour: '2-digit', minute: '2-digit', hour12: false }).format(t);
+    ctx.fillText(hh, x, padT + plotH + 6);
+  }
+
+  // Candles
+  for (let i = 0; i < bars.length; i++) {
+    const b = bars[i];
+    const x = xOf(i);
+    const yO = yOf(b.o), yH = yOf(b.h), yL = yOf(b.l), yC = yOf(b.c);
+    const up = b.c >= b.o;
+    ctx.strokeStyle = up ? '#3fb950' : '#f85149';
+    ctx.fillStyle = up ? '#23863660' : '#f8514960';
+    ctx.lineWidth = 1;
+    // wick
+    ctx.beginPath();
+    ctx.moveTo(x, yH); ctx.lineTo(x, yL);
+    ctx.stroke();
+    // body
+    const bodyTop = Math.min(yO, yC);
+    const bodyH = Math.max(1, Math.abs(yC - yO));
+    ctx.fillRect(x - barW / 2, bodyTop, barW, bodyH);
+    ctx.strokeRect(x - barW / 2, bodyTop, barW, bodyH);
+  }
+
+  // Entry markers
+  const markers = [];
+  const VERDICT_COLOR = {
+    BOTH_EXEC: '#3fb950',
+    PARITY_GAP: '#d29922',
+    ALGO_GAP: '#f85149',
+    BLIND: '#6e7681',
+    BT_ONLY_DETECT_LIVE_EXEC: '#bb8009',
+    NO_DATA: '#8b949e',
+  };
+  for (const e of entries) {
+    // Find bar index by entry time UTC. bar.t is bar START; entry decision = bar.t + 60s.
+    const entryUtc = Date.parse(e.entryTsUtc);
+    let idx = -1;
+    for (let i = 0; i < bars.length; i++) {
+      if (bars[i].t + 60_000 === entryUtc) { idx = i; break; }
+    }
+    if (idx === -1) {
+      // fallback: closest bar
+      let best = Infinity;
+      for (let i = 0; i < bars.length; i++) {
+        const d = Math.abs(bars[i].t + 60_000 - entryUtc);
+        if (d < best) { best = d; idx = i; }
+      }
+    }
+    const x = xOf(idx);
+    const yEntry = yOf(e.entryPrice);
+    const yPeak = yOf(e.peakPrice);
+    const dirColor = e.direction === 'long' ? '#3fb950' : '#f85149';
+    const verdictColor = VERDICT_COLOR[e.verdict] || '#8b949e';
+
+    // Faint vertical line from entry to peak
+    ctx.strokeStyle = dirColor + '50';
+    ctx.lineWidth = 1;
+    ctx.setLineDash([3, 3]);
+    ctx.beginPath();
+    ctx.moveTo(x, yEntry); ctx.lineTo(x, yPeak);
+    ctx.stroke();
+    ctx.setLineDash([]);
+
+    // Triangle marker at entry price
+    const tri = 7;
+    ctx.beginPath();
+    if (e.direction === 'long') {
+      // up-triangle below price
+      ctx.moveTo(x, yEntry + 2);
+      ctx.lineTo(x - tri, yEntry + tri + 2);
+      ctx.lineTo(x + tri, yEntry + tri + 2);
+    } else {
+      // down-triangle above price
+      ctx.moveTo(x, yEntry - 2);
+      ctx.lineTo(x - tri, yEntry - tri - 2);
+      ctx.lineTo(x + tri, yEntry - tri - 2);
+    }
+    ctx.closePath();
+    ctx.fillStyle = dirColor;
+    ctx.fill();
+    // Verdict ring around marker
+    ctx.strokeStyle = verdictColor;
+    ctx.lineWidth = 2;
+    ctx.stroke();
+
+    // Grade label
+    ctx.fillStyle = '#f0f6fc';
+    ctx.font = 'bold 10px ui-monospace, SF Mono, Consolas, monospace';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = e.direction === 'long' ? 'top' : 'bottom';
+    const labelY = e.direction === 'long' ? yEntry + tri + 6 : yEntry - tri - 6;
+    ctx.fillText(e.grade, x, labelY);
+
+    markers.push({ x, yEntry, e, idx });
+  }
+
+  // Tooltip on hover (find nearest marker)
+  canvas.onmousemove = (ev) => {
+    const rect = canvas.getBoundingClientRect();
+    const mx = ev.clientX - rect.left;
+    const my = ev.clientY - rect.top;
+    let nearest = null, bestD = Infinity;
+    for (const m of markers) {
+      const d = Math.hypot(mx - m.x, my - m.yEntry);
+      if (d < bestD && d < 18) { bestD = d; nearest = m; }
+    }
+    if (nearest) {
+      const e = nearest.e;
+      tip.innerHTML = `<b>${e.entryTimeET} → ${e.peakTimeET}</b><br>
+        ${e.direction === 'long' ? '↑' : '↓'} ${e.direction} $${e.entryPrice.toFixed(2)} → $${e.peakPrice.toFixed(2)}<br>
+        MFE ${e.mfePct.toFixed(2)}% MAE ${e.maePct.toFixed(2)}% R=${e.rMultiple.toFixed(1)} <b>${e.grade}</b><br>
+        verdict: ${(VERDICT_DISPLAY[e.verdict] || VERDICT_DISPLAY.NO_DATA).label}`;
+      tip.style.display = 'block';
+      const wrapRect = wrap.getBoundingClientRect();
+      tip.style.left = (ev.clientX - wrapRect.left + 10) + 'px';
+      tip.style.top = (ev.clientY - wrapRect.top + 10) + 'px';
+    } else {
+      tip.style.display = 'none';
+    }
+  };
+  canvas.onmouseleave = () => { tip.style.display = 'none'; };
+}
 
 // ── Boot ──────────────────────────────────────────────────────────────────────
 initFilters();

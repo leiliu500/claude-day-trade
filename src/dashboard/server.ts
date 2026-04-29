@@ -10,6 +10,12 @@ import { detectLiveMoves, computeDelaySummary, getRecentNearMisses, getRecentFil
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
+function numQuery(v: unknown, dflt: number): number {
+  if (typeof v !== 'string') return dflt;
+  const n = Number(v);
+  return isFinite(n) ? n : dflt;
+}
+
 export function startDashboard(port: number): void {
   const app = express();
   app.use(express.json());
@@ -1202,6 +1208,125 @@ export function startDashboard(port: number): void {
     } catch (err: any) {
       const msg = err.stderr ? err.stderr.slice(0, 500) : err.message;
       res.status(500).json({ error: msg });
+    }
+  });
+
+  // Missed-entries report: pure-market-data ideal entries × backtest verdict × live verdict.
+  // GET /api/missed-entries?ticker=SPY&date=2026-04-29
+  //   optional: window, minMfe, maxMae, minR, minVolMult, includeETH (1/0)
+  app.get('/api/missed-entries', async (req, res) => {
+    try {
+      const dateRaw = req.query['date'];
+      const tickerRaw = req.query['ticker'];
+      const date = typeof dateRaw === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(dateRaw) ? dateRaw : null;
+      const ticker = typeof tickerRaw === 'string' && /^[A-Z]{1,10}$/.test(tickerRaw) ? tickerRaw : null;
+      if (!date) { res.status(400).json({ error: 'date param required (YYYY-MM-DD)' }); return; }
+      if (!ticker) { res.status(400).json({ error: 'ticker param required' }); return; }
+
+      const lib = await import('../lib/missed-entries.js');
+      const detectArgs = {
+        windowMin: numQuery(req.query['window'], 30),
+        minMfe: numQuery(req.query['minMfe'], 0.20),
+        maxMae: numQuery(req.query['maxMae'], 0.15),
+        minR: numQuery(req.query['minR'], 2.0),
+        minVolMult: numQuery(req.query['minVolMult'], 0),
+      };
+      const includeETH = req.query['includeETH'] === '1' || req.query['includeETH'] === 'true';
+      const skipBacktest = req.query['skipBacktest'] === '1' || req.query['skipBacktest'] === 'true';
+      const skipLive = req.query['skipLive'] === '1' || req.query['skipLive'] === 'true';
+
+      const { startUTC, endUTC } = lib.sessionWindowUTC(date, includeETH);
+      const bars = await lib.fetch1mBars(ticker, startUTC, endUTC);
+      if (bars.length < detectArgs.windowMin + 5) {
+        res.json({ ok: true, ticker, date, bars: bars.length, note: 'insufficient bars (weekend/holiday/early)', entries: [] });
+        return;
+      }
+      const ideals = lib.findIdealEntries(bars, detectArgs);
+
+      // Run backtest + live in parallel
+      let btEntries: any[] | null = null;
+      let liveLayer: any = null;
+      const tasks: Promise<any>[] = [];
+      if (!skipBacktest && ideals.length > 0) {
+        tasks.push((async () => {
+          try {
+            const { execFile } = await import('child_process');
+            const { promisify } = await import('util');
+            const execFileAsync = promisify(execFile);
+            const scriptPath = join(__dirname, '..', 'scripts', 'backtest-day.js');
+            // --no-cache: backtest-day's stdout cache uses `git ls-files` which fails inside
+            // the container (no .git dir). Skip caching here — it's a per-request run anyway.
+            const { stdout } = await execFileAsync(process.execPath, [scriptPath, date, ticker, '--json', '--no-cache'], {
+              timeout: 180_000, maxBuffer: 100 * 1024 * 1024, env: { ...process.env },
+            });
+            btEntries = lib.parseBacktestJson(stdout, date);
+          } catch (e: any) {
+            console.error(`[missed-entries] backtest failed: ${e.message ?? e}`);
+          }
+        })());
+      }
+      if (!skipLive && ideals.length > 0) {
+        tasks.push((async () => {
+          try {
+            // closePool=false: dashboard uses a long-lived pool
+            liveLayer = await lib.fetchLiveLayer(ticker, date, { closePool: false });
+          } catch (e: any) {
+            console.error(`[missed-entries] live DB failed: ${e.message ?? e}`);
+          }
+        })());
+      }
+      await Promise.all(tasks);
+
+      const verified = ideals.map(ideal => {
+        const bt = !skipBacktest && btEntries ? lib.matchBacktest(ideal, btEntries) : null;
+        const live = !skipLive && liveLayer ? lib.matchLive(ideal, liveLayer.signals, liveLayer.dispatches) : null;
+        const verdict = (skipBacktest && skipLive) ? 'NO_DATA' : lib.classifyVerdict(bt, live);
+        return {
+          entryTimeET: lib.fmtET(lib.barCloseTs(ideal.ts)),
+          entryTsUtc: new Date(lib.barCloseTs(ideal.ts)).toISOString(),
+          peakTimeET: lib.fmtET(lib.barCloseTs(ideal.peakTs)),
+          direction: ideal.direction,
+          entryPrice: ideal.entryPrice,
+          peakPrice: ideal.peakPrice,
+          mfePct: Number(ideal.mfePct.toFixed(3)),
+          maePct: Number(ideal.maePct.toFixed(3)),
+          rMultiple: Number(ideal.rMultiple.toFixed(2)),
+          ttpMin: Number(ideal.ttpMin.toFixed(1)),
+          grade: ideal.grade,
+          // null = backtest skipped; { entry: null } = backtest ran, no same-direction match
+          backtest: bt ? {
+            entry: bt.entry ? {
+              timeET: lib.fmtET(bt.entry.ts), status: bt.entry.status,
+              direction: bt.entry.direction, confidence: bt.entry.confidence,
+              mode: bt.entry.mode, grade: bt.entry.grade, filterRule: bt.entry.filterRule,
+            } : null,
+          } : null,
+          live: live ? {
+            peakSignal: live.peakSignal ? {
+              timeET: lib.fmtET(live.peakSignal.ts), confidence: live.peakSignal.confidence,
+              meets: live.peakSignal.meets, alignment: live.peakSignal.alignment,
+            } : null,
+            enterDispatch: live.enterDispatch ? { timeET: lib.fmtET(live.enterDispatch.ts) } : null,
+          } : null,
+          verdict,
+        };
+      });
+
+      // Compact OHLC for charting (no volume — keep payload small)
+      const chartBars = bars.map(b => ({
+        t: b.ts, o: b.o, h: b.h, l: b.l, c: b.c,
+      }));
+
+      res.json({
+        ok: true, ticker, date,
+        barCount: bars.length,
+        thresholds: detectArgs,
+        verify: { backtest: !skipBacktest && btEntries != null, live: !skipLive && liveLayer != null },
+        bars: chartBars,
+        entries: verified,
+      });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message ?? String(err) });
     }
   });
 
