@@ -1,35 +1,48 @@
 /**
  * QQQ-specific trading strategy.
  *
- * Built from scratch 2026-04-28 — discarded the prior QQQ tuning chain (filters
- * c10fe8f / 7f6df42 / b2635a5 / 3ced689 / 2bb1b39 + the SPY-cloned baseline
- * from the 2026-04-22 session) and starting fresh from bare baseline. Same
- * playbook as SPY `6c2bb9f`, IWM `eaa89cb`, and DIA `b21bf7b` rebuilds: start
- * with regime score only, mine F-clusters from 15-mo QQQ backtest, add
- * filters incrementally based on what QQQ's data actually shows.
- *
- * QQQ tracks the Nasdaq-100 — fundamental microstructure:
- *   - 100 large-cap tech-heavy constituents
- *   - High absolute price (~$480-520 currently), comparable to SPY
- *   - Tight options spreads, deep open interest (third most-traded ETF)
- *   - Tech-weighted: AAPL/MSFT/NVDA/META/GOOGL drive ~50% of moves
- *   - Typical atrPct 0.10-0.22 (slightly higher than SPY 0.08-0.18)
- *   - More single-name news sensitivity than SPY's broader basket
+ * Baseline cloned from strategies/spy.ts on 2026-04-22 — SPY filters and
+ * confidence adjustments are the starting point for tuning QQQ. Replace /
+ * extend below as QQQ-specific backtest evidence emerges.
  */
 
 import type { PartialTickerStrategy, EntryContext } from './strategy.js';
 import type { ConfidenceBreakdown } from '../types/analysis.js';
 import type { TimeframeIndicators } from '../types/indicators.js';
 import type { SignalDirection } from '../types/signal.js';
-import { defaultStrategy } from './default.js';
 
+// ── Module-level state: regime score computed in detectMode, read in shouldAllowEntry ──
+// Safe because QQQ pipeline runs serially (one tick at a time per symbol).
 let _lastRegimeScore = 50;
 
+// ── QQQ Mode Detection ──────────────────────────────────────────────────────
+// Same as default but also computes and caches the regime score.
+
+import { defaultStrategy } from './default.js';
+
+/**
+ * Compute intraday regime score — hybrid of real-time candle data + DMI anchor.
+ *
+ * Candle-based components (real-time, no lag):
+ *   A. Choppiness — direction flip frequency in recent bars
+ *   B. Displacement velocity — rate of price movement from day open
+ *   C. Trend strength — consecutive directional closes
+ *
+ * DMI-anchored component (smoothed, confirms trend is established):
+ *   D. ADX level — only contributes when ADX >= 20 (confirmed trend)
+ *
+ * VWAP component (minimal lag — recalculated every bar):
+ *   E. VWAP distance — how far price is from session VWAP
+ *
+ * Bars are filtered to today's regular session to avoid warmup-data corruption.
+ */
 function computeRegimeScore(
   bars: readonly { timestamp: string; open: number; high: number; low: number; close: number }[],
   vwapPriceVs: number,
   adx: number,
 ): number {
+  // Derive "today" from the last bar's timestamp so this works identically in
+  // live and backtest mode (see SPY parity note in strategies/spy.ts).
   const lastBar = bars[bars.length - 1];
   if (!lastBar) return 50;
   const todayStr = lastBar.timestamp.slice(0, 10);
@@ -38,10 +51,11 @@ function computeRegimeScore(
     const h = parseInt(b.timestamp.slice(11, 13), 10);
     const m = parseInt(b.timestamp.slice(14, 16), 10);
     const mins = h * 60 + m;
-    return mins >= 810 && mins < 1200;
+    return mins >= 810 && mins < 1200; // 13:30–20:00 UTC
   });
   if (todayBars.length < 20) return 50;
 
+  // A. Choppiness — direction flips in last 30 bars (real-time)
   const recent30 = todayBars.slice(-30);
   let flips = 0;
   let prevDir: 'up' | 'down' | null = null;
@@ -54,6 +68,7 @@ function computeRegimeScore(
   const choppiness = Math.max(0, Math.min(4, flips / expectedFlips));
   const choppinessComponent = (1 - choppiness) * 15;
 
+  // B. Displacement velocity — recent 5 bars vs prior 5 bars (real-time)
   const dayOpen = todayBars[0]!.open;
   let velocityComponent = 0;
   if (dayOpen > 0 && todayBars.length >= 10) {
@@ -64,6 +79,7 @@ function computeRegimeScore(
     velocityComponent = Math.min(10, Math.max(-10, (avgRecent - avgPrior) * 15));
   }
 
+  // C. Trend strength — consecutive directional closes (real-time)
   const last10 = todayBars.slice(-10);
   let consecUp = 0, consecDown = 0, maxConsecUp = 0, maxConsecDown = 0;
   for (let i = 1; i < last10.length; i++) {
@@ -76,7 +92,11 @@ function computeRegimeScore(
     }
   }
   const trendStrComponent = Math.min(10, Math.max(maxConsecUp, maxConsecDown) * 2.5);
+
+  // D. ADX anchor — confirms trend is established (lagged but stabilizing)
   const adxComponent = adx >= 20 ? Math.min(15, (adx - 20) * 1.0) : 0;
+
+  // E. VWAP distance — how extended from mean (minimal lag)
   const vwapComponent = Math.min(10, Math.abs(vwapPriceVs) / 0.20 * 10);
 
   return Math.round(Math.max(0, Math.min(100,
@@ -97,141 +117,225 @@ function qqqDetectMode(
       ltf.dmi.adx,
     );
   }
+
+  // Delegate to default mode detection (no changes to mode logic)
   return defaultStrategy.detectMode(tfIndicators, direction, currentPrice);
 }
 
-// Filters added incrementally from 15-mo QQQ F-cluster mining.
-// Order matches backtest-configs/qqq.ts (single source of truth).
+// ── QQQ Confidence Adjustment (cloned from SPY) ─────────────────────────────
+
+function qqqAdjustConfidence(breakdown: ConfidenceBreakdown, ctx: EntryContext): ConfidenceBreakdown {
+  let bd = breakdown;
+
+  // Regime-gated suppression of perverse-signed momentum factors when ADX is
+  // flat/declining (trendPhaseBonus <= 0) — see strategies/spy.ts for the
+  // factor-orthogonality evidence that motivated this gate.
+  if (bd.trendPhaseBonus <= 0) {
+    if (bd.priceVelocityBonus !== 0) {
+      bd = bd === breakdown ? { ...bd } : bd;
+      bd.total -= bd.priceVelocityBonus;
+      bd.priceVelocityBonus = 0;
+      bd.total = Math.max(0, Math.min(1, bd.total));
+    }
+    if (bd.pricePositionAdjustment !== 0) {
+      bd = bd === breakdown ? { ...bd } : bd;
+      bd.total -= bd.pricePositionAdjustment;
+      bd.pricePositionAdjustment = 0;
+      bd.total = Math.max(0, Math.min(1, bd.total));
+    }
+    if (bd.macdBonus !== 0) {
+      bd = bd === breakdown ? { ...bd } : bd;
+      bd.total -= bd.macdBonus;
+      bd.macdBonus = 0;
+      bd.total = Math.max(0, Math.min(1, bd.total));
+    }
+  }
+
+  // Bullish entries with non-positive trendPhaseBonus: zero vwapBonus.
+  // vwap lift is noise when trend-phase isn't confirming; bearish side kept intact.
+  if (ctx.direction === 'bullish' && bd.trendPhaseBonus <= 0) {
+    if (bd.vwapBonus !== 0) {
+      bd = bd === breakdown ? { ...bd } : bd;
+      bd.total -= bd.vwapBonus;
+      bd.vwapBonus = 0;
+      bd.total = Math.max(0, Math.min(1, bd.total));
+    }
+  }
+
+  // Suppress positive PA bonus for bullish trend entries at high regime (>= 75):
+  // confirming bars in a high-regime tape are the final push, not fresh momentum.
+  if (ctx.signalMode === 'trend' && ctx.direction === 'bullish'
+      && _lastRegimeScore >= 75 && bd.recentPriceActionBonus > 0) {
+    bd = { ...bd };
+    bd.total -= bd.recentPriceActionBonus;
+    bd.recentPriceActionBonus = 0;
+    bd.total = Math.max(0, Math.min(1, bd.total));
+  }
+
+  // Reversal trap penalty: trendPhaseBonus <= 0 + strong PA (>= 0.06) = lagging
+  // indicators chasing a move that's already over.
+  if (ctx.signalMode === 'trend'
+      && bd.trendPhaseBonus <= 0
+      && bd.recentPriceActionBonus >= 0.06) {
+    bd = bd === breakdown ? { ...bd } : bd;
+    const penalty = 0.06;
+    bd.recentPriceActionBonus -= Math.min(bd.recentPriceActionBonus, penalty);
+    bd.total -= penalty;
+    bd.total = Math.max(0, Math.min(1, bd.total));
+  }
+
+  // Strong trend continuation relief: all_aligned + ADX strong & rising
+  // over-penalizes genuine continuation. Halve the severe portions of
+  // moveExhaustion and (if severe) adxMaturity, and unlock trendPersistenceBonus.
+  if (ctx.signalMode === 'trend'
+      && ctx.alignment === 'all_aligned'
+      && bd.trendPhaseBonus > 0          // ADX still rising
+      && bd.adxBonus >= 0.05             // ADX > 25
+      && bd.moveExhaustionPenalty <= -0.10) {
+    bd = bd === breakdown ? { ...bd } : bd;
+    const exhRelief = -bd.moveExhaustionPenalty * 0.5;
+    bd.moveExhaustionPenalty *= 0.5;
+    bd.total += exhRelief;
+    if (bd.adxMaturityPenalty <= -0.08) {
+      const matRelief = -bd.adxMaturityPenalty * 0.5;
+      bd.adxMaturityPenalty *= 0.5;
+      bd.total += matRelief;
+    }
+    if (bd.structureBonus <= 0) {
+      bd.structureBonus = 0.01;
+    }
+    bd.total = Math.max(0, Math.min(1, bd.total));
+  }
+
+  return bd;
+}
+
+// ── QQQ Entry Filter (cloned from SPY) ──────────────────────────────────────
+
 function qqqShouldAllowEntry(ctx: EntryContext): true | string {
-  // v1: bullish low-atr (any mode).
-  // Bare-baseline mining (n=579 bullish, exp -0.385): bullish at atr < 0.6 is
-  // structurally bad. Discrim Δexp +0.252, blocks 135 entries (2A/9B/17C/18D/
-  // 89F = 66% F). Same low-atr family as SPY v1 (atr<0.6) and IWM v4 (atr<0.4)
-  // — Nasdaq-100 basket low-vol regime is the "drift sideways" pattern that
-  // chops up bullish entries.
-  if (ctx.direction === 'bullish' && ctx.atr < 0.60) {
-    return `bullish low atr ${ctx.atr.toFixed(2)} < 0.60`;
+  const { signalMode, direction, atr, currentPrice } = ctx;
+
+  const atrPct = currentPrice > 0 ? (atr / currentPrice) * 100 : 0;
+  if (signalMode === 'breakout' && atrPct < 0.08) return `breakout atrPct ${atrPct.toFixed(3)}% < 0.08%`;
+
+  if (signalMode === 'breakout' && ctx.displacementVelocity !== undefined
+      && ctx.displacementVelocity < -0.05) return `breakout dvel ${ctx.displacementVelocity.toFixed(4)} < -0.05`;
+
+  if (signalMode === 'trend' && atr < 0.45) return `trend atr ${atr.toFixed(3)} < 0.45`;
+
+  if (signalMode === 'trend' && ctx.displacementVelocity !== undefined
+      && ctx.displacementVelocity > 0.10) return `trend high dvel ${ctx.displacementVelocity.toFixed(4)} > 0.10 (chasing)`;
+
+  if (signalMode === 'trend'
+      && ctx.rangeExhaustion !== undefined && ctx.rangeExhaustion > 6.0
+      && ctx.choppiness !== undefined && ctx.choppiness >= 2.0) return `trend exhausted+choppy rExh=${ctx.rangeExhaustion.toFixed(1)} chop=${ctx.choppiness.toFixed(2)}`;
+
+  if (signalMode === 'trend'
+      && ctx.rangeExhaustion !== undefined && ctx.rangeExhaustion >= 8.0
+      && ctx.displacementVelocity !== undefined && ctx.displacementVelocity < 0.04
+      && ctx.alignment !== 'all_aligned') return `trend exhausted+fading rExh=${ctx.rangeExhaustion.toFixed(1)} dvel=${ctx.displacementVelocity.toFixed(4)} (stalled)`;
+
+  if (direction === 'bullish'
+      && ctx.displacementVelocity !== undefined
+      && ctx.displacementVelocity < -0.04 && ctx.displacementVelocity >= -0.05) return `bullish dvel ${ctx.displacementVelocity.toFixed(4)} in [-0.05, -0.04)`;
+
+  if (signalMode === 'breakout'
+      && ctx.rangeExhaustion !== undefined && ctx.rangeExhaustion < 1.0) return `breakout rangeExhaustion ${ctx.rangeExhaustion.toFixed(1)} < 1.0 (early morning)`;
+
+  if (signalMode === 'breakout'
+      && ctx.choppiness !== undefined && ctx.choppiness >= 0.90
+      && ctx.displacementVelocity !== undefined && ctx.displacementVelocity < 0.10) return `breakout chop+lowDvel chop=${ctx.choppiness.toFixed(2)} dvel=${ctx.displacementVelocity.toFixed(4)}`;
+
+  if (signalMode === 'breakout' && ctx.confidence < 0.74) return `breakout confidence ${(ctx.confidence * 100).toFixed(0)}% < 74%`;
+
+  if (signalMode === 'breakout'
+      && ctx.rangeExhaustion !== undefined && ctx.rangeExhaustion >= 9.0
+      && ctx.choppiness !== undefined && ctx.choppiness >= 1.0) return `breakout highExh+highChop rExh=${ctx.rangeExhaustion.toFixed(1)} chop=${ctx.choppiness.toFixed(2)}`;
+
+  // Conf>=0.95 carve-out (2026-04-24): see strategies/spy.ts rationale.
+  if (signalMode === 'breakout'
+      && ctx.confidence < 0.95
+      && ctx.choppiness !== undefined && ctx.choppiness >= 2.0) return `breakout extremeChop ${ctx.choppiness.toFixed(2)} >= 2.0`;
+
+  if (signalMode === 'breakout'
+      && ctx.rangeExhaustion !== undefined && ctx.rangeExhaustion >= 9.0) return `breakout extremeExhaustion ${ctx.rangeExhaustion.toFixed(1)} >= 9.0`;
+
+  if (signalMode === 'breakout' && _lastRegimeScore >= 80) return `breakout regime ${_lastRegimeScore} >= 80`;
+
+  if (signalMode === 'breakout' && direction === 'bullish'
+      && ctx.rangeExhaustion !== undefined && ctx.rangeExhaustion >= 4.5
+      && _lastRegimeScore >= 65) return `bullish breakout highExh+regime rExh=${ctx.rangeExhaustion.toFixed(1)} regime=${_lastRegimeScore}`;
+
+  if (direction === 'bullish' && _lastRegimeScore <= 50) return `bullish lowRegime ${_lastRegimeScore} <= 50`;
+
+  // Mid-strength kill zone, with carve-outs for strength==71/77 which rejected-goods
+  // mining showed are AB-biased: strength=71 blocks 10A/3B/9C/0D/3F, strength=77
+  // blocks 9A/0B/2C/0D/5F. Other strengths 70-79 are net F-biased.
+  if (ctx.strengthScore >= 70 && ctx.strengthScore < 80
+      && ctx.strengthScore !== 71 && ctx.strengthScore !== 77) {
+    return `mid-strength kill zone ${ctx.strengthScore}`;
   }
 
-  // v2: bullish afternoon dead-zone (210-300m = 14:00-15:30 ET, any mode).
-  // Post-v1 mining surfaced 14:00-15:30 ET as the worst bullish pocket.
-  // Slice analysis on n=1127 post-v1:
-  //   bullish m[210,240): n=24 exp -1.208 dir-acc collapses (15F = 62%)
-  //   bullish m[240,270): n=19 exp -0.842 (11F)
-  //   bullish m[270,300): n=20 exp -0.600 (12F)
-  //   combined m[210,300): n=63 exp -0.905 (8A/7B/6C/4D/38F = 60% F)
-  // Both modes uniformly bad (trend exp -0.90, breakout exp -0.93). QQQ
-  // tech basket bullish entries during early-afternoon are the dead zone
-  // when systematic flow stalls before EOD positioning.
-  if (ctx.direction === 'bullish' && ctx.minutesSinceOpen !== undefined
-      && ctx.minutesSinceOpen >= 210 && ctx.minutesSinceOpen < 300) {
-    return `bullish afternoon ${ctx.minutesSinceOpen}m (14:00-15:30 ET)`;
+  if (direction === 'bullish' && signalMode === 'trend'
+      && ctx.breakdown.orbBonus >= 0.04) {
+    return `bullish trend+orb ${ctx.breakdown.orbBonus.toFixed(2)}`;
   }
 
-  // v3: bullish post-lunch dead-zone (150-210m = 12:00-13:30 ET, any mode).
-  // Post-v2 mining (n=1075 exp -0.101): bullish 12:00-13:30 ET is the second
-  // bad pocket adjacent to v2's afternoon block:
-  //   bullish m[150,180): n=44 exp -0.682 (20F = 45% F)
-  //   bullish m[180,210): n=30 exp -0.467 (15F = 50% F)
-  //   combined m[150,210): n=74 exp -0.595 (~35F)
-  // Mid-day flow lull on tech basket — same family as SPY v9 (12:00-13:30 ET)
-  // but QQQ's worst-pocket window 150-210m matches SPY's window exactly.
-  // Combined with v2 (210-300m), the full 12:00-15:30 ET bullish dead zone
-  // is now blocked.
-  if (ctx.direction === 'bullish' && ctx.minutesSinceOpen !== undefined
-      && ctx.minutesSinceOpen >= 150 && ctx.minutesSinceOpen < 210) {
-    return `bullish post-lunch ${ctx.minutesSinceOpen}m (12:00-13:30 ET)`;
-  }
-
-  // v4: bullish-breakout U-shape carve-out — block both atr extremes.
-  // Post-v3 mining (n=1007 exp -0.053) on bullish-breakout × atr revealed
-  // a clean U-shape: middle 0.7-1.0 is positive, tails [0.6,0.7) and
-  // [1.0,1.2) are bad (atr[1.2,1.3) is positive again so excluded):
-  //   bullish-breakout atr[0.6,0.7): n=19 exp -0.474 (8F = 42% F)
-  //   bullish-breakout atr[0.7,1.0): n=31 exp +0.484 (4F = 13% F)  — KEEP
-  //   bullish-breakout atr[1.0,1.2): n=13 exp -1.231 (10F = 77% F)
-  //   bullish-breakout atr[1.2,1.3): n=7 exp +0.143 (3A/2F)         — KEEP
-  // Combined block atr[0.6,0.7) ∪ atr[1.0,1.2) targets the two bad pockets
-  // surrounding the positive 0.7-1.0 sweet spot — bullish breakouts only
-  // work in QQQ when atr is in the 0.7-1.0 expansion range. Below 0.7
-  // breakout lacks momentum; in [1.0,1.2) it's exhaustion of an already-
-  // extended move (atr>=1.2 recovers, suggesting the regime shifts).
-  if (ctx.direction === 'bullish' && ctx.signalMode === 'breakout'
-      && ((ctx.atr >= 0.60 && ctx.atr < 0.70) || (ctx.atr >= 1.0 && ctx.atr < 1.2))) {
-    return `bullish-breakout U-shape atr ${ctx.atr.toFixed(2)} (bad tail)`;
-  }
-
-  // v5: bearish-trend afternoon dead-zone (270-360m = 14:00-15:30 ET).
-  // Bearish version of v2's afternoon dead-zone, but trend-mode-only to
-  // limit cascade exposure. Prior any-mode any-atr atr<0.60 attempt blew
-  // out 2025-10 (-0.245) via cluster cascade; this rule narrows scope:
-  //   bearish-trend m[270,300): n=20 exp -0.7 (11F = 55% F)
-  //   bearish-trend m[300,330): n=13 exp -0.154 (4F)
-  //   bearish-trend m[330,360): n=10 exp -1.0 (7F = 70% F)
-  //   combined m[270,360): n=43 (8A/6B/5C/3D/21F = 49% F) exp -0.535
-  // Bearish breakout in same window is also negative but milder; restricting
-  // to trend-mode catches the sharpest F cluster while leaving more entries
-  // to backfill if cascade replacement does fire.
-  if (ctx.direction === 'bearish' && ctx.signalMode === 'trend'
+  // Mode=breakout carve-out (2026-04-24): midday chop filter catches trend-mode chop,
+  // not genuine breakouts. See strategies/spy.ts for evidence.
+  if (signalMode !== 'breakout'
       && ctx.minutesSinceOpen !== undefined
-      && ctx.minutesSinceOpen >= 270 && ctx.minutesSinceOpen < 360) {
-    return `bearish-trend afternoon ${ctx.minutesSinceOpen}m (14:00-15:30 ET)`;
+      && ctx.minutesSinceOpen >= 210 && ctx.minutesSinceOpen < 225) {
+    return `midday chop window ${ctx.minutesSinceOpen}m (13:00-13:15 ET)`;
   }
 
-  // v6: bullish-trend pre-lunch dead-zone (120-150m = 11:30-12:00 ET).
-  // Adjacent-and-extending v3 (bullish 12:00-13:30 ET any mode), but in
-  // bullish-trend mode only. Post-v5 mining (n=954 exp -0.002) revealed
-  // the 11:30-12:00 ET bin is mode-asymmetric:
-  //   bullish-trend m[120,150):    n=46 (4A/7B/14C/6D/15F = 33% F) exp -0.457
-  //   bullish-breakout m[120,150): n=8  (2A/4B/1C/1D/0F = 0% F)    exp +1.0
-  // Bullish breakout in same window is actually POSITIVE, so any-mode
-  // block would over-fire and hurt; restricting to trend mode catches the
-  // sharp F cluster cleanly. Together with v3 (any-mode 12:00-13:30 ET),
-  // bullish-trend now blocked through entire 11:30-13:30 ET stretch.
-  if (ctx.direction === 'bullish' && ctx.signalMode === 'trend'
-      && ctx.minutesSinceOpen !== undefined
-      && ctx.minutesSinceOpen >= 120 && ctx.minutesSinceOpen < 150) {
-    return `bullish-trend pre-lunch ${ctx.minutesSinceOpen}m (11:30-12:00 ET)`;
+  if (direction === 'bearish' && ctx.breakdown.pricePositionAdjustment <= -0.028) {
+    return `bearish deep pricePos ${ctx.breakdown.pricePositionAdjustment.toFixed(3)} (exhausted)`;
   }
 
-  // v7: bearish low-atr block (any mode, atr < 0.50).
-  // Bearish counterpart to v1 (bullish atr<0.60), but tighter threshold.
-  // Post-v6 mining ranked bearish atr<0.60 highest (adj +0.026), but the
-  // wider cut REVERT'd via 2025-10 cascade (-0.215 month, 52→51 entries
-  // but -2A/-1B/-1C and +3F). Falling back to the lower-cascade variant:
-  //   bearish atr<0.50: n=46 (6A/7B/4C/1D/28F = 61% F) exp -0.957
-  //   bearish atr<0.60: n=93 (14A/10B/12C/8D/49F = 53% F) exp -0.731  [REVERT'd]
-  // Tighter threshold catches the densest F-cluster (61% F vs 53%), with
-  // cascade risk 32% (vs 38%) since fewer entries are freed for backfill.
-  // Same low-vol "drift sideways" regime as bullish v1, just on downside.
-  if (ctx.direction === 'bearish' && ctx.atr < 0.50) {
-    return `bearish low atr ${ctx.atr.toFixed(2)} < 0.50`;
+  // Bullish symmetric PA filter — mine-breakdown post-528a58d (low-cascade 24%).
+  // Bullish side: 14 hits split 1A/1B/1C/3D/8F at pricePositionAdjustment <-0.028.
+  // Same threshold as bearish rule above for consistency.
+  if (direction === 'bullish' && ctx.breakdown.pricePositionAdjustment <= -0.028) {
+    return `bullish deep pricePos ${ctx.breakdown.pricePositionAdjustment.toFixed(3)} (against-trend)`;
   }
 
-  // v8: bearish high-rp top-extreme block (pricePositionAdjustment <= -0.0763).
-  // pricePositionAdjustment is the analysis-agent penalty for trading against
-  // range position — large negative ≈ bearish signal but price near top of
-  // HTF swing range (counter-trend top-extreme setup). Mining 15-mo QQQ:
-  //   bearish ppa <= -0.0763: n=31 (5A/2B/0C/0D/24F = 77% F-rate)
-  //   F-catch 11%, AB-loss 2% (only 7 AB out of 217 across the bearish pool).
-  //   Raw exp lift +0.062, cascade-adjusted +0.028.
-  // Same field family as SPY's first breakdown-miner merge (bearish ppa <= -0.028,
-  // +0.056). QQQ distribution is tighter so threshold is more extreme.
-  if (ctx.direction === 'bearish' && ctx.breakdown.pricePositionAdjustment <= -0.0763) {
-    return `bearish top-extreme ppa ${ctx.breakdown.pricePositionAdjustment.toFixed(3)} <= -0.076`;
+  // Mode=breakout carve-out (2026-04-24): across 6 QQQ historical extreme-atr
+  // rejections in mode=breakout, 4 were Grade A (67% AB, rawCost +6). The filter
+  // correctly catches high-ATR trend-mode entries but blocks genuine breakouts.
+  if (signalMode !== 'breakout' && ctx.atr >= 1.33) {
+    return `extreme atr ${ctx.atr.toFixed(2)} >= 1.33`;
+  }
+
+  // Low-volatility bearish filter — at atr < 0.6 bearish entries cluster 17F /
+  // 4B / 3A (F-rate 50%). Complements the existing trend+atr<0.45 rule by
+  // catching the 0.45-0.60 band and cross-mode bearish low-vol traps.
+  if (direction === 'bearish' && ctx.atr < 0.6) {
+    return `bearish low atr ${ctx.atr.toFixed(2)} < 0.6 (F-biased)`;
+  }
+
+  // High macdBonus bullish filter — mined post-73dc19f. Full cut (macd>0.03
+  // both directions) gave +0.204 gross but breached -0.15 floor in 4 months
+  // (2025-05/07/08, 2026-02) — bearish side loses 10 A-grades. Bullish side
+  // clean: 0A/3B/4C/1D/10F (F=56%, no A losses) → raw +0.046, low risk.
+  if (direction === 'bullish' && ctx.breakdown.macdBonus > 0.03) {
+    return `bullish high macdBonus ${ctx.breakdown.macdBonus.toFixed(3)} > 0.03 (trend-chase)`;
+  }
+
+  // Bearish saturated-strength macd filter — mined post-c10fe8f. Bearish side
+  // of macd>0.03 had 10A losses flat, but the strength==100 subcluster is
+  // 18F / 1A / 1B (20 hits) — late-stage short into maxed-out momentum.
+  if (direction === 'bearish' && ctx.breakdown.macdBonus > 0.03 && ctx.strengthScore === 100) {
+    return `bearish saturated macd+strength (macd=${ctx.breakdown.macdBonus.toFixed(3)})`;
   }
 
   return true;
 }
 
-function qqqAdjustConfidence(breakdown: ConfidenceBreakdown, _ctx: EntryContext): ConfidenceBreakdown {
-  return breakdown;
-}
+// ── Export ────────────────────────────────────────────────────────────────────
 
 export const qqqStrategy: PartialTickerStrategy = {
   detectMode: qqqDetectMode,
-  shouldAllowEntry: qqqShouldAllowEntry,
   adjustConfidence: qqqAdjustConfidence,
+  shouldAllowEntry: qqqShouldAllowEntry,
 };
-
-export { _lastRegimeScore };
