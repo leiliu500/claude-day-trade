@@ -348,6 +348,12 @@ interface EntryRecord {
   // Confirmation gate simulation
   gateResult: 'PASSED' | 'STAGE1_OBSERVE' | 'WEAKENING_BLOCK' | 'STALE_BLOCK' | 'HIGH_CONV_OVERRIDE' | 'PHASE_CHANGE_OVERRIDE';
   stage1Conf?: number;  // confidence at stage-1 (if applicable)
+  /** Specific entry-gate bypass path (when entry passed via override). High-conviction
+   *  bypasses (strong_signal/high_conviction/phase_change) match live behavior where
+   *  AI returns NEW_ENTRY despite a recently-closed position — the sim's position-aware
+   *  cooldown should let these through to mirror live's STRONG-SIGNAL/HIGH-CONV/
+   *  PHASE-CHANGE entry flows that fire even when a prior position just closed. */
+  entryBypass?: 'strong_signal' | 'high_conviction' | 'phase_change' | 'trend_consolidation' | 'range' | 'breakout' | 'vwap_reversion' | 'stage2_confirm' | null;
   // Regime context at entry time
   regimeScore?: number;
   rangeExhaustion?: number;
@@ -1072,13 +1078,22 @@ async function main() {
 
         // Map AI decision to gate result for compatibility with existing reporting
         let gateResult: EntryRecord['gateResult'];
+        let aiBypass: EntryRecord['entryBypass'] = null;
         if (decision.decisionType === 'NEW_ENTRY' && decision.shouldExecute) {
           if (decision.reasoning.includes('[PHASE-CHANGE OVERRIDE]')) {
             gateResult = 'PHASE_CHANGE_OVERRIDE';
+            aiBypass = 'phase_change';
           } else if (cb.total >= 0.92 && alignment === 'all_aligned') {
             gateResult = 'HIGH_CONV_OVERRIDE';
+            aiBypass = 'high_conviction';
           } else {
             gateResult = 'PASSED';
+            // Mirror entry-gate's strong-signal-bypass detection so dedup can
+            // honor it (matches live STRONG-SIGNAL BYPASS path).
+            if (cb.total >= 0.75 && alignment === 'all_aligned'
+                && signalMode !== 'breakout' && cb.recentPriceActionBonus >= 0) {
+              aiBypass = 'strong_signal';
+            }
           }
           lastEntryTs = currentTs;
           dailyEntryCount++;
@@ -1103,6 +1118,7 @@ async function main() {
           time: timeStr, timeET, direction, alignment, confidence: cb.total,
           price: currentPrice, strengthScore, signalMode, atr, ...fwd, breakdown: cb, ...regimeCtx,
           gateResult,
+          entryBypass: aiBypass,
           aiDecision: decision.decisionType,
           aiShouldExecute: decision.shouldExecute,
           aiReasoning: decision.reasoning,
@@ -1230,6 +1246,7 @@ async function main() {
             time: timeStr, timeET, direction, alignment, confidence: cb.total,
             price: currentPrice, strengthScore, signalMode, atr, ...fwd, breakdown: cb, ...regimeCtx,
             gateResult, stage1Conf: stage1ConfValue,
+            entryBypass: gate.bypass,
           });
         }
       }
@@ -1248,23 +1265,25 @@ async function main() {
   console.log(`  RESULTS: ${tickCount} ticks processed, ${entries.length} potential entries found`);
   console.log(`${'='.repeat(80)}\n`);
 
-  // Deduplicate and enforce cooldowns — matches live system behavior.
-  // Live scheduler runs every ~3 min, so entries < 3 min apart can't happen in production.
-  // Within a cooldown window: keep the first confirmed entry, skip duplicates.
-  // Position-aware: after a confirmed entry, skip re-entries until the sim position
-  // would have exited. This matches live behavior where the OrderAgent holds the
-  // position and subsequent signals become CONFIRM_HOLD, not NEW_ENTRY.
-  // Fallback to mode-based cooldown when sim hold duration is unavailable.
+  // Deduplicate — matches live system behavior.
+  // Live's actual cooldowns live in entry-gate.ts (range: 20m/max1, breakout: 30m/max2)
+  // and are already enforced upstream via evaluateEntryGate. The previous mode-based
+  // fallback here was redundant duplication of that logic.
+  //
+  // Position-aware cooldown: after a confirmed entry, skip re-entries until the sim
+  // position would have exited. This matches live behavior where the OrderAgent holds
+  // the position and subsequent signals become CONFIRM_HOLD, not NEW_ENTRY.
+  //
+  // BUT — high-conviction bypass paths (strong_signal/high_conviction/phase_change)
+  // mirror live AI decisions to fire NEW_ENTRY despite a recently-closed position.
+  // Live's OrderAgent uses option-premium velocity (sub-bar timing) for fast exits
+  // that backtest's bar-based sim can't reproduce, so the sim's positionExitTs is
+  // often too generous. When entry-gate explicitly identified a bypass, trust it.
   const isConfirmed = (e: EntryRecord) => e.gateResult === 'PASSED' || e.gateResult === 'HIGH_CONV_OVERRIDE' || e.gateResult === 'PHASE_CHANGE_OVERRIDE';
-  const cooldownByMode: Record<string, number> = {
-    trend: TREND_COOLDOWN_MIN * 60_000,
-    range: RANGE_COOLDOWN_MIN * 60_000,
-    breakout: BREAKOUT_COOLDOWN_MIN * 60_000,
-    vwap_reversion: RANGE_COOLDOWN_MIN * 60_000,
-  };
+  const isHighConvBypass = (e: EntryRecord) =>
+    e.entryBypass === 'strong_signal' || e.entryBypass === 'high_conviction' || e.entryBypass === 'phase_change';
   // Track when the current simulated position exits (position-aware cooldown)
   let positionExitTs = 0;
-  const lastConfirmedByMode = new Map<string, number>();
   const dedupedEntries: EntryRecord[] = [];
   for (const entry of entries) {
     const currTs = new Date(entry.time).getTime();
@@ -1276,26 +1295,18 @@ async function main() {
         if (isConfirmed(entry) && !isConfirmed(prev)) {
           dedupedEntries[dedupedEntries.length - 1] = entry;
           if (isConfirmed(entry)) {
-            lastConfirmedByMode.set(entry.signalMode, currTs);
             positionExitTs = currTs + entry.sim.holdMinutes * 60_000;
           }
         }
         continue;
       }
     }
-    // Position-aware cooldown: skip entries while a simulated position is still open.
-    // Matches live behavior where OrderAgent owns the position lifecycle.
-    if (isConfirmed(entry) && positionExitTs > 0 && currTs < positionExitTs) {
+    // Position-aware cooldown: skip while sim position is still open, UNLESS the
+    // entry came via a high-conviction bypass path (live AI would fire here too).
+    if (isConfirmed(entry) && positionExitTs > 0 && currTs < positionExitTs && !isHighConvBypass(entry)) {
       continue; // position still open — live would send CONFIRM_HOLD, not NEW_ENTRY
     }
-    // Fallback: mode-based cooldown when no position is active
     if (isConfirmed(entry)) {
-      const lastTs = lastConfirmedByMode.get(entry.signalMode) ?? 0;
-      const cooldown = cooldownByMode[entry.signalMode] ?? 0;
-      if (cooldown > 0 && lastTs > 0 && currTs - lastTs < cooldown) {
-        continue;
-      }
-      lastConfirmedByMode.set(entry.signalMode, currTs);
       positionExitTs = currTs + entry.sim.holdMinutes * 60_000;
     }
     dedupedEntries.push(entry);
