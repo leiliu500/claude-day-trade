@@ -473,9 +473,13 @@ async function main() {
       if (row.order_flow) {
         orderFlowByMinute.set(minuteKey, row.order_flow as import('../types/indicators.js').OrderFlowResult);
       }
-      // option_payload may be {} when option-fetch failed; only use when winnerCandidate exists
+      // option_payload is always loaded when non-empty so backtest replays both:
+      //   (a) real winnerCandidate volume/OI → correct oiVolumeBonus
+      //   (b) liquidityOk=false / candidatePass=false → live's hard gate that
+      //       overrode NEW_ENTRY to WAIT (e.g. when option-snapshot fetch failed,
+      //       observed: TSLA Apr 29 11:09-11:11 ET — ALL with liquidityOk=false)
       const opt = row.option_payload as OptionEvaluation | Record<string, never> | null;
-      if (opt && (opt as OptionEvaluation).winnerCandidate) {
+      if (opt && typeof (opt as OptionEvaluation).liquidityOk === 'boolean') {
         optionEvalByMinute.set(minuteKey, opt as OptionEvaluation);
       }
     }
@@ -1190,7 +1194,19 @@ async function main() {
         pushFilterBlocked(entryBlockReason);
       }
 
-      if (meetsThreshold && direction !== 'neutral') {
+      // Liquidity / candidate gate — mirrors decision-orchestrator.ts:374.
+      // Live's DecisionOrchestrator HARD-OVERRIDES NEW_ENTRY to WAIT when the
+      // option-agent reports liquidityOk=false or candidatePass=false (e.g. when
+      // the snapshot fetch failed or no contract met liquidity criteria). The
+      // mock optionEval has both true so this only fires when replaying live's
+      // recorded option_payload that captured a real liquidity rejection.
+      const liquidityGateBlocked = meetsThreshold && direction !== 'neutral'
+        && (!optionEval.liquidityOk || !optionEval.candidatePass);
+      if (liquidityGateBlocked) {
+        pushFilterBlocked('liquidity/candidate gate failed');
+      }
+
+      if (meetsThreshold && direction !== 'neutral' && !liquidityGateBlocked) {
         // ── Shared entry gate — same function used by live DecisionOrchestrator ──
         const htfTf = tfIndicators[2] ?? tfIndicators[0];
         const minutesSinceOpenGate = (currentTs - openTime.getTime()) / 60_000;
