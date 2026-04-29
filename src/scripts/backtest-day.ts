@@ -214,20 +214,35 @@ function aggregate1mBars(oneMins: OHLCVBar[], timeframe: Timeframe, upToTs: numb
 // computeTimeframeIndicators() and classifyAlignment() are shared with signal-agent.
 
 // ── Theta decay simulation ───────────────────────────────────────────────────
-// Simulates the theta decay penalty that the live system applies based on option
-// expiration proximity. In live trading, 0DTE options are the default choice,
-// so the backtest assumes 0DTE expiration on the target date.
+// Mirrors analysis-agent.ts:881-918 thetaDecayPenalty using SIMULATED tick time
+// instead of wall-clock now. When live's option_payload has a real winnerCandidate
+// in DB, we know the actual expiration and can apply the same 0DTE/1DTE schedule
+// the live agent does — but anchored to the tick's sim time, not when the backtest
+// runs. Without the expiration we fall back to assuming 0DTE on the target date.
 
-function simulateThetaDecay(signalTime: string, targetDate: string): number {
+function simulateThetaDecay(signalTime: string, targetDate: string, expDate?: string): number {
   const now = new Date(signalTime);
-  const marketCloseUtc = new Date(`${targetDate}T20:00:00Z`);
+  const todayStr = targetDate;
+  const marketCloseUtc = new Date(`${todayStr}T20:00:00Z`);
   const minutesToClose = (marketCloseUtc.getTime() - now.getTime()) / 60000;
 
-  // 0DTE: same logic as analysis-agent.ts
-  if (minutesToClose <= 30) return -0.10;
-  if (minutesToClose <= 60) return -0.06;
-  if (minutesToClose <= 90) return -0.03;
+  const exp = expDate ?? todayStr; // assume 0DTE when expiration unknown
 
+  if (exp === todayStr) {
+    // 0DTE
+    if (minutesToClose <= 30) return -0.10;
+    if (minutesToClose <= 60) return -0.06;
+    if (minutesToClose <= 90) return -0.03;
+    return 0;
+  }
+  // 1DTE check: expiration is the next calendar day
+  const tomorrow = new Date(`${todayStr}T00:00:00Z`);
+  tomorrow.setUTCDate(tomorrow.getUTCDate() + 1);
+  const tomorrowStr = tomorrow.toISOString().slice(0, 10);
+  if (exp === tomorrowStr) {
+    if (minutesToClose <= 150) return -0.06;
+    if (minutesToClose <= 180) return -0.03;
+  }
   return 0;
 }
 
@@ -437,30 +452,42 @@ async function main() {
     : 0;
   console.log(`  Recent daily volatility: ${avgDailyRangePct.toFixed(2)}% avg range (${recentDailyBars.length} days)\n`);
 
-  // ── Load historical order flow from live signal snapshots (if available) ──
-  // Replays the exact order flow data the live system used, keyed by minute.
-  // Falls back to no-flow when snapshots aren't available for this date.
+  // ── Load historical order flow + option evals from live signal snapshots ──
+  // Replays the exact data the live system used, keyed by minute.
+  // Falls back to no-flow / mockOptionEval when snapshots aren't available.
   const orderFlowByMinute = new Map<string, import('../types/indicators.js').OrderFlowResult>();
+  const optionEvalByMinute = new Map<string, OptionEvaluation>();
   try {
     const { getPool } = await import('../db/client.js');
     const pool = getPool();
-    const { rows } = await pool.query<{ created_at: string; order_flow: unknown }>(
-      `SELECT created_at, signal_payload->'orderFlow' as order_flow
+    const { rows } = await pool.query<{ created_at: string; order_flow: unknown; option_payload: unknown }>(
+      `SELECT created_at, signal_payload->'orderFlow' as order_flow, option_payload
        FROM trading.signal_snapshots
-       WHERE trade_date = $1 AND ticker = $2 AND signal_payload->'orderFlow' IS NOT NULL
+       WHERE trade_date = $1 AND ticker = $2
        ORDER BY created_at`,
       [TARGET_DATE, TICKER]
     );
     for (const row of rows) {
-      if (!row.order_flow) continue;
       // Key by HH:MM UTC for minute-level lookup
       const minuteKey = new Date(row.created_at).toISOString().slice(11, 16);
-      orderFlowByMinute.set(minuteKey, row.order_flow as import('../types/indicators.js').OrderFlowResult);
+      if (row.order_flow) {
+        orderFlowByMinute.set(minuteKey, row.order_flow as import('../types/indicators.js').OrderFlowResult);
+      }
+      // option_payload may be {} when option-fetch failed; only use when winnerCandidate exists
+      const opt = row.option_payload as OptionEvaluation | Record<string, never> | null;
+      if (opt && (opt as OptionEvaluation).winnerCandidate) {
+        optionEvalByMinute.set(minuteKey, opt as OptionEvaluation);
+      }
     }
     if (orderFlowByMinute.size > 0) {
       console.log(`  📊 Loaded ${orderFlowByMinute.size} order flow snapshots from live DB`);
     } else {
       console.log(`  ⚠ No order flow snapshots found for ${TARGET_DATE} — orderFlowBonus will be 0`);
+    }
+    if (optionEvalByMinute.size > 0) {
+      console.log(`  📊 Loaded ${optionEvalByMinute.size} option evaluations from live DB (real winnerCandidate volume/OI)`);
+    } else {
+      console.log(`  ⚠ No option evaluations found for ${TARGET_DATE} — oiVolumeBonus will be 0 (mock)`);
     }
     await (await import('../db/client.js')).closePool();
   } catch {
@@ -815,11 +842,23 @@ async function main() {
       }
     }
 
-    const optionEval = mockOptionEval(signal);
-    // Backtest theta-decay simulation. Live derives theta from
-    // option.winnerCandidate; the mock has none, so we inject the precomputed
-    // value into AnalysisAgent.run() via runtimeOpts.thetaOverride.
-    const thetaOverride = (signalMode === 'trend') ? simulateThetaDecay(signal.createdAt, TARGET_DATE) : 0;
+    // Prefer live's recorded option evaluation when available — gives backtest
+    // real winnerCandidate.volume / openInterest so analysis-agent can compute
+    // oiVolumeBonus accurately (matches live cb.total). Falls back to mock for
+    // historical dates where live didn't run.
+    const minuteKey = timeStr.slice(11, 16);
+    const liveOptEval = optionEvalByMinute.get(minuteKey);
+    const optionEval: OptionEvaluation = liveOptEval
+      ? { ...liveOptEval, signalId: signal.id }
+      : mockOptionEval(signal);
+    // Theta-decay penalty: analysis-agent's computeTrendConfidence uses `new Date()`
+    // (wall-clock) so backtest replays compute against the time we *run* the script,
+    // not the simulated tick time. Always inject our sim-time-anchored value via
+    // runtimeOpts.thetaOverride to match what live computed at signal-firing time.
+    const expDate = liveOptEval?.winnerCandidate?.contract.expiration;
+    const thetaOverride = signalMode === 'trend'
+      ? simulateThetaDecay(signal.createdAt, TARGET_DATE, expDate)
+      : 0;
 
     // Single source of truth: live AnalysisAgent.run() handles cb compute,
     // theta injection, adjustConfidence, persistence bonus, organic floor,

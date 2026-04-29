@@ -42,8 +42,8 @@ const openai = new OpenAI({ apiKey: config.OPENAI_API_KEY });
 /** Trend confidence model — SPY-tuned default.
  *  Calls computeConfidence which routes by signalMode; for trend signals
  *  (the default), it falls through to the trend-specific logic. */
-export const computeTrendConfidenceFn = (signal: SignalPayload, option: OptionEvaluation): ConfidenceBreakdown => {
-  return computeConfidence(signal, option);
+export const computeTrendConfidenceFn = (signal: SignalPayload, option: OptionEvaluation, nowArg?: Date): ConfidenceBreakdown => {
+  return computeConfidence(signal, option, nowArg);
 };
 /** Range confidence model — SPY-tuned default */
 export const computeRangeConfidenceFn = (signal: SignalPayload): ConfidenceBreakdown => {
@@ -92,7 +92,7 @@ function computeOrderFlowBonus(signal: SignalPayload): number {
  * Used internally by AnalysisAgent.run() for backward compat.
  * Strategies bypass this and call mode-specific functions directly.
  */
-function computeConfidence(signal: SignalPayload, option: OptionEvaluation): ConfidenceBreakdown {
+function computeConfidence(signal: SignalPayload, option: OptionEvaluation, nowArg?: Date): ConfidenceBreakdown {
   if (signal.signalMode === 'range') {
     return computeRangeConfidence(signal);
   }
@@ -881,7 +881,7 @@ function computeConfidence(signal: SignalPayload, option: OptionEvaluation): Con
   let thetaDecayPenalty = 0;
   if (option.winnerCandidate) {
     const expDate = option.winnerCandidate.contract.expiration; // YYYY-MM-DD
-    const now = new Date();
+    const now = nowArg ?? new Date();
     const todayStr = now.toISOString().slice(0, 10);
     const marketCloseUtc = new Date(`${todayStr}T20:00:00Z`);
     const minutesToClose = (marketCloseUtc.getTime() - now.getTime()) / 60000;
@@ -2153,16 +2153,16 @@ export class AnalysisAgent {
           ? strategy.computeRangeConfidence(signal)
           : signal.signalMode === 'breakout'
             ? strategy.computeBreakoutConfidence(signal)
-            : strategy.computeTrendConfidence(signal, option);
+            : strategy.computeTrendConfidence(signal, option, runtimeOpts?.now);
     } else {
-      cb = computeConfidence(signal, option);
+      cb = computeConfidence(signal, option, runtimeOpts?.now);
     }
 
-    // Backtest theta-decay simulation hook. Live OptionEvaluation has a
-    // winnerCandidate that lets computeTrendConfidence derive theta directly;
-    // backtest's mock has no candidate, so the caller injects a precomputed
-    // theta value here, BEFORE adjustConfidence sees cb.total.
-    if (runtimeOpts?.thetaOverride && runtimeOpts.thetaOverride !== 0 && signal.signalMode === 'trend') {
+    // Backtest theta-decay fallback. When the caller passes a precomputed
+    // thetaOverride (mock OptionEvaluation has no winnerCandidate), apply it
+    // here. With real winnerCandidate + sim now, computeTrendConfidence already
+    // handles theta correctly above and this hook is a no-op.
+    if (runtimeOpts?.thetaOverride && runtimeOpts.thetaOverride !== 0 && signal.signalMode === 'trend' && !option.winnerCandidate) {
       const t = runtimeOpts.thetaOverride;
       cb = { ...cb, thetaDecayPenalty: t, total: Math.max(0, Math.min(1, cb.total + t)) };
     }

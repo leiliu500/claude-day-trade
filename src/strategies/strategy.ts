@@ -83,7 +83,7 @@ export interface TickerStrategy {
    * Receives the full signal payload and option evaluation.
    * Returns a ConfidenceBreakdown with individual factor scores and total.
    */
-  computeTrendConfidence: (signal: SignalPayload, option: OptionEvaluation) => ConfidenceBreakdown;
+  computeTrendConfidence: (signal: SignalPayload, option: OptionEvaluation, now?: Date) => ConfidenceBreakdown;
 
   /**
    * Compute confidence score for range (mean-reversion) mode entries.
