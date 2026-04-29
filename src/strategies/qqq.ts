@@ -329,6 +329,14 @@ function qqqShouldAllowEntry(ctx: EntryContext): true | string {
     return `bearish saturated macd+strength (macd=${ctx.breakdown.macdBonus.toFixed(3)})`;
   }
 
+  // CANDIDATE A: anti-predictive confidence band on restored baseline.
+  // mine-f-signatures: blocks 31 (5A/3B/4C/1D/18F), F-catch 19%, AB-loss 5%,
+  // Δexp +0.109, cascade 56%. Memory warns this form failed on v8 chain at
+  // cascade=100% — restored chain is sparser so cascade is moderate. Probe.
+  if (ctx.confidence >= 0.85) {
+    return `anti-predictive confidence ${(ctx.confidence * 100).toFixed(0)}% >= 85`;
+  }
+
   return true;
 }
 
