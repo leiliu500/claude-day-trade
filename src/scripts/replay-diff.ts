@@ -176,16 +176,10 @@ async function main() {
   const todayBars = oneMins
     .filter(b => new Date(b.timestamp).getTime() >= dayStart);
 
-  // Seed stream cache matching alpaca-stream.ts seedHistoricalBars behavior.
-  // Live: first 1000 raw bars from (today - 4 days), filtered to regular session,
-  // trimmed to last 800.
-  const STREAM_SEED_LIMIT = 1000;
+  // Seed stream cache matching alpaca-stream.ts seedHistoricalBars (post-fix):
+  // paginate all 1m bars from 4 days back, filter to regular session, trim to 800.
   const BAR_CACHE_SIZE = 800;
-  const priorRaw = oneMins
-    .filter(b => new Date(b.timestamp).getTime() < dayStart)
-    .slice(0, STREAM_SEED_LIMIT);
-  const seedFiltered = priorRaw.filter(b => isRegularSession(b.timestamp));
-  const streamCache: OHLCVBar[] = seedFiltered.slice(-BAR_CACHE_SIZE);
+  const streamCache: OHLCVBar[] = priorBars.slice(-BAR_CACHE_SIZE);
   console.log(`  Seed cache: ${priorBars.length} prior-session 1m bars → cache ${streamCache.length}`);
 
   // Walk live ticks in order, advancing streamCache with bars that would have
