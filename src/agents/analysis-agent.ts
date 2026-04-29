@@ -1,12 +1,32 @@
 import OpenAI from 'openai';
 import { config } from '../config.js';
 import { loadSkillTemplate } from '../utils/skill-loader.js';
-import type { SignalPayload } from '../types/signal.js';
+import type { SignalPayload, SignalDirection, AlignmentType } from '../types/signal.js';
 import type { OptionEvaluation } from '../types/options.js';
 import type { AnalysisResult, ConfidenceBreakdown } from '../types/analysis.js';
 import { getRecentSignals } from '../db/repositories/signals.js';
 import { computeEntryMetrics, computeAtrRatio } from '../lib/entry-context.js';
 import { computePriceTopology } from '../topology/price-topology.js';
+
+// Runtime injection points so backtest can call AnalysisAgent.run() without
+// hitting the wall clock, the DB, or the Anthropic API. Live always passes
+// `undefined` and gets the production behavior.
+export interface AnalysisRuntimeOpts {
+  /** Override `new Date()` for the entry-window check. */
+  now?: Date;
+  /** Pre-fetched recent same-day signals (DESC by created_at). When provided,
+   *  the persistence-bonus block uses this list instead of querying the DB. */
+  recentSignals?: Array<{ direction: SignalDirection | null; alignment: AlignmentType }>;
+  /** Skip the Anthropic generateExplanation() call. */
+  skipAIExplanation?: boolean;
+  /** When non-zero (and signalMode='trend'), applied as the theta penalty on cb
+   *  AFTER computeConfidence and BEFORE adjustConfidence. Backtest uses this to
+   *  simulate option theta decay because mock OptionEvaluation has no winnerCandidate. */
+  thetaOverride?: number;
+  /** Force-disable the topology gate regardless of config.ENABLE_TOPOLOGY_GATE.
+   *  Backtest's --no-topo CLI flag uses this. */
+  skipTopology?: boolean;
+}
 
 const openai = new OpenAI({ apiKey: config.OPENAI_API_KEY });
 
@@ -2122,7 +2142,7 @@ async function generateExplanation(
 }
 
 export class AnalysisAgent {
-  async run(signal: SignalPayload, option: OptionEvaluation, timeGateOk = true, tickerCfg?: import('../ticker-configs.js').TickerConfig): Promise<AnalysisResult> {
+  async run(signal: SignalPayload, option: OptionEvaluation, timeGateOk = true, tickerCfg?: import('../ticker-configs.js').TickerConfig, runtimeOpts?: AnalysisRuntimeOpts): Promise<AnalysisResult> {
     // Use per-symbol strategy if available, otherwise fall back to internal router
     let cb: ConfidenceBreakdown;
     if (tickerCfg?.strategy) {
@@ -2136,6 +2156,15 @@ export class AnalysisAgent {
             : strategy.computeTrendConfidence(signal, option);
     } else {
       cb = computeConfidence(signal, option);
+    }
+
+    // Backtest theta-decay simulation hook. Live OptionEvaluation has a
+    // winnerCandidate that lets computeTrendConfidence derive theta directly;
+    // backtest's mock has no candidate, so the caller injects a precomputed
+    // theta value here, BEFORE adjustConfidence sees cb.total.
+    if (runtimeOpts?.thetaOverride && runtimeOpts.thetaOverride !== 0 && signal.signalMode === 'trend') {
+      const t = runtimeOpts.thetaOverride;
+      cb = { ...cb, thetaDecayPenalty: t, total: Math.max(0, Math.min(1, cb.total + t)) };
     }
 
     // ── Compute all 4 mode confidences for dashboard transparency ──
@@ -2226,7 +2255,7 @@ export class AnalysisAgent {
     const persistenceMode = signal.signalMode ?? 'none';
     if (signal.direction !== 'neutral' && (persistenceMode === 'trend' || persistenceMode === 'breakout') && cb.structureBonus > 0) {
       try {
-        const recentSignals = await getRecentSignals(signal.ticker, 10);
+        const recentSignals = runtimeOpts?.recentSignals ?? await getRecentSignals(signal.ticker, 10);
         let consecutiveCount = 0;
         for (const s of recentSignals) {
           if (s.direction === signal.direction &&
@@ -2306,7 +2335,7 @@ export class AnalysisAgent {
 
     // Per-symbol entry time window — block entries outside configured window
     if (meetsEntryThreshold && tickerCfg) {
-      const now = new Date();
+      const now = runtimeOpts?.now ?? new Date();
       const etParts = new Intl.DateTimeFormat('en-US', {
         timeZone: 'America/New_York', hour: '2-digit', minute: '2-digit', hour12: false,
       }).formatToParts(now);
@@ -2334,7 +2363,7 @@ export class AnalysisAgent {
     // (unconfirmed trend structure). Reduces confidence proportional to dimension
     // excess above 1.0. Blocks fragmented regimes outright.
     // Backtest validation (Oct 2025 – Apr 2026): -29 F, +1 good, net +30.
-    if (config.ENABLE_TOPOLOGY_GATE && meetsEntryThreshold) {
+    if (config.ENABLE_TOPOLOGY_GATE && !runtimeOpts?.skipTopology && meetsEntryThreshold) {
       const topoBars = signal.timeframes[0]?.bars?.slice(-200);
       if (topoBars && topoBars.length >= 50) {
         const priceTopo = computePriceTopology(topoBars, `${signal.ticker}_live`);
@@ -2378,8 +2407,10 @@ export class AnalysisAgent {
     let risks: string[] = [];
 
     // Only generate AI explanation when confidence meets the entry threshold
-    // AND the market is open — saves quota on pre/post-market ticks
-    if (meetsEntryThreshold && timeGateOk) {
+    // AND the market is open — saves quota on pre/post-market ticks.
+    // Backtest passes skipAIExplanation=true to avoid burning API quota across
+    // tens of thousands of ticks.
+    if (meetsEntryThreshold && timeGateOk && !runtimeOpts?.skipAIExplanation) {
       const ai = await generateExplanation(signal, option, cb);
       aiExplanation = ai.aiExplanation;
       keyFactors = ai.keyFactors;

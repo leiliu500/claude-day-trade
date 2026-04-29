@@ -23,6 +23,7 @@ import type { PositionContext, DecisionResult, DecisionType } from '../types/dec
 import { normalizeAlpacaBars } from '../types/market.js';
 import { v4 as uuidv4 } from 'uuid';
 import { DecisionOrchestrator } from '../agents/decision-orchestrator.js';
+import { AnalysisAgent } from '../agents/analysis-agent.js';
 import { evaluateEntryGate, type GateInput } from '../lib/entry-gate.js';
 import { type SimResult, estimateEntryPremium } from '../lib/order-agent-sim.js';
 import { evaluateTrend, evaluateRange, evaluateBreakout, evaluateVwapReversion, resolveMode } from '../strategies/default.js';
@@ -296,10 +297,12 @@ function filterCategory(reason: string): string {
   // Inline backtest filters
   if (reason.startsWith('trend_exhausted_reverting')) return 'trend_exhausted_reverting';
   if (reason.startsWith('trend_max_exhaustion')) return 'trend_max_exhaustion';
-  if (reason.startsWith('entry_window')) return 'entry_window';
+  if (reason.startsWith('entry_window') || reason.startsWith('entry window blocked')) return 'entry_window';
   if (reason.startsWith('topology_trajectory')) return 'topology_trajectory';
-  if (reason.startsWith('topology: REGIME fragmented')) return 'topology_fragmented';
+  if (reason.startsWith('topology: REGIME fragmented') || reason.startsWith('topology: fragmented')) return 'topology_fragmented';
   if (reason.startsWith('topology:')) return 'topology_dimension';
+  if (reason.startsWith('confidence ') && reason.includes('< ') && reason.endsWith('threshold')) return 'confidence_below_threshold';
+  if (reason.startsWith('organic confidence')) return 'organic_floor';
   return reason.replace(/[^a-zA-Z_]/g, '').slice(0, 40);
 }
 
@@ -524,6 +527,10 @@ async function main() {
 
   // ── AI orchestrator state (when --ai flag is used) ────────────────────────
   const orchestrator = USE_AI ? new DecisionOrchestrator() : null;
+  // Single AnalysisAgent instance — stateless, reused across all ticks.
+  // Backtest invokes its run() with runtimeOpts to inject simulated time,
+  // pre-tracked signal history, and to skip the Anthropic API call.
+  const analysisAgent = new AnalysisAgent();
   // Track recent decisions for PositionContext.recentDecisions (newest first)
   const backtestRecentDecisions: PositionContext['recentDecisions'] = [];
 
@@ -746,6 +753,11 @@ async function main() {
     // No qualifying regime — skip this bar (no default fallback)
     if (signalMode === 'none') continue;
 
+    // Set signalMode on the payload for downstream consumers (AnalysisAgent
+    // routes confidence-fn selection on signal.signalMode). The conditional
+    // assignments above only set it for 'breakout' / 'vwap_reversion'.
+    signal.signalMode = signalMode;
+
     // ── Entry metrics — uses shared computeEntryMetrics() (same code as live) ──
     // Get today's bars up to the current tick for metrics computation.
     const todayBarsToNow = targetDateBars.filter(b => {
@@ -800,109 +812,41 @@ async function main() {
     }
 
     const optionEval = mockOptionEval(signal);
-    // Live functions compute theta=0 with null winnerCandidate; apply backtest theta as post-processing
-    const cbFromLive = signalMode === 'vwap_reversion'
-      ? computeRangeConfidenceFn(signal)
-      : signalMode === 'range'
-        ? computeRangeConfidenceFn(signal)
-        : signalMode === 'breakout'
-          ? computeBreakoutConfidenceFn(signal)
-        : computeTrendConfidenceFn(signal, optionEval);
-    // Apply simulated theta decay for trend mode (range/breakout/vwap don't use theta in live)
-    const thetaPenalty = (signalMode === 'trend') ? simulateThetaDecay(signal.createdAt, TARGET_DATE) : 0;
-    const cbRaw: typeof cbFromLive = thetaPenalty !== 0
-      ? { ...cbFromLive, thetaDecayPenalty: thetaPenalty, total: Math.max(0, Math.min(1, cbFromLive.total + thetaPenalty)) }
-      : cbFromLive;
+    // Backtest theta-decay simulation. Live derives theta from
+    // option.winnerCandidate; the mock has none, so we inject the precomputed
+    // value into AnalysisAgent.run() via runtimeOpts.thetaOverride.
+    const thetaOverride = (signalMode === 'trend') ? simulateThetaDecay(signal.createdAt, TARGET_DATE) : 0;
 
-    // Per-ticker confidence adjustment hook — allows QQQ etc. to apply custom penalties
-    const entryCtx = {
-      signalMode, direction, alignment, confidence: cbRaw.total,
-      breakdown: cbRaw, strengthScore, currentPrice, atr,
-      rangeExhaustion, displacementVelocity, choppiness, trendConsolidationBreakout, atrRatio,
-      rangePosition: tfIndicators[2]?.priceStructure?.rangePosition
-        ?? tfIndicators[0]?.priceStructure?.rangePosition,
-      intradayTrendStrength, regimeScore, dailyEntryCount,
-      minutesSinceOpen: (currentTs - openTime.getTime()) / 60_000,
-      ltfBars,
-      ltfVwapPriceVs: tfIndicators[0]?.vwap?.priceVsVwap ?? 0,
-    };
-    // Use live strategy's adjustConfidence — same code that runs in production
-    let cb = LIVE_TICKER_CFG.strategy.adjustConfidence(cbRaw, entryCtx);
-    // Update entryCtx.confidence after adjustConfidence (matches live analysis-agent.ts line 2166)
-    entryCtx.confidence = cb.total;
-    entryCtx.breakdown = cb;
+    // Single source of truth: live AnalysisAgent.run() handles cb compute,
+    // theta injection, adjustConfidence, persistence bonus, organic floor,
+    // entry-window check, shouldAllowEntry filter, and topology gate.
+    // Backtest only injects: simulated `now` (last bar timestamp), pre-tracked
+    // signal history, theta value, skip-AI flag, and skip-topology flag.
+    const tickNow = new Date(currentTs);
+    const recentSignalsHistory = signalHistory.slice().reverse().slice(0, 10);
+    const analysis = await analysisAgent.run(signal, optionEval, true, LIVE_TICKER_CFG, {
+      now: tickNow,
+      recentSignals: recentSignalsHistory,
+      skipAIExplanation: true,
+      thetaOverride,
+      skipTopology: !USE_TOPO,
+    });
+    let cb = analysis.confidenceBreakdown;
+    let meetsThreshold = analysis.meetsEntryThreshold;
+    const entryBlockReason = analysis.entryBlockReason;
 
-    // ── Trend persistence bonus (mirrors live AnalysisAgent logic) ──────��──────
-    // Count consecutive same-direction aligned signals from history, apply +0.03/bar (cap +0.06)
-    // Only for trend/breakout modes — range/vwap_reversion are mean-reversion, not trend continuation.
-    // Require structure support (structureBonus > 0) — persistence can overcome additive penalties
-    // (pos, mex) but shouldn't override hard structural gates (no prior-day level backing).
-    if (direction !== 'neutral' && (signalMode === 'trend' || signalMode === 'breakout') && cb.structureBonus > 0) {
-      let consecutiveCount = 0;
-      for (let i = signalHistory.length - 1; i >= 0; i--) {
-        const s = signalHistory[i]!;
-        if (s.direction === direction &&
-            (s.alignment === 'all_aligned' || s.alignment === 'htf_mtf_aligned')) {
-          consecutiveCount++;
-        } else {
-          break;
-        }
-      }
-      if (consecutiveCount >= 2) {
-        const persistenceBonus = Math.min(0.06, (consecutiveCount - 1) * 0.03);
-        let agingReduction = 0;
-        // When persistence is strong (3+ consecutive aligned signals), halve negative
-        // maturity/phase/accel penalties — matches live analysis-agent.ts logic.
-        // Suppress aging relief when the move is exhausted (mex <= -0.10).
-        const moveExhausted = cb.moveExhaustionPenalty <= -0.10;
-        if (persistenceBonus >= 0.06 && !moveExhausted) {
-          const matRed = cb.adxMaturityPenalty < 0 ? -cb.adxMaturityPenalty * 0.5 : 0;
-          const phRed = cb.trendPhaseBonus < 0 ? -cb.trendPhaseBonus * 0.5 : 0;
-          const accRed = cb.momentumAccelBonus < 0 ? -cb.momentumAccelBonus * 0.5 : 0;
-          agingReduction = matRed + phRed + accRed;
-          cb = { ...cb,
-            adxMaturityPenalty: cb.adxMaturityPenalty < 0 ? cb.adxMaturityPenalty * 0.5 : cb.adxMaturityPenalty,
-            trendPhaseBonus: cb.trendPhaseBonus < 0 ? cb.trendPhaseBonus * 0.5 : cb.trendPhaseBonus,
-            momentumAccelBonus: cb.momentumAccelBonus < 0 ? cb.momentumAccelBonus * 0.5 : cb.momentumAccelBonus,
-          };
-        }
-        cb = { ...cb, trendPersistenceBonus: persistenceBonus, total: Math.max(0, Math.min(1, cb.total + persistenceBonus + agingReduction)) };
-      }
-    }
-    // Sync entryCtx with post-persistence values so shouldAllowEntry sees the same
-    // confidence as live AnalysisAgent (which runs persistence before the filter).
-    entryCtx.confidence = cb.total;
-    entryCtx.breakdown = cb;
-    // Record this signal for future persistence lookups
+    // Record this tick for next-tick persistence-bonus lookup.
     signalHistory.push({ direction, alignment });
 
-    // ── Dynamic threshold: lower when leading indicators confirm direction ──────
+    // Backtest-only intraday-loss-bump (live doesn't have this). When losses
+    // accumulate, raise the threshold further on top of live's check.
     const hasActiveLeadingSignals = (cb.candlePatternBonus > 0 || cb.priceVelocityBonus > 0 || cb.volumeSurgeBonus > 0);
     const leadingOverrideActive = signal.leadingSignalOverride && hasActiveLeadingSignals;
-
-    // Threshold matches production: flat minConfidence (with leading signal override if active)
-    let effectiveThreshold = leadingOverrideActive ? Math.max(MIN_CONFIDENCE - 0.05, 0.55) : MIN_CONFIDENCE;
-
-    // Intraday loss tracker: after losses, raise the bar
-    if (intradayLosses >= MAX_LOSSES_BEFORE_BUMP) {
-      effectiveThreshold += LOSS_THRESHOLD_BUMP;
+    const effectiveThreshold = (leadingOverrideActive ? Math.max(MIN_CONFIDENCE - 0.05, 0.55) : MIN_CONFIDENCE)
+      + (intradayLosses >= MAX_LOSSES_BEFORE_BUMP ? LOSS_THRESHOLD_BUMP : 0);
+    if (meetsThreshold && cb.total < effectiveThreshold) {
+      meetsThreshold = false;
     }
-    let meetsThreshold = cb.total >= effectiveThreshold;
-
-    // Organic confidence floor: persistence bonus must not be the sole reason for
-    // crossing the threshold — matches live analysis-agent.ts logic.
-    if (meetsThreshold && cb.trendPersistenceBonus > 0) {
-      const organicConf = cb.total - cb.trendPersistenceBonus;
-      const organicFloor = effectiveThreshold - 0.05;
-      if (organicConf < organicFloor) {
-        meetsThreshold = false;
-      }
-    }
-
-    // Per-ticker: filter breakout entries with stale/insufficient data (abnormally low ATR%)
-    // Only applied to breakout mode — trend entries with low ATR can still be valid
-    const atrPct = atr / currentPrice * 100;
-    const atrOk = signalMode !== 'breakout' || atrPct >= TCFG.minAtrPct;
 
     tickCount++;
     rollingDecisionTs.push(currentTs);  // every processed tick = one decision (matches live pipeline)
@@ -1072,31 +1016,13 @@ async function main() {
 
     if (USE_AI && orchestrator) {
       // ── AI Orchestrator path ──────────────────────────────────────────────
-      // Match live AnalysisAgent gating: meetsEntryThreshold requires confidence >= threshold
-      // AND passing shouldAllowEntry + entry window checks. If any block, AI is NOT called
-      // (live pipeline calls deterministicWait instead).
-      let aiMeetsThreshold = meetsThreshold && direction !== 'neutral';
-
-      // Per-ticker shouldAllowEntry — hard blocker (same as live AnalysisAgent line 1963)
-      if (aiMeetsThreshold) {
-        const tickerAllowsResult = LIVE_TICKER_CFG.strategy.shouldAllowEntry(entryCtx);
-        if (tickerAllowsResult !== true) {
-          aiMeetsThreshold = false;
-          if (typeof tickerAllowsResult === 'string') {
-            pushFilterBlocked(tickerAllowsResult);
-          }
-        }
-      }
-
-      // Entry window — hard blocker (same as live AnalysisAgent line 1947-1959)
-      if (aiMeetsThreshold) {
-        const minutesSinceOpenForWindow = (currentTs - openTime.getTime()) / 60_000;
-        const inEntryWindow = minutesSinceOpenForWindow >= TCFG.entryWindowStartMin
-                           && minutesSinceOpenForWindow <= TCFG.entryWindowEndMin;
-        if (!inEntryWindow) {
-          aiMeetsThreshold = false;
-          pushFilterBlocked(`entry_window: ${minutesSinceOpenForWindow.toFixed(0)}m outside [${TCFG.entryWindowStartMin}-${TCFG.entryWindowEndMin}]`);
-        }
+      // AnalysisAgent.run() above already enforced shouldAllowEntry, entry-window,
+      // and topology — analysis.meetsEntryThreshold reflects all of those.
+      // When the analysis blocks, push the filter-blocked record once per tick
+      // for the rejected-goods miner.
+      const aiMeetsThreshold = meetsThreshold && direction !== 'neutral';
+      if (!aiMeetsThreshold && entryBlockReason && direction !== 'neutral') {
+        pushFilterBlocked(entryBlockReason);
       }
 
       if (aiMeetsThreshold) {
@@ -1203,74 +1129,12 @@ async function main() {
         }
       }
 
-      // Per-ticker entry filter hook — HARD blocker (matches live AnalysisAgent:
-      // shouldAllowEntry failure sets meetsEntryThreshold=false, which prevents the
-      // AI orchestrator from running entirely via needsAIOrchestration()).
-      // Record the block for counterfactual analysis AND prevent entry.
-      const tickerAllowsResult = !meetsThreshold || LIVE_TICKER_CFG.strategy.shouldAllowEntry(entryCtx);
-      const tickerAllows = tickerAllowsResult === true;
-      if (meetsThreshold && !tickerAllows && typeof tickerAllowsResult === 'string') {
-        pushFilterBlocked(tickerAllowsResult);
-        meetsThreshold = false; // hard block — matches live AnalysisAgent
-      }
-
-      // Entry time window — HARD blocker (matches live AnalysisAgent: sets
-      // meetsEntryThreshold=false, preventing AI orchestrator from running).
-      const minutesSinceOpenForWindow = (currentTs - openTime.getTime()) / 60_000;
-      const inEntryWindow = minutesSinceOpenForWindow >= TCFG.entryWindowStartMin
-                         && minutesSinceOpenForWindow <= TCFG.entryWindowEndMin;
-      if (meetsThreshold && !inEntryWindow) {
-        pushFilterBlocked(`entry_window: ${minutesSinceOpenForWindow.toFixed(0)}m outside [${TCFG.entryWindowStartMin}-${TCFG.entryWindowEndMin}]`);
-        meetsThreshold = false; // hard block — matches live AnalysisAgent
-      }
-
-      // ── Topology gate (when --topo flag is set) ──────────────────────────
-      // Uses price topology to filter entries based on attractor structure.
-      //
-      // Hard block: fragmented regime (dim > 1.5) — no identifiable structure.
-      // Soft penalty: unconfirmed structure — reduces confidence by the gap
-      //   between the current dimension and the clean-trend threshold.
-      //   This pushes marginal signals (65-70%) below threshold while
-      //   preserving strong signals (80%+) on borderline days.
-      if (USE_TOPO && meetsThreshold && direction !== 'neutral') {
-        const topoWindow = ltfBars.slice(-200);
-        if (topoWindow.length >= 50) {
-          const priceTopo = computePriceTopology(topoWindow, `${TICKER}_bt`);
-
-          // Hard block: fragmented regime (very high dimension, no structure)
-          if (priceTopo.regime === 'fragmented') {
-            pushFilterBlocked(`topology: REGIME fragmented (dim=${priceTopo.effectiveDimension.toFixed(1)})`);
-            meetsThreshold = false;
-          }
-          // Soft penalty: unconfirmed trend structure
-          // Three conditions pass the gate: stability > 0.10, bn > 0.30, or dim <= 1.0
-          // When none pass, apply a confidence penalty proportional to dimension excess.
-          else if (priceTopo.regime === 'trending'
-            && priceTopo.regimeStability <= 0.10
-            && priceTopo.bottleneckDistance <= 0.30
-            && priceTopo.effectiveDimension > 1.0) {
-            const dimExcess = priceTopo.effectiveDimension - 1.0;
-            const topoPenalty = Math.min(0.12, dimExcess * 0.15);
-            cb = { ...cb, total: Math.max(0, cb.total - topoPenalty) };
-            if (cb.total < effectiveThreshold) {
-              pushFilterBlocked(`topology: dim=${priceTopo.effectiveDimension.toFixed(2)} penalty=${(topoPenalty * 100).toFixed(0)}% → conf=${(cb.total * 100).toFixed(1)}%`);
-              meetsThreshold = false;
-            }
-          }
-
-          // Trajectory penalty: dimension increasing = topology deteriorating.
-          // Even if the current snapshot passes, a rising dimension trajectory
-          // means the trend structure is breaking down — penalize.
-          if (meetsThreshold && priceTopo.dimensionSlope !== null && priceTopo.dimensionSlope > 0.05) {
-            const trajPenalty = Math.min(0.08, (priceTopo.dimensionSlope - 0.05) * 0.5);
-            const adjusted = cb.total - trajPenalty;
-            if (adjusted < effectiveThreshold) {
-              pushFilterBlocked(`topology_trajectory: dimSlope=${priceTopo.dimensionSlope.toFixed(3)} penalty=${(trajPenalty * 100).toFixed(0)}% → conf=${(adjusted * 100).toFixed(1)}%`);
-              cb = { ...cb, total: adjusted };
-              meetsThreshold = false;
-            }
-          }
-        }
+      // AnalysisAgent.run() above already enforced shouldAllowEntry, entry-window,
+      // and topology — analysis.meetsEntryThreshold reflects all of those.
+      // When the analysis blocks, push the filter-blocked record once per tick
+      // for the rejected-goods miner.
+      if (!meetsThreshold && entryBlockReason && direction !== 'neutral') {
+        pushFilterBlocked(entryBlockReason);
       }
 
       if (meetsThreshold && direction !== 'neutral') {

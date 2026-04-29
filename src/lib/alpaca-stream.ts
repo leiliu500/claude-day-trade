@@ -687,32 +687,51 @@ export class AlpacaStreamManager extends EventEmitter {
   }
 
   private async _fetchHistoricalOneMins(ticker: string, start: string): Promise<OHLCVBar[]> {
+    // Paginate so a 4-day window is fully covered. A single page caps at
+    // 10000, but Alpaca returns ALL bars (incl. pre-market 4:00–9:30 and
+    // after-hours 16:00–20:00). Over 4 calendar days that can be ~3500 bars
+    // per ticker (well under one page) — but on a system restart we MUST
+    // include the most recent regular session, otherwise indicators compute
+    // off a gapped cache. The previous limit=1000 silently truncated and
+    // left morning bars unseeded after a long downtime, producing wildly
+    // wrong ADX values (observed: QQQ Apr 28 15:19 ET — adx=33 vs true 19
+    // because Apr 28 9:30–13:00 ET were missing from cache).
     const headers = {
       'APCA-API-KEY-ID':     config.ALPACA_API_KEY,
       'APCA-API-SECRET-KEY': config.ALPACA_SECRET_KEY,
     };
-    const url = new URL(`${config.ALPACA_DATA_URL}/v2/stocks/${ticker}/bars`);
-    url.searchParams.set('timeframe', '1Min');
-    url.searchParams.set('start',     start);
-    url.searchParams.set('limit',     '1000');
-    url.searchParams.set('adjustment','raw');
-    url.searchParams.set('feed',      'sip');
+    const out: OHLCVBar[] = [];
+    let pageToken: string | undefined;
+    do {
+      const url = new URL(`${config.ALPACA_DATA_URL}/v2/stocks/${ticker}/bars`);
+      url.searchParams.set('timeframe', '1Min');
+      url.searchParams.set('start',     start);
+      url.searchParams.set('limit',     '10000');
+      url.searchParams.set('adjustment','raw');
+      url.searchParams.set('feed',      'sip');
+      if (pageToken) url.searchParams.set('page_token', pageToken);
 
-    const res = await fetch(url.toString(), { headers, signal: AbortSignal.timeout(30_000) });
-    if (!res.ok) throw new Error(`Alpaca bars error ${res.status} for ${ticker}`);
+      const res = await fetch(url.toString(), { headers, signal: AbortSignal.timeout(30_000) });
+      if (!res.ok) throw new Error(`Alpaca bars error ${res.status} for ${ticker}`);
 
-    const data = await res.json() as {
-      bars: Array<{ t: string; o: number; h: number; l: number; c: number; v: number; vw?: number }>;
-    };
-    return (data.bars ?? []).map(b => ({
-      timestamp: b.t,
-      open:      b.o,
-      high:      b.h,
-      low:       b.l,
-      close:     b.c,
-      volume:    b.v,
-      vwap:      b.vw,
-    }));
+      const data = await res.json() as {
+        bars: Array<{ t: string; o: number; h: number; l: number; c: number; v: number; vw?: number }>;
+        next_page_token?: string | null;
+      };
+      for (const b of data.bars ?? []) {
+        out.push({
+          timestamp: b.t,
+          open:      b.o,
+          high:      b.h,
+          low:       b.l,
+          close:     b.c,
+          volume:    b.v,
+          vwap:      b.vw,
+        });
+      }
+      pageToken = data.next_page_token ?? undefined;
+    } while (pageToken);
+    return out;
   }
 
   /**
