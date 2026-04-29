@@ -541,19 +541,17 @@ async function main() {
   const breakoutEarliestTs = openTime.getTime() + BREAKOUT_WAIT_MIN * 60_000;
 
   // ── Simulate the live stream's ring buffer ───────────────────────────────
-  // Live: alpaca-stream.ts seedHistoricalBars() fetches 1000 raw 1m bars
-  // starting from (Date.now() - 4 calendar days) with limit=1000 via REST.
-  // Alpaca returns chronologically, so we get the FIRST 1000 bars from the
-  // warmup start date.  These are filtered to regular session and trimmed
-  // to BAR_CACHE_SIZE=800.  Then new bars append during the day; when the
-  // cache exceeds 800, the oldest bar is evicted.
+  // Live (post-b6f7945): alpaca-stream.ts seedHistoricalBars() now paginates
+  // via page_token at limit=10000 until exhausted, fetching ALL 1m bars from
+  // (Date.now() - 4 calendar days). These are filtered to regular session and
+  // trimmed to BAR_CACHE_SIZE=800. The pre-fix behavior used limit=1000 which
+  // silently truncated mid-window after extended-hours bars filled the page.
   //
   // Known limitation: the live stream may reconnect mid-session, purging and
   // re-seeding the cache from (reconnect_time - 4 days).  This shifts the bar
   // window and causes indicator recomputation with a different trajectory.
   // The backtest simulates the initial seed only; reconnection-induced
   // divergence cannot be reproduced.
-  const STREAM_SEED_LIMIT = 1000; // matches alpaca-stream.ts _fetchHistoricalOneMins limit
   const BAR_CACHE_SIZE = 800;     // matches alpaca-stream.ts BAR_CACHE_SIZE
   const openTs = openTime.getTime();
   const warmupTs = new Date(TARGET_DATE);
@@ -563,10 +561,9 @@ async function main() {
     const ts = new Date(b.timestamp).getTime();
     return ts >= warmupStartTs && ts < openTs;
   });
-  // Take the FIRST STREAM_SEED_LIMIT bars (matching Alpaca ascending + limit=1000)
-  const seedRaw = priorRawBars.slice(0, STREAM_SEED_LIMIT);
-  // Filter to regular session (same as _seedCache → _isRegularSession)
-  const seedFiltered = seedRaw.filter(b => {
+  // Filter to regular session (same as _seedCache → _isRegularSession). No
+  // chronological truncation — paginated fetch returns all bars in window.
+  const seedFiltered = priorRawBars.filter(b => {
     const parts = new Intl.DateTimeFormat('en-US', {
       timeZone: 'America/New_York',
       hour: '2-digit', minute: '2-digit', hour12: false,
@@ -578,7 +575,7 @@ async function main() {
   });
   // Trim to BAR_CACHE_SIZE (newest kept)
   const streamCache: OHLCVBar[] = seedFiltered.slice(-BAR_CACHE_SIZE);
-  console.log(`  Stream cache seed: ${seedRaw.length} raw → ${seedFiltered.length} regular-session → ${streamCache.length} (cap ${BAR_CACHE_SIZE})`);
+  console.log(`  Stream cache seed: ${priorRawBars.length} raw → ${seedFiltered.length} regular-session → ${streamCache.length} (cap ${BAR_CACHE_SIZE})`);
 
   // ── Reconnection simulation ─────────────────────────────────────────────
   // The live data stream may reconnect mid-session, purging and re-seeding
@@ -601,12 +598,13 @@ async function main() {
   function reseedCache(atTs: number): void {
     // Purge cache (matches live alpaca-stream purgeCache)
     streamCache.length = 0;
-    // Re-seed: fetch 1000 raw from (atTs - 4 days), filter to regular session
+    // Re-seed: paginated fetch from (atTs - 4 days), filter to regular session
+    // (matches post-b6f7945 alpaca-stream behavior — no limit truncation).
     const reseedStart = atTs - 4 * 24 * 60 * 60 * 1000;
     const reseedRaw = allOneMinRaw.filter(b => {
       const ts = new Date(b.timestamp).getTime();
       return ts >= reseedStart && ts < atTs;
-    }).slice(0, STREAM_SEED_LIMIT);
+    });
     const reseedFiltered = reseedRaw.filter(b => {
       const parts = new Intl.DateTimeFormat('en-US', {
         timeZone: 'America/New_York',
