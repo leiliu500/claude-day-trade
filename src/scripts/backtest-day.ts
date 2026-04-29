@@ -715,7 +715,7 @@ async function main() {
     const atm = Math.round(currentPrice);
     const htfAdx = tfIndicators[2]?.dmi.adx ?? tfIndicators[1]?.dmi.adx ?? 0;
     const strengthScore = Math.min(100, Math.round(htfAdx * 2));
-    const priorDayLevels = computePriorDayLevels(dailyBars, currentPrice);
+    const priorDayLevels = computePriorDayLevels(dailyBars, currentPrice, timeStr.slice(0, 10));
     const orb = computeORB(ltfBars, currentPrice);
 
     const signal: SignalPayload = {

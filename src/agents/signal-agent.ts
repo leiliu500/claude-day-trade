@@ -77,12 +77,11 @@ const _dailyBarsCache = new Map<string, { bars: OHLCVBar[]; utcDate: string }>()
 async function fetchDailyBarsCached(ticker: string, limit: number): Promise<OHLCVBar[]> {
   const todayUtc = new Date().toISOString().slice(0, 10);
   const cached = _dailyBarsCache.get(ticker);
-  // Cache hit only if the most-recent cached bar is today's session bar.
-  // computePriorDayLevels uses dailyBars[length-2] as "yesterday" — that
-  // assumption holds only when length-1 is today. A container that started
-  // before Alpaca published today's daily bar caches a list ending at
-  // yesterday, which makes length-2 point at the day before that and shifts
-  // PDH/PDL by one trading day. Re-fetch until today's bar appears.
+  // Cache hit only when the cached list reaches today's session bar. Until then
+  // we keep refetching so that as soon as Alpaca publishes today's bar we pick
+  // it up. computePriorDayLevels itself is robust to today's bar being absent
+  // (it picks yesterday by date), but a stale cache could still miss a freshly
+  // closed prior session, so the freshness gate stays.
   if (cached && cached.utcDate === todayUtc) {
     const lastBar = cached.bars[cached.bars.length - 1];
     if (lastBar && lastBar.timestamp.slice(0, 10) === todayUtc) {

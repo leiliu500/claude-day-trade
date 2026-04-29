@@ -4,13 +4,17 @@ import type { PriorDayLevels, ORBResult } from '../types/indicators.js';
 /**
  * Compute Prior Day High/Low/Close from daily bars.
  *
- * Expects daily bars ordered oldest → newest. Uses the second-to-last bar as
- * "prior day" so we get a fully-completed session rather than today's
- * in-progress bar.
+ * Expects daily bars ordered oldest → newest. Selects yesterday as the latest
+ * bar whose UTC date is strictly before `currentDateUtc` (defaults to real now).
+ * This is robust to whether today's in-progress daily bar is in the response —
+ * Alpaca only publishes today's 1Day bar partway through the session, so an
+ * array-position rule like `length-2` silently shifts PDH/PDL by a trading day
+ * during early morning ticks before the new bar appears.
  */
 export function computePriorDayLevels(
   dailyBars: OHLCVBar[],
   currentPrice: number,
+  currentDateUtc?: string,
 ): PriorDayLevels {
   const empty: PriorDayLevels = {
     pdh: 0, pdl: 0, pdc: 0,
@@ -19,11 +23,18 @@ export function computePriorDayLevels(
     structureBias: 'neutral',
   };
 
-  // Need at least 2 bars: [prior_day, ..., today]
-  if (dailyBars.length < 2) return empty;
+  if (dailyBars.length < 1) return empty;
 
-  // Use second-to-last bar (yesterday's complete session)
-  const prior = dailyBars[dailyBars.length - 2]!;
+  const refDate = (currentDateUtc ?? new Date().toISOString()).slice(0, 10);
+  let prior: OHLCVBar | undefined;
+  for (let i = dailyBars.length - 1; i >= 0; i--) {
+    if (dailyBars[i]!.timestamp.slice(0, 10) < refDate) {
+      prior = dailyBars[i];
+      break;
+    }
+  }
+  if (!prior) return empty;
+
   const pdh = prior.high;
   const pdl = prior.low;
   const pdc = prior.close;
