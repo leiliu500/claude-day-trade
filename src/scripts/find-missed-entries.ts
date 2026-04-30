@@ -122,6 +122,7 @@ const VERDICT_LABEL: Record<Verdict, string> = {
   ALGO_GAP: '🔴 ALGO GAP',
   BLIND: '👻 BLIND',
   BT_ONLY_DETECT_LIVE_EXEC: '🟡 LIVE-ONLY',
+  LIVE_NO_IDEAL: '🟠 LIVE-NO-IDEAL',
   NO_DATA: '   (verification disabled)',
 };
 
@@ -178,11 +179,11 @@ function printHuman(verified: VerifiedEntry[], args: CliArgs, barCount: number):
 
   if (!args.noBacktest || !args.noLive) {
     const vc: Record<Verdict, number> = {
-      BOTH_EXEC: 0, PARITY_GAP: 0, ALGO_GAP: 0, BLIND: 0, BT_ONLY_DETECT_LIVE_EXEC: 0, NO_DATA: 0,
+      BOTH_EXEC: 0, PARITY_GAP: 0, ALGO_GAP: 0, BLIND: 0, BT_ONLY_DETECT_LIVE_EXEC: 0, LIVE_NO_IDEAL: 0, NO_DATA: 0,
     };
     for (const v of verified) vc[v.verdict]++;
     console.log(`  verdicts:`);
-    for (const k of ['BOTH_EXEC', 'PARITY_GAP', 'ALGO_GAP', 'BLIND', 'BT_ONLY_DETECT_LIVE_EXEC'] as Verdict[]) {
+    for (const k of ['BOTH_EXEC', 'PARITY_GAP', 'ALGO_GAP', 'BLIND', 'BT_ONLY_DETECT_LIVE_EXEC', 'LIVE_NO_IDEAL'] as Verdict[]) {
       if (vc[k] > 0) console.log(`    ${VERDICT_LABEL[k]}: ${vc[k]}`);
     }
   }

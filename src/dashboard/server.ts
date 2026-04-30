@@ -1300,7 +1300,7 @@ export function startDashboard(port: number): void {
           maePct: Number(ideal.maePct.toFixed(3)),
           rMultiple: Number(ideal.rMultiple.toFixed(2)),
           ttpMin: Number(ideal.ttpMin.toFixed(1)),
-          grade: ideal.grade,
+          grade: ideal.grade as string | null,
           // null = backtest skipped; { entry: null } = backtest ran, no same-direction match
           backtest: bt ? {
             entry: bt.entry ? {
@@ -1319,6 +1319,49 @@ export function startDashboard(port: number): void {
           verdict,
         };
       });
+
+      // Append orphan live ENTERs — live executed but no ideal entry within
+      // ±15min same-direction (post-entry move didn't qualify as ideal).
+      if (!skipLive && liveLayer) {
+        const orphans = lib.findOrphanLiveDispatches(ideals, liveLayer.signals, liveLayer.dispatches);
+        for (const od of orphans) {
+          const synth = lib.synthesizeOrphanEntry(bars, od, detectArgs.windowMin);
+          if (!synth) continue;
+          // Check backtest for the orphan ts (same window, same dir)
+          const bt = !skipBacktest && btEntries ? lib.matchBacktest(synth, btEntries) : null;
+          // Find peak signal nearest the orphan ts (purely informational here)
+          const live = lib.matchLive(synth, liveLayer.signals, liveLayer.dispatches);
+          verified.push({
+            entryTimeET: lib.fmtET(od.ts),
+            entryTsUtc: new Date(od.ts).toISOString(),
+            peakTimeET: lib.fmtET(lib.barCloseTs(synth.peakTs)),
+            direction: synth.direction,
+            entryPrice: synth.entryPrice,
+            peakPrice: synth.peakPrice,
+            mfePct: Number(synth.mfePct.toFixed(3)),
+            maePct: Number(synth.maePct.toFixed(3)),
+            rMultiple: Number(synth.rMultiple.toFixed(2)),
+            ttpMin: Number(synth.ttpMin.toFixed(1)),
+            grade: null,
+            backtest: bt ? {
+              entry: bt.entry ? {
+                timeET: lib.fmtET(bt.entry.ts), status: bt.entry.status,
+                direction: bt.entry.direction, confidence: bt.entry.confidence,
+                mode: bt.entry.mode, grade: bt.entry.grade, filterRule: bt.entry.filterRule,
+              } : null,
+            } : null,
+            live: {
+              peakSignal: live.peakSignal ? {
+                timeET: lib.fmtET(live.peakSignal.ts), confidence: live.peakSignal.confidence,
+                meets: live.peakSignal.meets, alignment: live.peakSignal.alignment,
+              } : null,
+              enterDispatch: { timeET: lib.fmtET(od.ts) },
+            },
+            verdict: 'LIVE_NO_IDEAL',
+          });
+        }
+        verified.sort((a, b) => Date.parse(a.entryTsUtc) - Date.parse(b.entryTsUtc));
+      }
 
       // Compact OHLC for charting (no volume — keep payload small)
       const chartBars = bars.map(b => ({

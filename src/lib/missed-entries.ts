@@ -56,7 +56,12 @@ export interface LiveSnapshot {
   alignment: string;
 }
 
-export interface LiveDispatch { ts: number; decision: string; }
+export interface LiveDispatch {
+  ts: number;
+  decision: string;
+  optionSymbol?: string;
+  direction?: Direction;
+}
 
 export interface BtMatch { entry: BtEntry | null; }
 export interface LiveMatch { peakSignal: LiveSnapshot | null; enterDispatch: LiveDispatch | null; }
@@ -67,6 +72,7 @@ export type Verdict =
   | 'ALGO_GAP'
   | 'BLIND'
   | 'BT_ONLY_DETECT_LIVE_EXEC'
+  | 'LIVE_NO_IDEAL'
   | 'NO_DATA';
 
 export interface VerifiedEntry {
@@ -283,6 +289,15 @@ export function parseBacktestJson(stdout: string, dateET: string): BtEntry[] | n
   return entries;
 }
 
+// OCC option symbol: <ROOT><YY><MM><DD>[CP]<8-digit strike>. The C/P is at
+// position len-9. Returns null if the symbol doesn't match the expected layout.
+export function directionFromOptionSymbol(sym: string | null | undefined): Direction | undefined {
+  if (!sym) return undefined;
+  const m = sym.match(/([CP])\d{8}$/);
+  if (!m) return undefined;
+  return m[1] === 'C' ? 'long' : 'short';
+}
+
 // ── Phase 3: Live DB layer ──────────────────────────────────────────────────
 
 // `closePool=true` → creates a fresh pool and ends it. Use false when called
@@ -305,12 +320,17 @@ export async function fetchLiveLayer(
        ORDER BY created_at`,
       [ticker, date]
     );
+    // Live ENTRIES come from order_executions (buy_to_open fills) — NOT
+    // order_agent_dispatches, which only logs post-fill agent ticks
+    // (CONFIRM_HOLD/EXIT/etc.) and never carries an ENTER decision.
     const disps = await pool.query(
-      `SELECT created_at, orchestrator_decision AS decision
-       FROM trading.order_agent_dispatches
+      `SELECT submitted_at AS created_at, option_symbol
+       FROM trading.order_executions
        WHERE ticker = $1
-         AND (created_at AT TIME ZONE 'America/New_York')::date = $2::date
-       ORDER BY created_at`,
+         AND position_intent = 'buy_to_open'
+         AND alpaca_status = 'filled'
+         AND (submitted_at AT TIME ZONE 'America/New_York')::date = $2::date
+       ORDER BY submitted_at`,
       [ticker, date]
     );
     if (closePool) await pool.end();
@@ -320,7 +340,10 @@ export async function fetchLiveLayer(
         confidence: Number(r.confidence), meets: r.meets, alignment: r.alignment,
       })),
       dispatches: disps.rows.map((r: any) => ({
-        ts: new Date(r.created_at).getTime(), decision: r.decision,
+        ts: new Date(r.created_at).getTime(),
+        decision: 'ENTER',
+        optionSymbol: r.option_symbol,
+        direction: directionFromOptionSymbol(r.option_symbol),
       })),
     };
   } catch (e) {
@@ -371,6 +394,78 @@ export function matchLive(ideal: IdealEntry, signals: LiveSnapshot[], dispatches
     if (!enter || Math.abs(d.ts - target) < Math.abs(enter.ts - target)) enter = d;
   }
   return { peakSignal: peak, enterDispatch: enter };
+}
+
+// Find live ENTER dispatches that don't match any ideal entry within ±15min
+// same-direction. For each orphan, synthesize the same fields the table needs
+// by computing MFE/MAE from bars over `windowMin`. These rows get verdict
+// `LIVE_NO_IDEAL` — live executed but the post-entry move didn't qualify as
+// ideal (sub-minMFE, excessive MAE, or low R).
+export function findOrphanLiveDispatches(
+  ideals: IdealEntry[],
+  signals: LiveSnapshot[],
+  dispatches: LiveDispatch[],
+): LiveDispatch[] {
+  const out: LiveDispatch[] = [];
+  for (const d of dispatches) {
+    if (d.decision !== 'ENTER') continue;
+    let dir = d.direction;
+    if (!dir) {
+      // Fallback: nearest meets=true signal within ±2min
+      let best: LiveSnapshot | null = null;
+      for (const s of signals) {
+        if (!s.meets) continue;
+        if (Math.abs(s.ts - d.ts) > 2 * 60_000) continue;
+        if (!best || Math.abs(s.ts - d.ts) < Math.abs(best.ts - d.ts)) best = s;
+      }
+      if (best) dir = best.direction === 'bullish' ? 'long' : 'short';
+    }
+    if (!dir) continue; // unknown direction — skip rather than fabricate
+    const matchedIdeal = ideals.some(ideal =>
+      ideal.direction === dir &&
+      Math.abs(barCloseTs(ideal.ts) - d.ts) <= MATCH_WINDOW_MS
+    );
+    if (matchedIdeal) continue;
+    out.push({ ...d, direction: dir });
+  }
+  return out;
+}
+
+// Given a live ENTER dispatch + bars, synthesize an IdealEntry-shaped row
+// covering MFE/MAE/R/TTP measured from the bar containing the dispatch ts.
+// Returns null if the dispatch falls outside the bar window.
+export function synthesizeOrphanEntry(
+  bars: Bar[],
+  dispatch: LiveDispatch,
+  windowMin: number,
+): IdealEntry | null {
+  if (!dispatch.direction) return null;
+  if (bars.length === 0) return null;
+  // Find bar i containing dispatch.ts (bar covers [ts, ts+60s))
+  let i = -1;
+  for (let k = 0; k < bars.length; k++) {
+    const b = bars[k]!;
+    if (dispatch.ts >= b.ts && dispatch.ts < b.ts + 60_000) { i = k; break; }
+    if (b.ts > dispatch.ts) { i = k - 1; break; }
+  }
+  if (i < 0) i = bars.length - 1;
+  if (i >= bars.length - 1) return null;
+  const ev = evaluateEntry(bars, i, dispatch.direction, windowMin);
+  const mfePct = (ev.mfeAbs / ev.entryPrice) * 100;
+  const maePct = (ev.maeAbsBeforePeak / ev.entryPrice) * 100;
+  const ttpMin = (bars[ev.peakIdx]!.ts - bars[i]!.ts) / 60_000;
+  return {
+    ts: bars[i]!.ts,
+    direction: ev.direction,
+    entryPrice: ev.entryPrice,
+    peakPrice: ev.peakPrice,
+    peakTs: bars[ev.peakIdx]!.ts,
+    mfePct, maePct,
+    rMultiple: mfePct / Math.max(maePct, 0.01),
+    ttpMin,
+    entryVolMult: 0,
+    grade: 'C', // placeholder — overridden to null in server response for orphans
+  };
 }
 
 export function classifyVerdict(bt: BtMatch | null, live: LiveMatch | null): Verdict {

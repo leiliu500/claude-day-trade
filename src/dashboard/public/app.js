@@ -2160,6 +2160,7 @@ const VERDICT_DISPLAY = {
   ALGO_GAP:    { label: '🔴 ALGO GAP',    bg: '#3a1d1d', border: '#f85149' },
   BLIND:       { label: '👻 BLIND',       bg: '#21262d', border: '#6e7681' },
   BT_ONLY_DETECT_LIVE_EXEC: { label: '🟡 LIVE-ONLY', bg: '#332a17', border: '#bb8009' },
+  LIVE_NO_IDEAL: { label: '🟠 LIVE-NO-IDEAL', bg: '#33260f', border: '#cc7d22' },
   NO_DATA:     { label: '— —',            bg: '#21262d', border: '#30363d' },
 };
 
@@ -2191,7 +2192,9 @@ async function runMissedEntries() {
     renderMissedSummary(data, summary);
     renderMissedChart(data);
     renderMissedTable(data, tableWrap);
-    status.textContent = `${ticker} ${date} — ${data.entries.length} ideal entries`;
+    const orphans = (data.entries || []).filter(e => e.verdict === 'LIVE_NO_IDEAL').length;
+    const ideals = data.entries.length - orphans;
+    status.textContent = `${ticker} ${date} — ${ideals} ideal${orphans ? ` + ${orphans} live-only` : ''}`;
   } catch (err) {
     status.textContent = 'Error: ' + err.message;
   } finally {
@@ -2207,13 +2210,13 @@ function renderMissedSummary(data, el) {
   else verifyParts.push('live=skipped');
 
   const t = data.thresholds || {};
-  const vc = { BOTH_EXEC: 0, PARITY_GAP: 0, ALGO_GAP: 0, BLIND: 0, BT_ONLY_DETECT_LIVE_EXEC: 0, NO_DATA: 0 };
+  const vc = { BOTH_EXEC: 0, PARITY_GAP: 0, ALGO_GAP: 0, BLIND: 0, BT_ONLY_DETECT_LIVE_EXEC: 0, LIVE_NO_IDEAL: 0, NO_DATA: 0 };
   for (const e of (data.entries || [])) vc[e.verdict] = (vc[e.verdict] || 0) + 1;
   const gc = { A: 0, B: 0, C: 0 };
   let totalMfe = 0;
-  for (const e of (data.entries || [])) { gc[e.grade] = (gc[e.grade] || 0) + 1; totalMfe += (e.mfePct || 0); }
+  for (const e of (data.entries || [])) { if (e.grade) gc[e.grade] = (gc[e.grade] || 0) + 1; totalMfe += (e.mfePct || 0); }
 
-  const verdictLine = ['BOTH_EXEC', 'PARITY_GAP', 'ALGO_GAP', 'BLIND', 'BT_ONLY_DETECT_LIVE_EXEC']
+  const verdictLine = ['BOTH_EXEC', 'PARITY_GAP', 'ALGO_GAP', 'BLIND', 'BT_ONLY_DETECT_LIVE_EXEC', 'LIVE_NO_IDEAL']
     .filter(k => vc[k] > 0)
     .map(k => `${VERDICT_DISPLAY[k].label}: ${vc[k]}`)
     .join('  •  ');
@@ -2311,6 +2314,7 @@ function renderLiveCell(live) {
 }
 
 function renderGradeBadge(grade) {
+  if (!grade) return `<span style="color:#6e7681">—</span>`;
   const colors = { A: '#3fb950', B: '#58a6ff', C: '#8b949e' };
   return `<span style="background:${colors[grade] || '#6e7681'};color:#0d1117;padding:2px 8px;border-radius:4px;font-weight:700">${grade}</span>`;
 }
@@ -2413,6 +2417,7 @@ function renderMissedChart(data) {
     ALGO_GAP: '#f85149',
     BLIND: '#6e7681',
     BT_ONLY_DETECT_LIVE_EXEC: '#bb8009',
+    LIVE_NO_IDEAL: '#cc7d22',
     NO_DATA: '#8b949e',
   };
   for (const e of entries) {
@@ -2474,7 +2479,7 @@ function renderMissedChart(data) {
     ctx.textAlign = 'center';
     ctx.textBaseline = e.direction === 'long' ? 'top' : 'bottom';
     const labelY = e.direction === 'long' ? yEntry + tri + 6 : yEntry - tri - 6;
-    ctx.fillText(e.grade, x, labelY);
+    ctx.fillText(e.grade || '·', x, labelY);
 
     markers.push({ x, yEntry, e, idx });
   }
@@ -2493,7 +2498,7 @@ function renderMissedChart(data) {
       const e = nearest.e;
       tip.innerHTML = `<b>${e.entryTimeET} → ${e.peakTimeET}</b><br>
         ${e.direction === 'long' ? '↑' : '↓'} ${e.direction} $${e.entryPrice.toFixed(2)} → $${e.peakPrice.toFixed(2)}<br>
-        MFE ${e.mfePct.toFixed(2)}% MAE ${e.maePct.toFixed(2)}% R=${e.rMultiple.toFixed(1)} <b>${e.grade}</b><br>
+        MFE ${e.mfePct.toFixed(2)}% MAE ${e.maePct.toFixed(2)}% R=${e.rMultiple.toFixed(1)} <b>${e.grade || '—'}</b><br>
         verdict: ${(VERDICT_DISPLAY[e.verdict] || VERDICT_DISPLAY.NO_DATA).label}`;
       tip.style.display = 'block';
       const wrapRect = wrap.getBoundingClientRect();
