@@ -36,6 +36,7 @@ import { writeVisualizerHTML, type VisEntry, type VisBar } from './backtest-visu
 import { computePriceTopology } from '../topology/price-topology.js';
 import { computeTopologyEntry } from '../topology/entry-model.js';
 import type { TopologySignal } from '../topology/types.js';
+import { isSpyMorningMicrotrend } from '../lib/spy-microtrend.js';
 import {
   hashStashPathsInWorkingTree, dayCachePathFor,
   loadCachedJSON, saveCachedJSON,
@@ -369,7 +370,7 @@ interface EntryRecord {
    *  AI returns NEW_ENTRY despite a recently-closed position — the sim's position-aware
    *  cooldown should let these through to mirror live's STRONG-SIGNAL/HIGH-CONV/
    *  PHASE-CHANGE entry flows that fire even when a prior position just closed. */
-  entryBypass?: 'strong_signal' | 'high_conviction' | 'phase_change' | 'trend_consolidation' | 'range' | 'breakout' | 'vwap_reversion' | 'stage2_confirm' | null;
+  entryBypass?: 'strong_signal' | 'high_conviction' | 'phase_change' | 'trend_consolidation' | 'flow_microtrend' | 'range' | 'breakout' | 'vwap_reversion' | 'stage2_confirm' | null;
   // Regime context at entry time
   regimeScore?: number;
   rangeExhaustion?: number;
@@ -1245,6 +1246,13 @@ async function main() {
           // Risk budget checked outside the gate (below), matching live safety-gates approach.
           hasRecentPhaseChangeEntry: false, // backtest doesn't track phase-change history
           trendConsolidationBreakout,
+          flowMicrotrendBypass: isSpyMorningMicrotrend({
+            ticker: TICKER,
+            signalMode,
+            direction,
+            minutesSinceOpen: minutesSinceOpenGate,
+            breakdown: cb,
+          }),
           sameSideTrailingStopAgeSec: null, // backtest does not simulate position lifecycle / exits
         };
 

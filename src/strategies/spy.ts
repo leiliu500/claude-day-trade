@@ -21,6 +21,7 @@ import type { ConfidenceBreakdown } from '../types/analysis.js';
 import type { TimeframeIndicators } from '../types/indicators.js';
 import type { SignalDirection } from '../types/signal.js';
 import { defaultStrategy } from './default.js';
+import { SPY_MORNING_MICROTREND_BONUS, isSpyMorningMicrotrend } from '../lib/spy-microtrend.js';
 
 let _lastRegimeScore = 50;
 
@@ -119,7 +120,13 @@ function spyShouldAllowEntry(ctx: EntryContext): true | string {
   // Combined block: 217 entries (5A+13B+39C+20D+129F) → 60% F. Same low-atr
   // pattern as IWM v4/v6, but SPY's threshold is higher (0.60 vs IWM's 0.40)
   // because SPY trades at ~$560 vs IWM ~$215.
-  if (ctx.direction === 'bullish' && ctx.atr < 0.60) {
+  //
+  // CARVE-OUT: skip when isSpyMorningMicrotrend matches. The microtrend's 11
+  // factor floors target a specific morning order-flow-confirmed pattern
+  // (10:00-11:15 ET) that v1's broad low-atr block would otherwise kill —
+  // see spy-microtrend.ts for the design intent and validation status.
+  if (ctx.direction === 'bullish' && ctx.atr < 0.60
+      && !isSpyMorningMicrotrend(ctx)) {
     return `bullish low atr ${ctx.atr.toFixed(2)} < 0.60`;
   }
 
@@ -196,8 +203,12 @@ function spyShouldAllowEntry(ctx: EntryContext): true | string {
   // modes and bear-breakout which are uniformly bad at low atr). Filter
   // targets only the 0.40-0.60 trough — preserves both the low-atr good zone
   // and the high-atr good zone.
+  // CARVE-OUT: same reasoning as v1 — see spy-microtrend.ts. The morning
+  // microtrend pattern can land in this 0.40-0.60 atr trough; the detector's
+  // factor-floor compound gates the rare positive cases.
   if (ctx.direction === 'bearish' && ctx.signalMode === 'trend'
-      && ctx.atr >= 0.40 && ctx.atr < 0.60) {
+      && ctx.atr >= 0.40 && ctx.atr < 0.60
+      && !isSpyMorningMicrotrend(ctx)) {
     return `bearish-trend mid-atr ${ctx.atr.toFixed(2)} in [0.40, 0.60)`;
   }
 
@@ -300,14 +311,25 @@ function spyShouldAllowEntry(ctx: EntryContext): true | string {
   // Combined 0.60-0.80 in bull-trend: n=73 exp -0.97, 3A+9B vs 38F.
   // Mode-specific because bull-breakout at atr 0.6-0.8 is only mildly bad
   // (-0.35 in v0). Effective bull-trend atr threshold: 0.80.
-  if (ctx.direction === 'bullish' && ctx.signalMode === 'trend' && ctx.atr < 0.80) {
+  // CARVE-OUT: same reasoning as v1 — see spy-microtrend.ts. v3's bull-trend
+  // 0.60-0.80 trough is the most common atr range for the morning microtrend
+  // pattern, so this carve-out is the load-bearing one for releasing the
+  // detector's matches.
+  if (ctx.direction === 'bullish' && ctx.signalMode === 'trend' && ctx.atr < 0.80
+      && !isSpyMorningMicrotrend(ctx)) {
     return `bullish-trend low atr ${ctx.atr.toFixed(2)} < 0.80`;
   }
 
   return true;
 }
 
-function spyAdjustConfidence(breakdown: ConfidenceBreakdown, _ctx: EntryContext): ConfidenceBreakdown {
+function spyAdjustConfidence(breakdown: ConfidenceBreakdown, ctx: EntryContext): ConfidenceBreakdown {
+  if (isSpyMorningMicrotrend({ ...ctx, breakdown })) {
+    return {
+      ...breakdown,
+      total: Math.max(0, Math.min(1, breakdown.total + SPY_MORNING_MICROTREND_BONUS)),
+    };
+  }
   return breakdown;
 }
 

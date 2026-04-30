@@ -22,6 +22,7 @@ export type GateBypassType =
   | 'high_conviction'
   | 'phase_change'
   | 'strong_signal'
+  | 'flow_microtrend'
   | 'trend_consolidation'
   | 'range'
   | 'breakout'
@@ -84,6 +85,8 @@ export interface GateInput {
   hasRecentPhaseChangeEntry: boolean;
   /** True when LTF bars show a tight consolidation breakout in signal direction. */
   trendConsolidationBreakout: boolean;
+  /** True for a ticker-scoped order-flow-confirmed low-ATR trend carve-out. */
+  flowMicrotrendBypass?: boolean;
   /**
    * Age in seconds since the most recent same-direction trailing-stop-type exit
    * (TRAILING_STOP / PROFIT_REVERSED / *_GAIN_LOCK), or null if none in the last 5 min.
@@ -119,6 +122,7 @@ export function evaluateEntryGate(input: GateInput): GateDecision {
     vwapRevEntryCount, lastVwapRevEntryAgeMin,
     hasRecentPhaseChangeEntry,
     trendConsolidationBreakout,
+    flowMicrotrendBypass = false,
     sameSideTrailingStopAgeSec,
   } = input;
 
@@ -214,6 +218,18 @@ export function evaluateEntryGate(input: GateInput): GateDecision {
     && confidence >= 0.60
     && !trailingStopReversalBlock;
 
+  // ── Flow microtrend bypass ──
+  // Ticker strategies may identify rare low-ATR morning trends where order flow
+  // and immediate price/option confirmation are strong enough that waiting for
+  // stage-2 gives back most of the move.
+  const flowMicrotrendBypassOk = !highConvOverride && !phaseChangeOk && !strongSignalBypass
+    && !trendConsolBypass
+    && priorCount < 1
+    && signalMode === 'trend'
+    && flowMicrotrendBypass
+    && confidence >= 0.65
+    && !trailingStopReversalBlock;
+
   // ── Range bypass ──
   let rangeBypass = false;
   if (signalMode === 'range' && priorCount < 1) {
@@ -281,7 +297,7 @@ export function evaluateEntryGate(input: GateInput): GateDecision {
   // Daily risk budget is enforced downstream in safety-gates (DAILY_RISK_BUDGET_GATE)
   // where the proposed cost is known, instead of a hard entry-count cap here.
   const anyBypass = highConvOverride || phaseChangeOk || strongSignalBypass ||
-    trendConsolBypass || rangeBypass || breakoutBypass || vwapRevBypass;
+    trendConsolBypass || flowMicrotrendBypassOk || rangeBypass || breakoutBypass || vwapRevBypass;
 
   if (!anyBypass && priorCount < 1) {
     return { result: 'STAGE1_OBSERVE', bypass: null, phaseChangeTimingRejected, phaseChangeTimingRejectReason };
@@ -302,6 +318,9 @@ export function evaluateEntryGate(input: GateInput): GateDecision {
   }
   if (trendConsolBypass) {
     return { result: 'PASSED', bypass: 'trend_consolidation', phaseChangeTimingRejected, phaseChangeTimingRejectReason };
+  }
+  if (flowMicrotrendBypassOk) {
+    return { result: 'PASSED', bypass: 'flow_microtrend', phaseChangeTimingRejected, phaseChangeTimingRejectReason };
   }
   if (phaseChangeOk && priorCount < 1 && !highConvOverride) {
     return { result: 'PHASE_CHANGE_OVERRIDE', bypass: 'phase_change', phaseChangeTimingRejected, phaseChangeTimingRejectReason };

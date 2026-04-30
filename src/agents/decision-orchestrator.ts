@@ -5,6 +5,7 @@ import { getPool } from '../db/client.js';
 import { loadSkill } from '../utils/skill-loader.js';
 import { checkFomcWindow } from '../lib/fomc-calendar.js';
 import { evaluateEntryGate, type GateInput } from '../lib/entry-gate.js';
+import { isSpyMorningMicrotrend } from '../lib/spy-microtrend.js';
 import type { SignalPayload } from '../types/signal.js';
 import type { OptionEvaluation } from '../types/options.js';
 import type { AnalysisResult } from '../types/analysis.js';
@@ -452,6 +453,13 @@ export class DecisionOrchestrator {
         hasRecentPhaseChangeEntry: context.recentDecisions.some(d =>
           d.decisionType === 'NEW_ENTRY' && d.direction === signal.direction && d.reasoning?.includes('[PHASE-CHANGE')),
         trendConsolidationBreakout: analysis.trendConsolidationBreakout ?? false,
+        flowMicrotrendBypass: isSpyMorningMicrotrend({
+          ticker: signal.ticker,
+          signalMode: signal.signalMode ?? 'none',
+          direction: signal.direction ?? 'neutral',
+          minutesSinceOpen: minsSinceOpen,
+          breakdown: analysis.confidenceBreakdown,
+        }),
         sameSideTrailingStopAgeSec:
           context.lastTrailingStopExit && context.lastTrailingStopExit.direction === signal.direction
             ? Math.max(0, (nowMs - new Date(context.lastTrailingStopExit.closedAt).getTime()) / 1000)
@@ -496,6 +504,9 @@ export class DecisionOrchestrator {
       } else if (gate.bypass === 'trend_consolidation') {
         rawOutput.reasoning = `[TREND-CONSOL BYPASS] Consolidation breakout ${side} + all_aligned → immediate entry (conf=${(analysis.confidence * 100).toFixed(1)}%). ${rawOutput.reasoning}`;
         console.log(`[DecisionOrchestrator] NEW_ENTRY trend-consolidation bypass — ${side} (priorCount=${priorCount}, confidence=${analysis.confidence.toFixed(2)}, alignment=${signal.alignment})`);
+      } else if (gate.bypass === 'flow_microtrend') {
+        rawOutput.reasoning = `[FLOW-MICROTREND BYPASS] SPY morning low-ATR microtrend confirmed by order flow/options → immediate ${side} entry (conf=${(analysis.confidence * 100).toFixed(1)}%). ${rawOutput.reasoning}`;
+        console.log(`[DecisionOrchestrator] NEW_ENTRY flow-microtrend bypass — ${side} (priorCount=${priorCount}, confidence=${analysis.confidence.toFixed(2)}, alignment=${signal.alignment})`);
       } else if (gate.result === 'PHASE_CHANGE_OVERRIDE') {
         isPhaseChangeOverride = true;
         rawOutput.reasoning = `[PHASE-CHANGE OVERRIDE] HTF DI cross ${signal.direction} + rising ADX → immediate ${side} entry (no 2-stage wait). ${rawOutput.reasoning}`;

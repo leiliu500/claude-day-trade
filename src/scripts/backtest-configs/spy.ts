@@ -9,10 +9,13 @@
 import type { TickerBacktestConfig, EntryContext } from './types.js';
 import type { ConfidenceBreakdown } from '../../types/analysis.js';
 import { simulateOrderAgentSpy } from '../../lib/order-agent-sim-spy.js';
+import { SPY_MORNING_MICROTREND_BONUS, isSpyMorningMicrotrend } from '../../lib/spy-microtrend.js';
 
 function spyShouldAllowEntry(ctx: EntryContext): true | string {
   // v1: bullish low-atr (any mode) — see strategies/spy.ts.
-  if (ctx.direction === 'bullish' && ctx.atr < 0.60) {
+  // CARVE-OUT: skip when SPY morning microtrend matches — see spy-microtrend.ts.
+  if (ctx.direction === 'bullish' && ctx.atr < 0.60
+      && !isSpyMorningMicrotrend(ctx)) {
     return `bullish low atr ${ctx.atr.toFixed(2)} < 0.60`;
   }
   // v2: bearish-trend mid-conf [0.70, 0.90) — see strategies/spy.ts.
@@ -26,7 +29,9 @@ function spyShouldAllowEntry(ctx: EntryContext): true | string {
     return `bearish-trend high-conf ${(ctx.confidence * 100).toFixed(0)}% anti-predictive`;
   }
   // v3: bullish-trend low-atr extension to 0.80 — see strategies/spy.ts.
-  if (ctx.direction === 'bullish' && ctx.signalMode === 'trend' && ctx.atr < 0.80) {
+  // CARVE-OUT: skip when SPY morning microtrend matches — see spy-microtrend.ts.
+  if (ctx.direction === 'bullish' && ctx.signalMode === 'trend' && ctx.atr < 0.80
+      && !isSpyMorningMicrotrend(ctx)) {
     return `bullish-trend low atr ${ctx.atr.toFixed(2)} < 0.80`;
   }
   // v4: bearish-breakout low-atr <0.60 — see strategies/spy.ts.
@@ -39,8 +44,10 @@ function spyShouldAllowEntry(ctx: EntryContext): true | string {
     return `bearish-breakout mid-atr ${ctx.atr.toFixed(2)} in [0.70, 1.00)`;
   }
   // v5: bearish-trend mid-atr [0.40, 0.60) — see strategies/spy.ts.
+  // CARVE-OUT: skip when SPY morning microtrend matches — see spy-microtrend.ts.
   if (ctx.direction === 'bearish' && ctx.signalMode === 'trend'
-      && ctx.atr >= 0.40 && ctx.atr < 0.60) {
+      && ctx.atr >= 0.40 && ctx.atr < 0.60
+      && !isSpyMorningMicrotrend(ctx)) {
     return `bearish-trend mid-atr ${ctx.atr.toFixed(2)} in [0.40, 0.60)`;
   }
   // v13: bearish-trend high-atr [1.20, 1.50) — see strategies/spy.ts.
@@ -81,7 +88,13 @@ function spyShouldAllowEntry(ctx: EntryContext): true | string {
   return true;
 }
 
-function spyAdjustConfidence(cb: ConfidenceBreakdown, _ctx: EntryContext): ConfidenceBreakdown {
+function spyAdjustConfidence(cb: ConfidenceBreakdown, ctx: EntryContext): ConfidenceBreakdown {
+  if (isSpyMorningMicrotrend({ ...ctx, breakdown: cb })) {
+    return {
+      ...cb,
+      total: Math.max(0, Math.min(1, cb.total + SPY_MORNING_MICROTREND_BONUS)),
+    };
+  }
   return cb;
 }
 
