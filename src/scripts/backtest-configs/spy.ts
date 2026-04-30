@@ -10,6 +10,7 @@ import type { TickerBacktestConfig, EntryContext } from './types.js';
 import type { ConfidenceBreakdown } from '../../types/analysis.js';
 import { simulateOrderAgentSpy } from '../../lib/order-agent-sim-spy.js';
 import { SPY_MORNING_MICROTREND_BONUS, isSpyMorningMicrotrend } from '../../lib/spy-microtrend.js';
+import { SPY_LATE_RANGE_REBOUND_BONUS, isSpyLateRangeRebound } from '../../lib/spy-range-rebound.js';
 
 function spyShouldAllowEntry(ctx: EntryContext): true | string {
   // v1: bullish low-atr (any mode) — see strategies/spy.ts.
@@ -93,6 +94,12 @@ function spyAdjustConfidence(cb: ConfidenceBreakdown, ctx: EntryContext): Confid
     return {
       ...cb,
       total: Math.max(0, Math.min(1, cb.total + SPY_MORNING_MICROTREND_BONUS)),
+    };
+  }
+  if (isSpyLateRangeRebound({ ...ctx, breakdown: cb })) {
+    return {
+      ...cb,
+      total: Math.max(0, Math.min(1, cb.total + SPY_LATE_RANGE_REBOUND_BONUS)),
     };
   }
   return cb;
