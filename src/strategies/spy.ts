@@ -22,7 +22,7 @@ import type { TimeframeIndicators } from '../types/indicators.js';
 import type { SignalDirection } from '../types/signal.js';
 import { defaultStrategy } from './default.js';
 import { isSpyMorningMicrotrend, spyMorningMicrotrendBonus } from '../lib/spy-microtrend.js';
-import { SPY_LATE_RANGE_REBOUND_BONUS, isSpyLateRangeRebound } from '../lib/spy-range-rebound.js';
+import { SPY_RANGE_REBOUND_BONUS, isSpyRangeRebound } from '../lib/spy-range-rebound.js';
 
 let _lastRegimeScore = 50;
 
@@ -332,10 +332,10 @@ function spyAdjustConfidence(breakdown: ConfidenceBreakdown, ctx: EntryContext):
       total: Math.max(0, Math.min(1, breakdown.total + microtrendBonus)),
     };
   }
-  if (isSpyLateRangeRebound({ ...ctx, breakdown })) {
+  if (isSpyRangeRebound({ ...ctx, breakdown })) {
     return {
       ...breakdown,
-      total: Math.max(0, Math.min(1, breakdown.total + SPY_LATE_RANGE_REBOUND_BONUS)),
+      total: Math.max(0, Math.min(1, breakdown.total + SPY_RANGE_REBOUND_BONUS)),
     };
   }
   return breakdown;
