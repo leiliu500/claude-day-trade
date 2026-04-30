@@ -197,7 +197,23 @@ export function findIdealEntries(bars: Bar[], args: DetectArgs): IdealEntry[] {
     const longEval = evaluateEntry(bars, i, 'long', args.windowMin);
     const shortEval = evaluateEntry(bars, i, 'short', args.windowMin);
     const candidates: IdealEntry[] = [];
+    // Momentum confirmation: bar i (the decision bar where the marker lands)
+    // must close in the trade direction, AND at least 3 of the last 5 bars
+    // must match direction. Both checks together ensure the marker sits on
+    // a direction-matching candle inside a directionally-confirmed stretch.
+    const barIsGreen = start.c > start.o;
+    const barIsRed = start.c < start.o;
+    const lookback = 5, minMatch = 3;
+    const lo = Math.max(0, i - (lookback - 1));
+    let greenCount = 0, redCount = 0;
+    for (let k = lo; k <= i; k++) {
+      const b = bars[k]!;
+      if (b.c > b.o) greenCount++;
+      else if (b.c < b.o) redCount++;
+    }
     for (const ev of [longEval, shortEval]) {
+      if (ev.direction === 'long' && (!barIsGreen || greenCount < minMatch)) continue;
+      if (ev.direction === 'short' && (!barIsRed || redCount < minMatch)) continue;
       const mfePct = (ev.mfeAbs / ev.entryPrice) * 100;
       const maePct = (ev.maeAbsBeforePeak / ev.entryPrice) * 100;
       const ttpMin = (bars[ev.peakIdx]!.ts - start.ts) / 60_000;

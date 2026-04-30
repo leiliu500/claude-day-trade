@@ -2416,14 +2416,15 @@ function renderMissedChart(data) {
     NO_DATA: '#8b949e',
   };
   for (const e of entries) {
-    // Find bar index by entry time UTC. bar.t is bar START; entry decision = bar.t + 60s.
+    // Place marker on the entry-decision bar (the bar whose CLOSE sets the
+    // entry price). The momentum-confirmation filter in findIdealEntries
+    // guarantees this bar's color matches the trade direction.
     const entryUtc = Date.parse(e.entryTsUtc);
     let idx = -1;
     for (let i = 0; i < bars.length; i++) {
       if (bars[i].t + 60_000 === entryUtc) { idx = i; break; }
     }
     if (idx === -1) {
-      // fallback: closest bar
       let best = Infinity;
       for (let i = 0; i < bars.length; i++) {
         const d = Math.abs(bars[i].t + 60_000 - entryUtc);

@@ -1238,7 +1238,15 @@ export function startDashboard(port: number): void {
       const { startUTC, endUTC } = lib.sessionWindowUTC(date, includeETH);
       const bars = await lib.fetch1mBars(ticker, startUTC, endUTC);
       if (bars.length < detectArgs.windowMin + 5) {
-        res.json({ ok: true, ticker, date, bars: bars.length, note: 'insufficient bars (weekend/holiday/early)', entries: [] });
+        res.json({
+          ok: true, ticker, date,
+          barCount: bars.length,
+          thresholds: detectArgs,
+          verify: { backtest: false, live: false },
+          bars: bars.map(b => ({ t: b.ts, o: b.o, h: b.h, l: b.l, c: b.c })),
+          entries: [],
+          note: 'insufficient bars (weekend/holiday/early)',
+        });
         return;
       }
       const ideals = lib.findIdealEntries(bars, detectArgs);
