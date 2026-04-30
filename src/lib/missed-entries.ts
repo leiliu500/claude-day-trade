@@ -326,7 +326,11 @@ export async function fetchLiveLayer(
 
 // ── Verification matching ───────────────────────────────────────────────────
 
-export const MATCH_WINDOW_MS = 5 * 60_000;
+// 15 min: catches DMI-flip-lag misses where the system flips direction late
+// (typically 7-12 min after the ideal decision) but before the MFE peak.
+// A flip outside this window means the system never recognized the move
+// in time to be useful — that's a true BLIND.
+export const MATCH_WINDOW_MS = 15 * 60_000;
 
 export function dirMatches(human: Direction, sys: 'bullish' | 'bearish'): boolean {
   return (human === 'long' && sys === 'bullish') || (human === 'short' && sys === 'bearish');
