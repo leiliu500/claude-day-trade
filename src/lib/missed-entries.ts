@@ -44,6 +44,8 @@ export interface BtEntry {
   grade?: string;
   status: BtStatus;
   filterRule?: string;
+  /** Full ConfidenceBreakdown from backtest-day, when --json output includes it. */
+  breakdown?: Record<string, number>;
 }
 
 export interface LiveSnapshot {
@@ -258,6 +260,7 @@ export function parseBacktestJson(stdout: string, dateET: string): BtEntry[] | n
       ts: parseBtTime(e.timeET ?? e.time, dateET),
       direction: e.direction, confidence: Number(e.confidence) || 0,
       mode: e.mode ?? '', grade: e.grade, status: 'confirmed',
+      breakdown: e.breakdown,
     });
   }
   for (const e of (data.blocked ?? [])) {
@@ -265,6 +268,7 @@ export function parseBacktestJson(stdout: string, dateET: string): BtEntry[] | n
       ts: parseBtTime(e.timeET ?? e.time, dateET),
       direction: e.direction, confidence: Number(e.confidence) || 0,
       mode: e.mode ?? '', grade: e.grade, status: 'blocked',
+      breakdown: e.breakdown,
     });
   }
   for (const e of (data.filtered ?? [])) {
@@ -273,6 +277,7 @@ export function parseBacktestJson(stdout: string, dateET: string): BtEntry[] | n
       direction: e.direction, confidence: Number(e.confidence) || 0,
       mode: e.mode ?? '', grade: e.grade, status: 'filtered',
       filterRule: e.filterRule,
+      breakdown: e.breakdown,
     });
   }
   return entries;

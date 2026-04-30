@@ -287,6 +287,7 @@ interface FilterBlockedEntry {
   rangeExhaustion?: number;
   displacementVelocity?: number;
   choppiness?: number;
+  breakdown: ConfidenceBreakdown;
 }
 
 /** Normalize a filter reason string into a grouping category */
@@ -1057,7 +1058,7 @@ async function main() {
         price: currentPrice, filterRule, filterCategory: filterCategory(filterRule),
         mfePct: fwd.mfePct, maePct: fwd.maePct, mfeOverMae: fwd.mfeOverMae, mfePeakMinutes: fwd.mfePeakMinutes,
         entryGrade: fwd.entryGrade, outcome: fwd.outcome,
-        ...regimeCtx,
+        ...regimeCtx, breakdown: cb,
       });
     };
 
@@ -2737,6 +2738,7 @@ async function main() {
         mfePct: e.mfePct, maePct: e.maePct, mfeOverMae: e.mfeOverMae, mfePeakMinutes: e.mfePeakMinutes,
         move5m: e.move5mPct, move10m: e.move10mPct, move15m: e.move15mPct, move30m: e.move30mPct,
         dirCorrect: e.directionCorrect,
+        breakdown: e.breakdown,
       })),
       filtered: dedupedFiltered.map(fb => ({
         time: fb.time, timeET: fb.timeET, direction: fb.direction, mode: fb.signalMode,
@@ -2744,6 +2746,7 @@ async function main() {
         grade: fb.entryGrade, outcome: fb.outcome,
         filterRule: fb.filterRule, filterCategory: fb.filterCategory,
         mfePct: fb.mfePct, maePct: fb.maePct, mfeOverMae: fb.mfeOverMae, mfePeakMinutes: fb.mfePeakMinutes,
+        breakdown: fb.breakdown,
       })),
     };
     // Merge move scanner data if available
