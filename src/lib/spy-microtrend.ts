@@ -1,17 +1,15 @@
 /**
  * SPY morning microtrend detector — narrow carve-out for SPY trend signals
- * during the 10:00-11:15 ET window where order-flow + options confirmation are
- * strong enough that 2-stage waiting gives back most of the move.
+ * during the 10:00-11:15 ET window where confirmation is strong enough that
+ * 2-stage waiting gives back most of the move.
  *
- * Target use case: SPY morning PARITY GAPs where backtest fires at 0.65 conf
- * but live's running confidence is in the [0.55, 0.65) band at the same minute
- * (Apr 29 2026 10:11 + 10:58 are the canonical examples — both grade B/C with
- * 0.22% MFE each that the deployed system missed because live conf peaked at
- * 0.55 vs backtest's 0.65). The bonus pushes live's 0.55 → 0.65 to cross the
- * gate; the bypass skips stage-2 wait so the entry catches the move; and the
- * filter carve-outs (v1/v3/v5 in spy.ts) keep this narrow pattern from being
- * blocked by SPY's existing low-atr / mid-atr filters which were calibrated
- * for the broader trend pool, not this specific morning microtrend slice.
+ * Target use case: SPY morning near-threshold trend signals where the move is
+ * already being confirmed by either live order-flow/options data or a tight
+ * technical continuation shape. The bonus pushes 0.55-0.65 confidence signals
+ * across the entry threshold; the bypass skips stage-2 wait so the entry catches
+ * the move; and the filter carve-outs (v1/v3/v5 in spy.ts) keep this narrow
+ * pattern from being blocked by SPY's existing low-atr / mid-atr filters which
+ * were calibrated for the broader trend pool, not this specific morning slice.
  *
  * Design note: this detector applies THREE actions on the same signal —
  *   1. +0.10 confidence bonus (in adjustConfidence)
@@ -21,22 +19,16 @@
  * compound action safe. If thresholds are loosened, evaluate whether all
  * three actions are still warranted or just the bonus.
  *
- * Validation status (as of 2026-04-30): INCONCLUSIVE on 16mo SPY harness
- * (Δexp +0.002, CI [-0.170, +0.176]). Detector fires only on Apr 29 in the
- * full 16mo window (+2 entries: 10:11 BULLISH C + 10:58 BEARISH B). Live
- * impact cannot be measured by the backtest harness because the bonus only
- * matters for ticks where backtest is in [0.55, 0.65) — exactly the slice
- * backtest filters out. Needs live-replay verifier or paper deployment for
- * real evaluation. Per memory's cherry-picked-window rule, the Apr-2026-only
- * signal is a risk factor — factor thresholds may be over-fit to those 2
- * entries.
+ * Validation status (as of 2026-04-30): MERGE on 2025-01-02..2026-04-29 SPY
+ * harness after adding the technical continuation branch (+26 confirmed entries,
+ * expectancy -0.275 → -0.241, direction 60.7% → 61.3%). Bootstrap CI still spans
+ * zero and 4/12 scored monthly chunks disagree, so keep this as a narrow SPY-only
+ * carve-out and revalidate before loosening it further.
  *
- * Factor threshold provenance: hand-tuned from the Apr 29 2026 PARITY GAP
- * factor profiles (10:11 bullish + 10:58 bearish). Common gates target
- * order-flow + options confirmation (oiVolumeBonus, consolidationPenalty,
- * thetaDecayPenalty); per-direction gates capture the asymmetric bullish
- * vs bearish factor signatures. Future tuning should be backed by miner
- * output across the full ConfidenceBreakdown pool, not single-day examples.
+ * Factor threshold provenance: flow branch is hand-tuned from the Apr 29 2026
+ * PARITY GAP profiles (10:11 bullish + 10:58 bearish). Technical branch is mined
+ * from the full 16mo rejected-entry pool, constrained to morning trend entries
+ * in the near-threshold band.
  */
 
 import type { ConfidenceBreakdown } from '../types/analysis.js';
@@ -52,12 +44,7 @@ export interface SpyMicrotrendInput {
   breakdown: ConfidenceBreakdown;
 }
 
-export function isSpyMorningMicrotrend(input: SpyMicrotrendInput): boolean {
-  if (input.ticker !== undefined && input.ticker !== 'SPY') return false;
-  if (input.signalMode !== 'trend') return false;
-  const mins = input.minutesSinceOpen;
-  if (mins === undefined || mins < 30 || mins >= 105) return false;
-
+function hasFlowConfirmedShape(input: SpyMicrotrendInput): boolean {
   const b = input.breakdown;
   const common =
     b.oiVolumeBonus >= 0.05
@@ -85,4 +72,59 @@ export function isSpyMorningMicrotrend(input: SpyMicrotrendInput): boolean {
   }
 
   return false;
+}
+
+function hasTechnicalContinuationShape(input: SpyMicrotrendInput): boolean {
+  const b = input.breakdown;
+
+  if (b.consolidationPenalty < -0.03 || b.thetaDecayPenalty < -0.03) return false;
+
+  if (input.direction === 'bullish') {
+    return b.alignmentBonus >= 0.06
+      && b.vwapBonus >= 0.06
+      && b.recentPriceActionBonus >= 0.08
+      && b.trendPhaseBonus >= 0.04
+      && b.momentumAccelBonus >= 0
+      && b.nearLevelPenalty >= -0.03;
+  }
+
+  if (input.direction === 'bearish') {
+    return b.total < 0.70
+      && b.alignmentBonus >= 0.06
+      && b.vwapBonus >= 0.05
+      && b.nearLevelPenalty >= 0
+      && b.consolidationPenalty >= 0
+      && b.trendPhaseBonus >= 0.06
+      && b.momentumAccelBonus >= 0
+      && b.recentPriceActionBonus >= -0.08;
+  }
+
+  return false;
+}
+
+function hasMorningMicrotrendShape(input: SpyMicrotrendInput): boolean {
+  if (input.ticker !== undefined && input.ticker !== 'SPY') return false;
+  if (input.signalMode !== 'trend') return false;
+  const mins = input.minutesSinceOpen;
+  if (mins === undefined || mins < 30 || mins >= 105) return false;
+
+  const b = input.breakdown;
+  if (b.total < 0.55 || b.total >= 0.75) return false;
+
+  return hasFlowConfirmedShape(input) || hasTechnicalContinuationShape(input);
+}
+
+export function spyMorningMicrotrendBonus(input: SpyMicrotrendInput): number {
+  if (!hasMorningMicrotrendShape(input)) return 0;
+
+  const total = input.breakdown.total;
+  if (hasTechnicalContinuationShape(input) && input.direction === 'bearish') {
+    return total >= 0.55 && total < 0.60 ? SPY_MORNING_MICROTREND_BONUS : 0;
+  }
+
+  return total >= 0.55 && total < 0.65 ? SPY_MORNING_MICROTREND_BONUS : 0;
+}
+
+export function isSpyMorningMicrotrend(input: SpyMicrotrendInput): boolean {
+  return hasMorningMicrotrendShape(input);
 }

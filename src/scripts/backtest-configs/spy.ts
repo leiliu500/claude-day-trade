@@ -9,7 +9,7 @@
 import type { TickerBacktestConfig, EntryContext } from './types.js';
 import type { ConfidenceBreakdown } from '../../types/analysis.js';
 import { simulateOrderAgentSpy } from '../../lib/order-agent-sim-spy.js';
-import { SPY_MORNING_MICROTREND_BONUS, isSpyMorningMicrotrend } from '../../lib/spy-microtrend.js';
+import { isSpyMorningMicrotrend, spyMorningMicrotrendBonus } from '../../lib/spy-microtrend.js';
 import { SPY_LATE_RANGE_REBOUND_BONUS, isSpyLateRangeRebound } from '../../lib/spy-range-rebound.js';
 
 function spyShouldAllowEntry(ctx: EntryContext): true | string {
@@ -90,10 +90,11 @@ function spyShouldAllowEntry(ctx: EntryContext): true | string {
 }
 
 function spyAdjustConfidence(cb: ConfidenceBreakdown, ctx: EntryContext): ConfidenceBreakdown {
-  if (isSpyMorningMicrotrend({ ...ctx, breakdown: cb })) {
+  const microtrendBonus = spyMorningMicrotrendBonus({ ...ctx, breakdown: cb });
+  if (microtrendBonus > 0) {
     return {
       ...cb,
-      total: Math.max(0, Math.min(1, cb.total + SPY_MORNING_MICROTREND_BONUS)),
+      total: Math.max(0, Math.min(1, cb.total + microtrendBonus)),
     };
   }
   if (isSpyLateRangeRebound({ ...ctx, breakdown: cb })) {

@@ -21,7 +21,7 @@ import type { ConfidenceBreakdown } from '../types/analysis.js';
 import type { TimeframeIndicators } from '../types/indicators.js';
 import type { SignalDirection } from '../types/signal.js';
 import { defaultStrategy } from './default.js';
-import { SPY_MORNING_MICROTREND_BONUS, isSpyMorningMicrotrend } from '../lib/spy-microtrend.js';
+import { isSpyMorningMicrotrend, spyMorningMicrotrendBonus } from '../lib/spy-microtrend.js';
 import { SPY_LATE_RANGE_REBOUND_BONUS, isSpyLateRangeRebound } from '../lib/spy-range-rebound.js';
 
 let _lastRegimeScore = 50;
@@ -325,10 +325,11 @@ function spyShouldAllowEntry(ctx: EntryContext): true | string {
 }
 
 function spyAdjustConfidence(breakdown: ConfidenceBreakdown, ctx: EntryContext): ConfidenceBreakdown {
-  if (isSpyMorningMicrotrend({ ...ctx, breakdown })) {
+  const microtrendBonus = spyMorningMicrotrendBonus({ ...ctx, breakdown });
+  if (microtrendBonus > 0) {
     return {
       ...breakdown,
-      total: Math.max(0, Math.min(1, breakdown.total + SPY_MORNING_MICROTREND_BONUS)),
+      total: Math.max(0, Math.min(1, breakdown.total + microtrendBonus)),
     };
   }
   if (isSpyLateRangeRebound({ ...ctx, breakdown })) {
