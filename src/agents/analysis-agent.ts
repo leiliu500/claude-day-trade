@@ -2189,7 +2189,7 @@ export class AnalysisAgent {
       const ltfBars = signal.timeframes[0]?.bars;
       const htfAtr = (signal.timeframes[2] ?? signal.timeframes[0])?.atr.atr ?? 0;
       if (ltfBars && ltfBars.length >= 10) {
-        const todayStr = new Date().toISOString().slice(0, 10);
+        const todayStr = (runtimeOpts?.now ?? new Date()).toISOString().slice(0, 10);
         const todayBars = ltfBars.filter(b => b.timestamp.startsWith(todayStr));
         const metrics = computeEntryMetrics(todayBars, htfAtr);
         if (metrics) {

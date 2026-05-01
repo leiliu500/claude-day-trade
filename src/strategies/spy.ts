@@ -22,6 +22,7 @@ import type { TimeframeIndicators } from '../types/indicators.js';
 import type { SignalDirection } from '../types/signal.js';
 import { defaultStrategy } from './default.js';
 import { isSpyMorningMicrotrend, spyMorningMicrotrendBonus } from '../lib/spy-microtrend.js';
+import { isSpyAfternoonFlowContinuation } from '../lib/spy-afternoon-continuation.js';
 import { SPY_RANGE_REBOUND_BONUS, isSpyRangeRebound } from '../lib/spy-range-rebound.js';
 
 let _lastRegimeScore = 50;
@@ -122,12 +123,13 @@ function spyShouldAllowEntry(ctx: EntryContext): true | string {
   // pattern as IWM v4/v6, but SPY's threshold is higher (0.60 vs IWM's 0.40)
   // because SPY trades at ~$560 vs IWM ~$215.
   //
-  // CARVE-OUT: skip when isSpyMorningMicrotrend matches. The microtrend's 11
-  // factor floors target a specific morning order-flow-confirmed pattern
-  // (10:00-11:15 ET) that v1's broad low-atr block would otherwise kill —
-  // see spy-microtrend.ts for the design intent and validation status.
+  // CARVE-OUTS:
+  //   - isSpyMorningMicrotrend: 10:00-11:15 ET order-flow-confirmed pattern.
+  //   - isSpyAfternoonFlowContinuation: 13:50-14:10 ET high-conviction trend
+  //     continuation where flow + persistence confirm the low-ATR grind.
   if (ctx.direction === 'bullish' && ctx.atr < 0.60
-      && !isSpyMorningMicrotrend(ctx)) {
+      && !isSpyMorningMicrotrend(ctx)
+      && !isSpyAfternoonFlowContinuation(ctx)) {
     return `bullish low atr ${ctx.atr.toFixed(2)} < 0.60`;
   }
 
@@ -315,9 +317,11 @@ function spyShouldAllowEntry(ctx: EntryContext): true | string {
   // CARVE-OUT: same reasoning as v1 — see spy-microtrend.ts. v3's bull-trend
   // 0.60-0.80 trough is the most common atr range for the morning microtrend
   // pattern, so this carve-out is the load-bearing one for releasing the
-  // detector's matches.
+  // detector's matches. The afternoon continuation carve-out is narrower and
+  // only reaches atr<0.60, but skip this guard too so v1 and v3 stay aligned.
   if (ctx.direction === 'bullish' && ctx.signalMode === 'trend' && ctx.atr < 0.80
-      && !isSpyMorningMicrotrend(ctx)) {
+      && !isSpyMorningMicrotrend(ctx)
+      && !isSpyAfternoonFlowContinuation(ctx)) {
     return `bullish-trend low atr ${ctx.atr.toFixed(2)} < 0.80`;
   }
 
