@@ -175,6 +175,19 @@ export function classifyAlignment(tfs: TimeframeIndicators[], direction: SignalD
 // ── Leading override momentum persistence (per-ticker) ──────────────────────
 const _persistence = new Map<string, PersistenceState>();
 
+// Latest-bar close time in ms — matches backtest's `currentTs` so
+// detectDirection's persistence-aging arithmetic is identical between the two.
+// Live previously passed Date.now() which drifted seconds-to-minutes from the
+// bar grid and could flip persistence-aging boundary checks (15-min window).
+const _TF_MS: Record<Timeframe, number> = {
+  '1m': 60_000, '2m': 120_000, '3m': 180_000, '5m': 300_000,
+  '15m': 900_000, '1h': 3_600_000, '1d': 86_400_000,
+};
+function lastBarCloseMs(bars: OHLCVBar[], tf: Timeframe): number {
+  const last = bars[bars.length - 1];
+  return last ? new Date(last.timestamp).getTime() + _TF_MS[tf] : Date.now();
+}
+
 export class SignalAgent {
   async run(
     ticker: string,
@@ -198,8 +211,9 @@ export class SignalAgent {
     // ── Direction detection (shared with backtest) ─────────────────────────────
     if (!_persistence.has(ticker)) _persistence.set(ticker, { dir: null, ts: 0 });
     const persistence = _persistence.get(ticker)!;
+    const tickNow = lastBarCloseMs(ltfBars, ltf);
     const { direction: detectedDir, reversalOverride, leadingSignalOverride } =
-      detectDirection(ltfBars, mtfBars, htfBars, ltf !== '1d', persistence, Date.now());
+      detectDirection(ltfBars, mtfBars, htfBars, ltf !== '1d', persistence, tickNow);
     let direction = detectedDir;
 
     // Second pass: build full TF indicators with direction for accurate price levels
