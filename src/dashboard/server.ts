@@ -1360,8 +1360,50 @@ export function startDashboard(port: number): void {
             verdict: 'LIVE_NO_IDEAL',
           });
         }
-        verified.sort((a, b) => Date.parse(a.entryTsUtc) - Date.parse(b.entryTsUtc));
       }
+
+      // Append orphan backtest ENTRYs — confirmed BT entries with no ideal
+      // within ±15min same-direction (system fired but ideal-detector didn't
+      // flag the post-entry move). Mirror of the LIVE_NO_IDEAL block above.
+      if (!skipBacktest && btEntries) {
+        const btOrphans = lib.findOrphanBacktestEntries(ideals, btEntries);
+        for (const e of btOrphans) {
+          const dir: 'long' | 'short' = e.direction === 'bullish' ? 'long' : 'short';
+          const synth = lib.synthesizeOrphanFromTsAndDir(bars, e.ts, dir, detectArgs.windowMin);
+          if (!synth) continue;
+          const live = !skipLive && liveLayer ? lib.matchLive(synth, liveLayer.signals, liveLayer.dispatches) : null;
+          verified.push({
+            entryTimeET: lib.fmtET(e.ts),
+            entryTsUtc: new Date(e.ts).toISOString(),
+            peakTimeET: lib.fmtET(lib.barCloseTs(synth.peakTs)),
+            direction: synth.direction,
+            entryPrice: synth.entryPrice,
+            peakPrice: synth.peakPrice,
+            mfePct: Number(synth.mfePct.toFixed(3)),
+            maePct: Number(synth.maePct.toFixed(3)),
+            rMultiple: Number(synth.rMultiple.toFixed(2)),
+            ttpMin: Number(synth.ttpMin.toFixed(1)),
+            grade: null,
+            backtest: {
+              entry: {
+                timeET: lib.fmtET(e.ts), status: e.status,
+                direction: e.direction, confidence: e.confidence,
+                mode: e.mode, grade: e.grade, filterRule: e.filterRule,
+              },
+            },
+            live: live ? {
+              peakSignal: live.peakSignal ? {
+                timeET: lib.fmtET(live.peakSignal.ts), confidence: live.peakSignal.confidence,
+                meets: live.peakSignal.meets, alignment: live.peakSignal.alignment,
+              } : null,
+              enterDispatch: live.enterDispatch ? { timeET: lib.fmtET(live.enterDispatch.ts) } : null,
+            } : null,
+            verdict: 'BT_NO_IDEAL',
+          });
+        }
+      }
+
+      verified.sort((a, b) => Date.parse(a.entryTsUtc) - Date.parse(b.entryTsUtc));
 
       // Compact OHLC for charting (no volume — keep payload small)
       const chartBars = bars.map(b => ({

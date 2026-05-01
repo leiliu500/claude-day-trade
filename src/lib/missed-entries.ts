@@ -73,6 +73,7 @@ export type Verdict =
   | 'BLIND'
   | 'BT_ONLY_DETECT_LIVE_EXEC'
   | 'LIVE_NO_IDEAL'
+  | 'BT_NO_IDEAL'
   | 'NO_DATA';
 
 export interface VerifiedEntry {
@@ -440,17 +441,49 @@ export function synthesizeOrphanEntry(
   windowMin: number,
 ): IdealEntry | null {
   if (!dispatch.direction) return null;
+  return synthesizeOrphanFromTsAndDir(bars, dispatch.ts, dispatch.direction, windowMin);
+}
+
+// Symmetric of `findOrphanLiveDispatches` for the backtest side: confirmed BT
+// entries that don't map to any ideal within ±15min same-direction. Surfaces
+// new entries that the system found but the ideal-entry detector didn't flag
+// (e.g. mature low-ATR continuations released by narrow carve-outs).
+export function findOrphanBacktestEntries(
+  ideals: IdealEntry[],
+  bt: BtEntry[],
+): BtEntry[] {
+  const out: BtEntry[] = [];
+  for (const e of bt) {
+    if (e.status !== 'confirmed') continue;
+    const dir: Direction = e.direction === 'bullish' ? 'long' : 'short';
+    const matchedIdeal = ideals.some(ideal =>
+      ideal.direction === dir &&
+      Math.abs(barCloseTs(ideal.ts) - e.ts) <= MATCH_WINDOW_MS
+    );
+    if (matchedIdeal) continue;
+    out.push(e);
+  }
+  return out;
+}
+
+// Synthesize an IdealEntry-shaped row from any (ts, direction) anchor. Shared
+// by live and backtest orphan paths.
+export function synthesizeOrphanFromTsAndDir(
+  bars: Bar[],
+  ts: number,
+  direction: Direction,
+  windowMin: number,
+): IdealEntry | null {
   if (bars.length === 0) return null;
-  // Find bar i containing dispatch.ts (bar covers [ts, ts+60s))
   let i = -1;
   for (let k = 0; k < bars.length; k++) {
     const b = bars[k]!;
-    if (dispatch.ts >= b.ts && dispatch.ts < b.ts + 60_000) { i = k; break; }
-    if (b.ts > dispatch.ts) { i = k - 1; break; }
+    if (ts >= b.ts && ts < b.ts + 60_000) { i = k; break; }
+    if (b.ts > ts) { i = k - 1; break; }
   }
   if (i < 0) i = bars.length - 1;
   if (i >= bars.length - 1) return null;
-  const ev = evaluateEntry(bars, i, dispatch.direction, windowMin);
+  const ev = evaluateEntry(bars, i, direction, windowMin);
   const mfePct = (ev.mfeAbs / ev.entryPrice) * 100;
   const maePct = (ev.maeAbsBeforePeak / ev.entryPrice) * 100;
   const ttpMin = (bars[ev.peakIdx]!.ts - bars[i]!.ts) / 60_000;

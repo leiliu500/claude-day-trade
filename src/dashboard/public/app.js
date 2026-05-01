@@ -2161,6 +2161,7 @@ const VERDICT_DISPLAY = {
   BLIND:       { label: '👻 BLIND',       bg: '#21262d', border: '#6e7681' },
   BT_ONLY_DETECT_LIVE_EXEC: { label: '🟡 LIVE-ONLY', bg: '#332a17', border: '#bb8009' },
   LIVE_NO_IDEAL: { label: '🟠 LIVE-NO-IDEAL', bg: '#33260f', border: '#cc7d22' },
+  BT_NO_IDEAL: { label: '🟣 BT-NO-IDEAL', bg: '#2b1a3d', border: '#a371f7' },
   NO_DATA:     { label: '— —',            bg: '#21262d', border: '#30363d' },
 };
 
@@ -2192,9 +2193,13 @@ async function runMissedEntries() {
     renderMissedSummary(data, summary);
     renderMissedChart(data);
     renderMissedTable(data, tableWrap);
-    const orphans = (data.entries || []).filter(e => e.verdict === 'LIVE_NO_IDEAL').length;
-    const ideals = data.entries.length - orphans;
-    status.textContent = `${ticker} ${date} — ${ideals} ideal${orphans ? ` + ${orphans} live-only` : ''}`;
+    const liveOrphans = (data.entries || []).filter(e => e.verdict === 'LIVE_NO_IDEAL').length;
+    const btOrphans = (data.entries || []).filter(e => e.verdict === 'BT_NO_IDEAL').length;
+    const ideals = data.entries.length - liveOrphans - btOrphans;
+    const orphanParts = [];
+    if (liveOrphans) orphanParts.push(`${liveOrphans} live-only`);
+    if (btOrphans) orphanParts.push(`${btOrphans} bt-only`);
+    status.textContent = `${ticker} ${date} — ${ideals} ideal${orphanParts.length ? ' + ' + orphanParts.join(' + ') : ''}`;
   } catch (err) {
     status.textContent = 'Error: ' + err.message;
   } finally {
@@ -2210,13 +2215,13 @@ function renderMissedSummary(data, el) {
   else verifyParts.push('live=skipped');
 
   const t = data.thresholds || {};
-  const vc = { BOTH_EXEC: 0, PARITY_GAP: 0, ALGO_GAP: 0, BLIND: 0, BT_ONLY_DETECT_LIVE_EXEC: 0, LIVE_NO_IDEAL: 0, NO_DATA: 0 };
+  const vc = { BOTH_EXEC: 0, PARITY_GAP: 0, ALGO_GAP: 0, BLIND: 0, BT_ONLY_DETECT_LIVE_EXEC: 0, LIVE_NO_IDEAL: 0, BT_NO_IDEAL: 0, NO_DATA: 0 };
   for (const e of (data.entries || [])) vc[e.verdict] = (vc[e.verdict] || 0) + 1;
   const gc = { A: 0, B: 0, C: 0 };
   let totalMfe = 0;
   for (const e of (data.entries || [])) { if (e.grade) gc[e.grade] = (gc[e.grade] || 0) + 1; totalMfe += (e.mfePct || 0); }
 
-  const verdictLine = ['BOTH_EXEC', 'PARITY_GAP', 'ALGO_GAP', 'BLIND', 'BT_ONLY_DETECT_LIVE_EXEC', 'LIVE_NO_IDEAL']
+  const verdictLine = ['BOTH_EXEC', 'PARITY_GAP', 'ALGO_GAP', 'BLIND', 'BT_ONLY_DETECT_LIVE_EXEC', 'LIVE_NO_IDEAL', 'BT_NO_IDEAL']
     .filter(k => vc[k] > 0)
     .map(k => `${VERDICT_DISPLAY[k].label}: ${vc[k]}`)
     .join('  •  ');
@@ -2418,6 +2423,7 @@ function renderMissedChart(data) {
     BLIND: '#6e7681',
     BT_ONLY_DETECT_LIVE_EXEC: '#bb8009',
     LIVE_NO_IDEAL: '#cc7d22',
+    BT_NO_IDEAL: '#a371f7',
     NO_DATA: '#8b949e',
   };
   for (const e of entries) {

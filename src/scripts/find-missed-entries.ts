@@ -12,6 +12,7 @@ import {
   todayET, fmtET, barCloseTs, sessionWindowUTC,
   fetch1mBars, findIdealEntries, parseBacktestJson, fetchLiveLayer,
   matchBacktest, matchLive, classifyVerdict,
+  findOrphanBacktestEntries, synthesizeOrphanFromTsAndDir,
 } from '../lib/missed-entries.js';
 
 interface CliArgs {
@@ -123,6 +124,7 @@ const VERDICT_LABEL: Record<Verdict, string> = {
   BLIND: '👻 BLIND',
   BT_ONLY_DETECT_LIVE_EXEC: '🟡 LIVE-ONLY',
   LIVE_NO_IDEAL: '🟠 LIVE-NO-IDEAL',
+  BT_NO_IDEAL: '🟣 BT-NO-IDEAL',
   NO_DATA: '   (verification disabled)',
 };
 
@@ -159,12 +161,14 @@ function printHuman(verified: VerifiedEntry[], args: CliArgs, barCount: number):
 
   for (const v of verified) {
     const e = v.ideal;
+    const isOrphan = v.verdict === 'BT_NO_IDEAL' || v.verdict === 'LIVE_NO_IDEAL';
     const dirArrow = e.direction === 'long' ? '↑' : '↓';
     const entryTime = fmtET(barCloseTs(e.ts));
     const peakTime = fmtET(barCloseTs(e.peakTs));
     const priceStr = `$${e.entryPrice.toFixed(2)}→$${e.peakPrice.toFixed(2)}`;
     const stats = `MFE ${e.mfePct.toFixed(2)}% MAE ${e.maePct.toFixed(2)}% R=${e.rMultiple.toFixed(1)} TTP ${e.ttpMin.toFixed(0)}m`;
-    console.log(`  entry ${entryTime} → peak ${peakTime}  ${dirArrow} ${e.direction.padEnd(5)}  ${priceStr.padEnd(22)} ${stats.padEnd(38)} ${e.grade}`);
+    const gradeStr = isOrphan ? '—' : e.grade;
+    console.log(`  entry ${entryTime} → peak ${peakTime}  ${dirArrow} ${e.direction.padEnd(5)}  ${priceStr.padEnd(22)} ${stats.padEnd(38)} ${gradeStr}`);
     if (!args.noBacktest) console.log(`      backtest: ${describeBt(v.bt)}`);
     if (!args.noLive)     console.log(`      live:     ${describeLive(v.live)}`);
     if (!args.noBacktest || !args.noLive) console.log(`      verdict:  ${VERDICT_LABEL[v.verdict]}`);
@@ -172,18 +176,22 @@ function printHuman(verified: VerifiedEntry[], args: CliArgs, barCount: number):
 
   const gc = { A: 0, B: 0, C: 0 } as Record<Grade, number>;
   let totalMfe = 0, bestMfe = 0;
+  let idealCount = 0;
   for (const v of verified) {
+    if (v.verdict === 'BT_NO_IDEAL' || v.verdict === 'LIVE_NO_IDEAL') continue;
     gc[v.ideal.grade]++; totalMfe += v.ideal.mfePct; bestMfe = Math.max(bestMfe, v.ideal.mfePct);
+    idealCount++;
   }
-  console.log(`\n  ideal: ${verified.length} entries (A:${gc.A} B:${gc.B} C:${gc.C})  total MFE ${totalMfe.toFixed(2)}%  best ${bestMfe.toFixed(2)}%`);
+  console.log(`\n  ideal: ${idealCount} entries (A:${gc.A} B:${gc.B} C:${gc.C})  total MFE ${totalMfe.toFixed(2)}%  best ${bestMfe.toFixed(2)}%`);
 
   if (!args.noBacktest || !args.noLive) {
     const vc: Record<Verdict, number> = {
-      BOTH_EXEC: 0, PARITY_GAP: 0, ALGO_GAP: 0, BLIND: 0, BT_ONLY_DETECT_LIVE_EXEC: 0, LIVE_NO_IDEAL: 0, NO_DATA: 0,
+      BOTH_EXEC: 0, PARITY_GAP: 0, ALGO_GAP: 0, BLIND: 0, BT_ONLY_DETECT_LIVE_EXEC: 0,
+      LIVE_NO_IDEAL: 0, BT_NO_IDEAL: 0, NO_DATA: 0,
     };
     for (const v of verified) vc[v.verdict]++;
     console.log(`  verdicts:`);
-    for (const k of ['BOTH_EXEC', 'PARITY_GAP', 'ALGO_GAP', 'BLIND', 'BT_ONLY_DETECT_LIVE_EXEC', 'LIVE_NO_IDEAL'] as Verdict[]) {
+    for (const k of ['BOTH_EXEC', 'PARITY_GAP', 'ALGO_GAP', 'BLIND', 'BT_ONLY_DETECT_LIVE_EXEC', 'LIVE_NO_IDEAL', 'BT_NO_IDEAL'] as Verdict[]) {
       if (vc[k] > 0) console.log(`    ${VERDICT_LABEL[k]}: ${vc[k]}`);
     }
   }
@@ -292,6 +300,20 @@ function verifiedEntryToJson(v: VerifiedEntry) {
     const verdict: Verdict = (args.noBacktest && args.noLive) ? 'NO_DATA' : classifyVerdict(bt, live);
     return { ideal, bt, live, verdict };
   });
+
+  // Append BT_NO_IDEAL orphans — confirmed BT entries with no ideal nearby.
+  if (!args.noBacktest && btResult) {
+    const btOrphans = findOrphanBacktestEntries(ideals, btResult);
+    const liveLayer = liveResult as { signals: LiveSnapshot[]; dispatches: LiveDispatch[] } | null;
+    for (const e of btOrphans) {
+      const dir = e.direction === 'bullish' ? 'long' : 'short';
+      const synth = synthesizeOrphanFromTsAndDir(bars, e.ts, dir, args.windowMin);
+      if (!synth) continue;
+      const live = !args.noLive && liveLayer ? matchLive(synth, liveLayer.signals, liveLayer.dispatches) : null;
+      verified.push({ ideal: synth, bt: { entry: e }, live, verdict: 'BT_NO_IDEAL' });
+    }
+    verified.sort((a, b) => a.ideal.ts - b.ideal.ts);
+  }
 
   if (args.output === 'csv') printCSV(verified, args);
   else if (args.output === 'json') printJSON(verified, args);
