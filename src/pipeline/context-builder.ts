@@ -123,16 +123,24 @@ export async function buildContext(ticker: string): Promise<PositionContext> {
         WHERE trade_date = CURRENT_DATE
           AND status = 'OPEN'`
     ),
-    // Most recent trailing-stop-type exit for this ticker in the last 5 min.
+    // Most recent loss/profit-stop exit for this ticker in the last 5 min.
     // The entry gate uses this to suppress bypass paths on same-side re-entries
     // that would otherwise fire seconds after price reversed against us.
+    //
+    // 2026-05-02: extended from {TRAILING_STOP|PROFIT_REVERSED|*GAIN_LOCK} to
+    // also include VELOCITY_CRASH/VELOCITY_FADE/STOP_HIT/NEVER_CONFIRMED. Live DB
+    // showed TSLA fired 26 same-side bullish bypass entries on 2026-04-30
+    // (-$451 / 4W 22L) because velocity-stop exits weren't gating the bypass —
+    // each VELOCITY_CRASH exit was followed by a fresh STRONG-SIGNAL BYPASS within
+    // 60s while the underlying continued falling. These exits are 87-100% losers,
+    // so a same-direction re-entry within 5 min directly contradicts the move.
     pool.query<{ closed_at: Date; option_right: string; close_reason: string }>(
       `SELECT closed_at, option_right, close_reason
          FROM trading.position_journal
         WHERE ticker = $1
           AND status = 'CLOSED'
           AND closed_at >= NOW() - INTERVAL '5 minutes'
-          AND close_reason ~ '^(TRAILING_STOP|PROFIT_REVERSED|TINY_GAIN_LOCK|MICRO_GAIN_LOCK)'
+          AND close_reason ~ '^(TRAILING_STOP|PROFIT_REVERSED|TINY_GAIN_LOCK|MICRO_GAIN_LOCK|VELOCITY_CRASH|VELOCITY_FADE|VELOCITY_PROFIT_DROP|STOP_HIT|NEVER_CONFIRMED)'
         ORDER BY closed_at DESC
         LIMIT 1`,
       [ticker]

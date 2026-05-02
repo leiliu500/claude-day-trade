@@ -478,14 +478,14 @@ export class DecisionOrchestrator {
           ? ` [Phase-change structural signal present but timing rejected: ${gate.phaseChangeTimingRejectReason}]`
           : '';
         const tsReversalNote = gateInput.sameSideTrailingStopAgeSec != null && gateInput.sameSideTrailingStopAgeSec <= 60
-          ? ` [Bypass suppressed: same-side trailing-stop exit ${gateInput.sameSideTrailingStopAgeSec.toFixed(0)}s ago — reversal risk]`
+          ? ` [Bypass suppressed: same-side stop exit ${gateInput.sameSideTrailingStopAgeSec.toFixed(0)}s ago (${context.lastTrailingStopExit?.closeReason.split(':')[0] ?? '?'}) — reversal risk]`
           : '';
         rawOutput.reasoning = `[STAGE-1 OBSERVE] [TRIGGER: AI recommended NEW_ENTRY but server gate blocked — priorCount=${priorCount}, needs ≥1 confirm]${timingNote}${tsReversalNote} Building conviction (count will advance to 1). Override requires confidence>=0.92 + all_aligned, or confidence>=0.75 + all_aligned, or phase-change. ${rawOutput.reasoning}`;
         if (gate.phaseChangeTimingRejected) {
           console.log(`[DecisionOrchestrator] Phase-change override blocked by timing filter: ${gate.phaseChangeTimingRejectReason} (priorCount=${priorCount}, confidence=${analysis.confidence.toFixed(2)})`);
         }
         if (gateInput.sameSideTrailingStopAgeSec != null && gateInput.sameSideTrailingStopAgeSec <= 60) {
-          console.log(`[DecisionOrchestrator] Bypass suppressed by recent trailing-stop reversal — ${gateInput.sameSideTrailingStopAgeSec.toFixed(0)}s ago, direction=${signal.direction}, reason=${context.lastTrailingStopExit?.closeReason.slice(0, 60)}`);
+          console.log(`[DecisionOrchestrator] Bypass suppressed by recent same-side stop exit — ${gateInput.sameSideTrailingStopAgeSec.toFixed(0)}s ago, direction=${signal.direction}, reason=${context.lastTrailingStopExit?.closeReason.slice(0, 60)}`);
         }
         console.log(`[DecisionOrchestrator] NEW_ENTRY blocked by confirmation gate (Stage-1 OBSERVE, priorCount=${priorCount}, confidence=${analysis.confidence.toFixed(2)}, alignment=${signal.alignment})`);
         isStage1ObserveWait = true;

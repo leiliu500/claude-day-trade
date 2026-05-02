@@ -58,9 +58,10 @@ export interface PositionContext {
   /** Total option premium (entry_price × qty × 100) deployed today across all tickers. */
   dailyPremiumDeployed: number;
   /**
-   * Most recent trailing-stop-type exit for this ticker, or null if none in the last 5 min.
+   * Most recent loss/profit-stop exit for this ticker, or null if none in the last 5 min.
    * Used by the entry gate to disqualify bypass paths on same-direction re-entries that
-   * would otherwise fire seconds after price reversed enough to trigger a trailing stop.
+   * would otherwise fire seconds after a velocity-stop, trailing-stop, or stop-hit exit.
+   * (Field name retained for compatibility — covers all suppression-eligible reasons.)
    */
   lastTrailingStopExit: {
     closedAt: string;

@@ -88,11 +88,15 @@ export interface GateInput {
   /** True for a ticker-scoped order-flow-confirmed low-ATR trend carve-out. */
   flowMicrotrendBypass?: boolean;
   /**
-   * Age in seconds since the most recent same-direction trailing-stop-type exit
-   * (TRAILING_STOP / PROFIT_REVERSED / *_GAIN_LOCK), or null if none in the last 5 min.
+   * Age in seconds since the most recent same-direction loss/profit-stop exit
+   * (TRAILING_STOP / PROFIT_REVERSED / *_GAIN_LOCK / VELOCITY_CRASH / VELOCITY_FADE /
+   * VELOCITY_PROFIT_DROP / STOP_HIT / NEVER_CONFIRMED), or null if none in the last 5 min.
    * When ≤ 60s, the strong-signal and trend-consolidation bypass paths are disqualified:
-   * the trailing stop fired BECAUSE price reversed, so bypassing the 2-tick wait chases
-   * the reversal. Stage-2 confirmation still allows entry if the signal re-establishes.
+   * the stop fired BECAUSE price moved against us, so bypassing the 2-tick wait chases
+   * the move. Stage-2 confirmation still allows entry if the signal re-establishes.
+   *
+   * Field name retained ("trailing-stop") for compatibility — covers all suppression-eligible
+   * exit reasons. See context-builder.ts for the regex.
    */
   sameSideTrailingStopAgeSec: number | null;
 
@@ -126,11 +130,12 @@ export function evaluateEntryGate(input: GateInput): GateDecision {
     sameSideTrailingStopAgeSec,
   } = input;
 
-  // A trailing-stop-type exit fires because price reversed from peak. Re-entering
-  // the same direction within 60s via a bypass path chases that reversal — the
-  // minute-bar indicators haven't refreshed enough to show the reversal yet.
-  // Disqualify the bypass paths so the entry must rebuild via stage-2 confirmation
-  // (~1 more tick). The entry isn't blocked; it just can't skip confirmation.
+  // A loss/profit-stop exit (trailing-stop, velocity-crash, stop-hit, etc.) fires
+  // because price moved against the position. Re-entering the same direction within
+  // 60s via a bypass path chases that move — the minute-bar indicators haven't
+  // refreshed enough to show the reversal yet. Disqualify the bypass paths so the
+  // entry must rebuild via stage-2 confirmation (~1 more tick). The entry isn't
+  // blocked; it just can't skip confirmation.
   const trailingStopReversalBlock = sameSideTrailingStopAgeSec != null
     && sameSideTrailingStopAgeSec <= 60;
 
