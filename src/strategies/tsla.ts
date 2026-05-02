@@ -155,6 +155,18 @@ function tslaShouldAllowEntry(ctx: EntryContext): true | string {
     return `breakout + weak strength (${ctx.strengthScore} < 40)`;
   }
 
+  // Bullish trend mode + low confidence (just-clearing-gate band).
+  // 16mo post-iter8 PASSED-set: bull mode=trend conf [0.65, 0.72) n=118
+  // 58A/6B/7C/9D/38F exp +0.235 F-rate 32% vs neighbors:
+  //   conf [0.72, 0.78): +0.735 F15% / [0.78, 0.85): +0.514 F20%.
+  // Monotonic anti-predictive — bullish trends clearing the gate by <0.07
+  // tend to be insufficiently confirmed. B-grade also unusually scarce (6/118).
+  if (ctx.direction === 'bullish'
+      && ctx.signalMode === 'trend'
+      && ctx.confidence >= 0.65 && ctx.confidence < 0.72) {
+    return `bullish trend low-conf ${ctx.confidence.toFixed(3)} in [0.65, 0.72)`;
+  }
+
   // Bullish 11:45-11:59 ET (135-149m) — narrow pre-lunch F-cluster.
   // 16mo PASSED-gate bucket: n=60, exp -0.15 (vs neighbors 11:15 +0.97, 11:30 +0.58).
   // Hypothesis: last bullish chases before lunch volume vacuum often exhaust.
