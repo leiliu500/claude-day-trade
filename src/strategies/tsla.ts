@@ -123,6 +123,14 @@ function tslaShouldAllowEntry(ctx: EntryContext): true | string {
   // TSLA's normal ATR is 1-3%; below 0.18% is unusual and typically dead-zone.
   if (atrPct < 0.18) return `atrPct ${atrPct.toFixed(3)}% < 0.18% (dead zone)`;
 
+  // atrPct 0.38-0.40% anti-predictive band.
+  // 16mo post-iter7 cache: n=135, exp -0.18, sandwiched between
+  // 0.35-0.38 (+0.34) and 0.40-0.42 (+0.74). Likely a TSLA microstructure
+  // artifact at a specific volatility regime that doesn't repeat across other tickers.
+  if (atrPct >= 0.38 && atrPct < 0.40) {
+    return `atrPct ${atrPct.toFixed(3)}% in 0.38-0.40 anti-predictive band`;
+  }
+
   // First 30 min (9:30-10:00 ET) — opening volatility produces below-average
   // expectancy. Profile mined 2026-04-27: 276 entries, exp +0.384 vs 0.6+ in
   // other windows; F-rate 36% (vs 26-30% elsewhere). entryWindowStartMin: 30
