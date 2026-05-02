@@ -759,7 +759,7 @@ export function sendTradeChart(ticker: string, event: string): void {
 export async function notifyStartup(): Promise<void> {
   await sendMessage(
     `🚀 <b>Day Trade System Started</b>\n` +
-    `📡 Data: SIP real-time stream (WebSocket) | Fallback: 3-min REST poll\n` +
+    `📡 Data: SIP real-time stream (WebSocket) | Fallback: 1-min REST poll\n` +
     `⚡ Fills: Trading stream (instant) | Fallback: 30s poll\n` +
     `🕐 Market hours: Mon–Fri 13:30–20:30 UTC\n` +
     `Commands: <code>SPY S</code>, <code>/status</code>, <code>/positions</code>`
