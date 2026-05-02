@@ -23,7 +23,7 @@ import {
 // AUTO tickers — loaded from per-symbol config (ticker-configs.ts)
 const AUTO_TICKERS = getEnabledTickers();
 
-const TRADING_INTERVAL_MS = 3 * 60 * 1000; // 3 minutes
+const TRADING_INTERVAL_MS = 1 * 60 * 1000; // 1 minute (matches stream's 1-min bar cadence; fallback ticks gated by STREAM_FALLBACK_THRESHOLD_MS skip when stream is healthy)
 
 /** Scheduler skips a ticker if stream triggered it within this window */
 const STREAM_FALLBACK_THRESHOLD_MS = 2 * 60 * 1000; // 2 minutes
@@ -57,8 +57,8 @@ function isTradingWindow(): boolean {
 }
 
 /**
- * Milliseconds until the next UTC-aligned 3-minute boundary
- * (epoch multiples of 3 min → aligns to :00 :03 :06 … :57 of each hour).
+ * Milliseconds until the next UTC-aligned 1-minute boundary
+ * (epoch multiples of 1 min → aligns to :00 :01 :02 … :59 of each hour).
  * Adds one full interval when we are <100 ms away to avoid double-firing.
  */
 function msUntilNextBoundary(): number {
@@ -252,9 +252,9 @@ async function runAutoMode(): Promise<void> {
  * Self-correcting trading tick scheduler (fallback path).
  *
  * Schedules the NEXT tick before executing the current one so that a slow
- * pipeline run can never delay future ticks. Aligns to UTC 3-minute
- * boundaries (epoch multiples) — same cadence as before but now only fires
- * for tickers the stream hasn't already covered.
+ * pipeline run can never delay future ticks. Aligns to UTC 1-minute
+ * boundaries (epoch multiples) — matches stream's 1-min bar cadence,
+ * only fires for tickers the stream hasn't covered within STREAM_FALLBACK_THRESHOLD_MS.
  */
 function scheduleTradingTick(): void {
   const delay = msUntilNextBoundary();
@@ -270,7 +270,7 @@ function scheduleTradingTick(): void {
  * Start the scheduler.
  *
  * Primary trigger: stream bar events via subscribeToStreamTrigger().
- * Fallback trigger: self-correcting 3-min setTimeout chain, Mon-Fri 13:30-20:30 UTC.
+ * Fallback trigger: self-correcting 1-min setTimeout chain, Mon-Fri 13:30-20:30 UTC.
  * Daily cleanup: 07:00 UTC Mon-Fri.
  */
 export function startScheduler(): void {
@@ -280,9 +280,9 @@ export function startScheduler(): void {
   // Flush buffered market moves to DB every 5 min
   startMoveFlushTimer();
 
-  // Fallback: 3-min tick — only runs tickers not recently covered by stream
+  // Fallback: 1-min tick — only runs tickers not recently covered by stream
   scheduleTradingTick();
-  console.log(`[Scheduler] Fallback interval: every 3 min, Mon-Fri 13:30-20:30 UTC`);
+  console.log(`[Scheduler] Fallback interval: every 1 min, Mon-Fri 13:30-20:30 UTC`);
 
   // Midnight PST close — 08:00 UTC Mon-Fri: cancel all orders + close all positions
   const midnightCloseCron = '0 8 * * 1-5';
