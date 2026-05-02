@@ -217,6 +217,20 @@ function iwmShouldAllowEntry(ctx: EntryContext): true | string {
     return `bearish-breakout low atr ${ctx.atr.toFixed(2)} < 0.40`;
   }
 
+  // v15: bearish-trend conf<0.75 atr [0.40, 0.45) — narrow low-conf low-atr F-pocket.
+  // v14-residual conf × atr fine-grid surfaced this band as a sharp anti-predictive
+  // pocket on bearish-trend (mirror to v11 but at low end of confidence):
+  //   conf [0.65, 0.70) atr [0.40, 0.45): n=10 exp -1.200 (8F vs 2A)  ← VERY clean
+  //   conf [0.65, 0.70) atr [0.45, 0.50): n=18 exp +0.111 (mixed)     — preserve
+  //   conf [0.70, 0.75) atr [0.40, 0.45): n= 3 exp -1.333 (small N)
+  // Combined conf<0.75 atr [0.40, 0.45) → 20 entries (4A+0B vs 14F+2 mid),
+  // dir 0.30 anti-predictive. Predicted Δexp +0.027.
+  // Distributed across 13 months, max single-day cluster 3 entries (2026-03-26).
+  if (ctx.direction === 'bearish' && ctx.signalMode === 'trend'
+      && ctx.confidence < 0.75 && ctx.atr >= 0.40 && ctx.atr < 0.45) {
+    return `bearish-trend conf ${ctx.confidence.toFixed(2)} atr ${ctx.atr.toFixed(2)} in [0.40, 0.45)`;
+  }
+
   // v14: bearish-trend strength>=80 atr [0.55, 0.85) — high-strength mid-atr block.
   // Strength × atr cross-tab on v13 baseline surfaced a sharp pocket:
   //   bearish-trend strength [80, 100) atr [0.55, 0.70): n=24 exp -0.500 (10F+7AB)
