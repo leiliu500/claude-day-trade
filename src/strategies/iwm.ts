@@ -217,6 +217,20 @@ function iwmShouldAllowEntry(ctx: EntryContext): true | string {
     return `bearish-breakout low atr ${ctx.atr.toFixed(2)} < 0.40`;
   }
 
+  // v14: bearish-trend strength>=80 atr [0.55, 0.85) — high-strength mid-atr block.
+  // Strength × atr cross-tab on v13 baseline surfaced a sharp pocket:
+  //   bearish-trend strength [80, 100) atr [0.55, 0.70): n=24 exp -0.500 (10F+7AB)
+  //   bearish-trend strength [80, 100) atr [0.70, 0.85): n= 7 exp -1.429 (4F+0AB)
+  //   bearish-trend strength [70, 80) atr [0.55, 0.70): n=16 exp -0.312 (8F+6A) [skip-mixed]
+  // Combined strength>=80 atr [0.55, 0.85) → 36 entries (4A+4B vs 17F, mid-mix C/D).
+  // Predicted Δexp +0.032. By-month: 9 months affected, worst 2025-01 -0.122 (cap
+  // -0.15), 2025-03 -0.017, 2025-09 -0.005. Big winners 2025-07 +0.743 (saves 5F),
+  // 2026-02 +0.136 (3F removed from a +0.745 month).
+  if (ctx.direction === 'bearish' && ctx.signalMode === 'trend'
+      && ctx.strengthScore >= 80 && ctx.atr >= 0.55 && ctx.atr < 0.85) {
+    return `bearish-trend strength ${ctx.strengthScore} atr ${ctx.atr.toFixed(2)} in [0.55, 0.85)`;
+  }
+
   // v13: bearish-breakout time-of-day F-pockets — 10:15-10:30 + 12:15-12:30 ET.
   // v12-residual time-of-day mining surfaced two bearish-breakout dead zones:
   //

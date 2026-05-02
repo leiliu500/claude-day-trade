@@ -81,6 +81,12 @@ function iwmShouldAllowEntry(ctx: EntryContext): true | string {
       return `bearish-breakout 12:15-12:30 ${ctx.minutesSinceOpen}m`;
     }
   }
+
+  // v14: bearish-trend strength>=80 atr [0.55, 0.85) — see strategies/iwm.ts.
+  if (ctx.direction === 'bearish' && ctx.signalMode === 'trend'
+      && ctx.strengthScore >= 80 && ctx.atr >= 0.55 && ctx.atr < 0.85) {
+    return `bearish-trend strength ${ctx.strengthScore} atr ${ctx.atr.toFixed(2)} in [0.55, 0.85)`;
+  }
   return true;
 }
 
