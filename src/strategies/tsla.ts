@@ -140,6 +140,13 @@ function tslaShouldAllowEntry(ctx: EntryContext): true | string {
     return `mid-afternoon lull ${ctx.minutesSinceOpen}m (13:30-14:30 ET)`;
   }
 
+  // Breakout mode + weak strength — structurally suspicious shape.
+  // 16mo PASSED-gate: 154 entries (str<40 in breakout), exp +0.24 vs baseline +0.54.
+  // Hypothesis: a breakout signal without underlying trend strength tends to fade.
+  if (ctx.signalMode === 'breakout' && ctx.strengthScore < 40) {
+    return `breakout + weak strength (${ctx.strengthScore} < 40)`;
+  }
+
   // Bullish 11:45-11:59 ET (135-149m) — narrow pre-lunch F-cluster.
   // 16mo PASSED-gate bucket: n=60, exp -0.15 (vs neighbors 11:15 +0.97, 11:30 +0.58).
   // Hypothesis: last bullish chases before lunch volume vacuum often exhaust.
