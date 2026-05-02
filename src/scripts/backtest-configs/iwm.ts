@@ -71,6 +71,16 @@ function iwmShouldAllowEntry(ctx: EntryContext): true | string {
       return `bullish-trend 13:15-13:30 atr ${ctx.atr.toFixed(2)} in [0.75, 1.00)`;
     }
   }
+
+  // v13: bearish-breakout time-of-day F-pockets (10:15-10:30 + 12:15-12:30 ET) — see strategies/iwm.ts.
+  if (ctx.direction === 'bearish' && ctx.signalMode === 'breakout') {
+    if (ctx.minutesSinceOpen >= 45 && ctx.minutesSinceOpen < 60 && ctx.atr < 0.60) {
+      return `bearish-breakout 10:15-10:30 atr ${ctx.atr.toFixed(2)} < 0.60`;
+    }
+    if (ctx.minutesSinceOpen >= 165 && ctx.minutesSinceOpen < 180) {
+      return `bearish-breakout 12:15-12:30 ${ctx.minutesSinceOpen}m`;
+    }
+  }
   return true;
 }
 

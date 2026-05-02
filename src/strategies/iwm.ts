@@ -217,6 +217,30 @@ function iwmShouldAllowEntry(ctx: EntryContext): true | string {
     return `bearish-breakout low atr ${ctx.atr.toFixed(2)} < 0.40`;
   }
 
+  // v13: bearish-breakout time-of-day F-pockets — 10:15-10:30 + 12:15-12:30 ET.
+  // v12-residual time-of-day mining surfaced two bearish-breakout dead zones:
+  //
+  //   bearish-breakout 45-60m (10:15-10:30 ET) by atr (n=11 exp -1.000):
+  //     atr [0.40, 0.50): n=4 exp -1.000 (3F+1A)         — block
+  //     atr [0.50, 0.60): n=5 exp -1.400 (3F+0AB)        — block
+  //     atr [0.60, 0.75): n=2 exp 0      (clean)         — preserve
+  //
+  //   bearish-breakout 165-180m (12:15-12:30 ET) (n=7 exp -1.143):
+  //     n=7 5F vs 1A (no atr discrimination needed)      — block all
+  //
+  // Combined block: 9 (10:15-10:30 atr<0.60, 6F+1A) + 7 (12:15-12:30, 5F+1A) =
+  // 16 entries, 11F+2A+0B+2C+1D, dir 0.31. Predicted Δexp +0.023.
+  // 6 months affected, max 6/16 in 2026-03 (no single-day cluster).
+  if (ctx.direction === 'bearish' && ctx.signalMode === 'breakout'
+      && ctx.minutesSinceOpen !== undefined) {
+    if (ctx.minutesSinceOpen >= 45 && ctx.minutesSinceOpen < 60 && ctx.atr < 0.60) {
+      return `bearish-breakout 10:15-10:30 atr ${ctx.atr.toFixed(2)} < 0.60`;
+    }
+    if (ctx.minutesSinceOpen >= 165 && ctx.minutesSinceOpen < 180) {
+      return `bearish-breakout 12:15-12:30 ${ctx.minutesSinceOpen}m`;
+    }
+  }
+
   // v12: trend-mode 225-240m (13:15-13:30 ET) direction-asymmetric atr carve-outs.
   // v11-residual time-of-day mining surfaced 13:15-13:30 ET as a load-bearing
   // F-cluster window across both directions. Direction-asymmetric atr split:
