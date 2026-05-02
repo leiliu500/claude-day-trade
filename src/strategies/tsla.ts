@@ -140,6 +140,31 @@ function tslaShouldAllowEntry(ctx: EntryContext): true | string {
     return `mid-afternoon lull ${ctx.minutesSinceOpen}m (13:30-14:30 ET)`;
   }
 
+  // Bullish 11:45-11:59 ET (135-149m) — narrow pre-lunch F-cluster.
+  // 16mo PASSED-gate bucket: n=60, exp -0.15 (vs neighbors 11:15 +0.97, 11:30 +0.58).
+  // Hypothesis: last bullish chases before lunch volume vacuum often exhaust.
+  if (ctx.minutesSinceOpen !== undefined
+      && ctx.direction === 'bullish'
+      && ctx.minutesSinceOpen >= 135 && ctx.minutesSinceOpen < 150) {
+    return `bullish 11:45-11:59 ET ${ctx.minutesSinceOpen}m (pre-lunch F-cluster)`;
+  }
+
+  // Bearish 13:15-13:29 ET (225-239m) — narrow F-cluster just before mid-afternoon block.
+  // 16mo PASSED-gate bucket: n=34, exp -0.21. Adjacent to existing 240-299 block.
+  if (ctx.minutesSinceOpen !== undefined
+      && ctx.direction === 'bearish'
+      && ctx.minutesSinceOpen >= 225 && ctx.minutesSinceOpen < 240) {
+    return `bearish 13:15-13:29 ET ${ctx.minutesSinceOpen}m (pre-mid-afternoon F-cluster)`;
+  }
+
+  // Pre-EOD weakness 15:15-15:29 ET (345-359m) — bilateral negative bucket.
+  // 16mo PASSED-gate: bullish n=18 exp -0.39, bearish n=8 exp -0.75 (combined exp ≈ -0.50).
+  // Sandwiched between mid-afternoon block (240-299) and EOD block (360+).
+  if (ctx.minutesSinceOpen !== undefined
+      && ctx.minutesSinceOpen >= 345 && ctx.minutesSinceOpen < 360) {
+    return `pre-EOD ${ctx.minutesSinceOpen}m (15:15-15:29 ET)`;
+  }
+
   // Last 30 min (15:30-16:00 ET) — only TSLA bucket with negative expectancy.
   // Profile mined 2026-04-27 from 15-mo data: 40 entries, exp -0.325 (10A/4B/6C/3D/17F).
   // Mostly EOD chase / liquidity-sweep moves that fade. ETF tickers also block this
