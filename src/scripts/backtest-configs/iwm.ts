@@ -60,6 +60,17 @@ function iwmShouldAllowEntry(ctx: EntryContext): true | string {
       && ctx.confidence >= 0.82 && ctx.confidence < 0.86) {
     return `bearish-trend conf ${ctx.confidence.toFixed(2)} in [0.82, 0.86)`;
   }
+
+  // v12: trend-mode 225-240m direction-asymmetric atr carve-outs — see strategies/iwm.ts.
+  if (ctx.signalMode === 'trend'
+      && ctx.minutesSinceOpen >= 225 && ctx.minutesSinceOpen < 240) {
+    if (ctx.direction === 'bearish' && ctx.atr < 0.60) {
+      return `bearish-trend 13:15-13:30 atr ${ctx.atr.toFixed(2)} < 0.60`;
+    }
+    if (ctx.direction === 'bullish' && ctx.atr >= 0.75 && ctx.atr < 1.00) {
+      return `bullish-trend 13:15-13:30 atr ${ctx.atr.toFixed(2)} in [0.75, 1.00)`;
+    }
+  }
   return true;
 }
 

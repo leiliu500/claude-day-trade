@@ -217,6 +217,34 @@ function iwmShouldAllowEntry(ctx: EntryContext): true | string {
     return `bearish-breakout low atr ${ctx.atr.toFixed(2)} < 0.40`;
   }
 
+  // v12: trend-mode 225-240m (13:15-13:30 ET) direction-asymmetric atr carve-outs.
+  // v11-residual time-of-day mining surfaced 13:15-13:30 ET as a load-bearing
+  // F-cluster window across both directions. Direction-asymmetric atr split:
+  //
+  //   bearish-trend 225-240m by atr (n=17 exp -0.471):
+  //     atr [0.40, 0.50): n=8 exp -1.750 (7F)        — block
+  //     atr [0.50, 0.60): n=3 exp -1.333 (2F)        — block
+  //     atr [0.60, 0.75): n=5 exp +1.600 (4A)        — preserve
+  //     atr [0.75, 1.00): n=1 exp +2.000 (1A)        — preserve
+  //
+  //   bullish-trend 225-240m by atr (n=14 exp -0.643):
+  //     atr [0.40, 0.50): n=6 exp -1.167 (mixed C/D) — keep (predΔ -0.008)
+  //     atr [0.75, 1.00): n=4 exp -2.000 (ALL F)     — block
+  //     atr [1.00, 1.50): n=2 exp +2.000 (2A)        — preserve
+  //
+  // Combined block: 11 bearish (9F+2C, dir 0.18) + 4 bullish (4F) = 15 entries
+  // exp ~-1.7, ZERO AB. Predicted Δexp +0.030.
+  if (ctx.signalMode === 'trend'
+      && ctx.minutesSinceOpen !== undefined
+      && ctx.minutesSinceOpen >= 225 && ctx.minutesSinceOpen < 240) {
+    if (ctx.direction === 'bearish' && ctx.atr < 0.60) {
+      return `bearish-trend 13:15-13:30 atr ${ctx.atr.toFixed(2)} < 0.60`;
+    }
+    if (ctx.direction === 'bullish' && ctx.atr >= 0.75 && ctx.atr < 1.00) {
+      return `bullish-trend 13:15-13:30 atr ${ctx.atr.toFixed(2)} in [0.75, 1.00)`;
+    }
+  }
+
   // v11: bearish-trend anti-predictive confidence [0.82, 0.86).
   // 16-mo bearish-trend confidence breakdown surfaced this band as the worst
   // sub-slice across all confidence levels:
