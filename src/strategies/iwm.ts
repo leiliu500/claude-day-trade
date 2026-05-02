@@ -216,6 +216,23 @@ function iwmShouldAllowEntry(ctx: EntryContext): true | string {
   if (ctx.direction === 'bearish' && ctx.signalMode === 'breakout' && ctx.atr < 0.40) {
     return `bearish-breakout low atr ${ctx.atr.toFixed(2)} < 0.40`;
   }
+
+  // v11: bearish-trend anti-predictive confidence [0.82, 0.86).
+  // 16-mo bearish-trend confidence breakdown surfaced this band as the worst
+  // sub-slice across all confidence levels:
+  //   conf [0.78, 0.80): n=16 exp +0.250 dir 64%   (clean)
+  //   conf [0.80, 0.82): n=19 exp -0.053 dir ~     (mild)
+  //   conf [0.82, 0.84): n=16 exp -1.062 dir 31%   (anti-predictive!)
+  //   conf [0.84, 0.86): n=17 exp -0.706 dir 53%
+  //   conf [0.86, 0.88): n=22 exp -0.045 dir ~     (mild)
+  //   conf [0.88, 0.92): mixed back to neutral
+  // Combined [0.82, 0.86) → 33 entries exp -0.879, 5A+3B vs 19F (dir 42%
+  // sub-random). 2026-02 single-month risk: only 3 entries in band (1A+2F),
+  // net +1 grade-pt to that month. Predicted Δexp +0.034.
+  if (ctx.direction === 'bearish' && ctx.signalMode === 'trend'
+      && ctx.confidence >= 0.82 && ctx.confidence < 0.86) {
+    return `bearish-trend conf ${ctx.confidence.toFixed(2)} in [0.82, 0.86)`;
+  }
   return true;
 }
 

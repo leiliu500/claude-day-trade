@@ -55,6 +55,11 @@ function iwmShouldAllowEntry(ctx: EntryContext): true | string {
   if (ctx.direction === 'bearish' && ctx.signalMode === 'breakout' && ctx.atr < 0.40) {
     return `bearish-breakout low atr ${ctx.atr.toFixed(2)} < 0.40`;
   }
+  // v11: bearish-trend anti-predictive conf [0.82, 0.86) — see strategies/iwm.ts.
+  if (ctx.direction === 'bearish' && ctx.signalMode === 'trend'
+      && ctx.confidence >= 0.82 && ctx.confidence < 0.86) {
+    return `bearish-trend conf ${ctx.confidence.toFixed(2)} in [0.82, 0.86)`;
+  }
   return true;
 }
 
