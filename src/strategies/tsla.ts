@@ -167,6 +167,33 @@ function tslaShouldAllowEntry(ctx: EntryContext): true | string {
     return `bullish trend low-conf ${ctx.confidence.toFixed(3)} in [0.65, 0.72)`;
   }
 
+  // Bearish trend mid-strength pre-mid-aft narrow F-cluster (12:30-13:30 ET).
+  // 16mo post-iter9-v3 PASSED-set: bear mode=trend, strength ∈ [55, 60),
+  // minutesSinceOpen ∈ [180, 240) — n=24, 6A/2B/2C/2D/12F, exp -0.375, F-rate 50%.
+  // Sandwiched between existing 13:15-13:29 bear block (225-239) and the
+  // 13:30-14:30 mid-afternoon lull. iter10 broader [90, 240) version REVERTED
+  // 2026-04-30 due to 2026-02 -0.159 regression (high-A entries in [90, 180)
+  // sub-bucket). Narrow [180, 240) excludes those vulnerable months.
+  if (ctx.direction === 'bearish'
+      && ctx.signalMode === 'trend'
+      && ctx.strengthScore >= 55 && ctx.strengthScore < 60
+      && ctx.minutesSinceOpen !== undefined
+      && ctx.minutesSinceOpen >= 180 && ctx.minutesSinceOpen < 240) {
+    return `bearish trend mid-strength ${ctx.strengthScore} pre-mid-aft ${ctx.minutesSinceOpen}m`;
+  }
+
+  // Bearish breakout high-confidence chasing pattern.
+  // 16mo post-iter9-v3 PASSED-set: bear mode=breakout, confidence ≥ 0.80
+  // n=20, 10A/0B/0C/1D/9F, exp +0.037, F-rate 45%.
+  // Neighbors: bear breakout conf [0.65, 0.72) +0.130 F43% / [0.72, 0.80) +0.640 F24%.
+  // High-conf bearish breakouts tend to be over-extended downside chases:
+  // 0 B-grades in n=20 indicates bimodal A-vs-F outcomes (no marginal wins).
+  if (ctx.direction === 'bearish'
+      && ctx.signalMode === 'breakout'
+      && ctx.confidence >= 0.80) {
+    return `bearish breakout high-conf ${ctx.confidence.toFixed(3)} (chasing)`;
+  }
+
   // Bullish 11:45-11:59 ET (135-149m) — narrow pre-lunch F-cluster.
   // 16mo PASSED-gate bucket: n=60, exp -0.15 (vs neighbors 11:15 +0.97, 11:30 +0.58).
   // Hypothesis: last bullish chases before lunch volume vacuum often exhaust.
