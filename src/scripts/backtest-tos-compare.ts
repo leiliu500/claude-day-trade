@@ -4,7 +4,7 @@
  *
  * Walks through a trading day and at each 1-minute bar computes:
  *   1. Current system indicators (DMI + custom signals)
- *   2. TOS-parity indicators (RSI, MACD, EMA, Bollinger, Stochastic)
+ *   2. TOS-parity indicators (MACD, EMA, Bollinger, Stochastic)
  *
  * Then compares direction calls and entry quality side-by-side.
  *
@@ -18,7 +18,6 @@ import type { OHLCVBar, Timeframe, AlpacaBarsResponse } from '../types/market.js
 import { normalizeAlpacaBars } from '../types/market.js';
 import { computeTimeframeIndicators, classifyAlignment } from '../agents/signal-agent.js';
 import { detectDirection } from '../lib/direction-detector.js';
-import { computeRSI } from '../indicators/rsi.js';
 import { computeMACD } from '../indicators/macd.js';
 import { computeEMA } from '../indicators/ema.js';
 import { computeBollinger } from '../indicators/bollinger.js';
@@ -100,13 +99,12 @@ function utcToET(utcTime: string): string {
 }
 
 // ── TOS-parity direction detection ──────────────────────────────────────────
-// Standard TOS approach: EMA crossover for trend, MACD for momentum, RSI for
-// overbought/oversold, Stochastic for timing, Bollinger for volatility.
+// Standard TOS approach: EMA crossover for trend, MACD for momentum,
+// Stochastic for timing, Bollinger for volatility.
 interface TOSSignal {
   direction: 'bullish' | 'bearish' | 'neutral';
   confidence: number;
   reasons: string[];
-  rsi: number;
   macdHist: number;
   emaFast: number;
   emaSlow: number;
@@ -117,8 +115,6 @@ interface TOSSignal {
 }
 
 function computeTOSSignal(bars1m: OHLCVBar[], bars5m: OHLCVBar[]): TOSSignal {
-  const rsi1m = computeRSI(bars1m, 14);
-  const rsi5m = computeRSI(bars5m, 14);
   const macd1m = computeMACD(bars1m, 12, 26, 9);
   const macd5m = computeMACD(bars5m, 12, 26, 9);
   const ema1m = computeEMA(bars1m, 9, 21);
@@ -149,22 +145,13 @@ function computeTOSSignal(bars1m: OHLCVBar[], bars5m: OHLCVBar[]): TOSSignal {
   if (macd1m.macdCrossUp) { score += 1; reasons.push('1m MACD cross up'); }
   else if (macd1m.macdCrossDown) { score -= 1; reasons.push('1m MACD cross down'); }
 
-  // 3. RSI (overbought/oversold + momentum)
-  if (rsi5m.crossedAbove30) { score += 2; reasons.push('5m RSI crossed above 30'); }
-  else if (rsi5m.crossedBelow70) { score -= 2; reasons.push('5m RSI crossed below 70'); }
-  if (rsi5m.overbought) { score -= 1.5; reasons.push('5m RSI overbought'); }
-  else if (rsi5m.oversold) { score += 1.5; reasons.push('5m RSI oversold'); }
-  // RSI midline: >50 = bullish momentum, <50 = bearish momentum
-  if (rsi5m.rsi > 55) { score += 0.5; reasons.push(`5m RSI ${rsi5m.rsi.toFixed(0)} (bull momentum)`); }
-  else if (rsi5m.rsi < 45) { score -= 0.5; reasons.push(`5m RSI ${rsi5m.rsi.toFixed(0)} (bear momentum)`); }
-
-  // 4. Stochastic (timing in overbought/oversold zones)
+  // 3. Stochastic (timing in overbought/oversold zones)
   if (stoch5m.bullishSignal) { score += 2; reasons.push('5m Stoch bullish signal'); }
   else if (stoch5m.bearishSignal) { score -= 2; reasons.push('5m Stoch bearish signal'); }
   if (stoch5m.overbought) { score -= 0.5; reasons.push('5m Stoch overbought'); }
   else if (stoch5m.oversold) { score += 0.5; reasons.push('5m Stoch oversold'); }
 
-  // 5. Bollinger Bands (volatility + mean reversion)
+  // 4. Bollinger Bands (volatility + mean reversion)
   if (bb5m.squeeze) { score += 0; reasons.push('5m BB squeeze (pending breakout)'); }
   if (bb5m.aboveUpper) { score -= 1; reasons.push('5m price above upper BB'); }
   else if (bb5m.belowLower) { score += 1; reasons.push('5m price below lower BB'); }
@@ -183,7 +170,6 @@ function computeTOSSignal(bars1m: OHLCVBar[], bars5m: OHLCVBar[]): TOSSignal {
       if (direction === 'bearish') return !r.includes('bull');
       return true;
     }),
-    rsi: rsi5m.rsi,
     macdHist: macd5m.histogram,
     emaFast: ema5m.emaFast,
     emaSlow: ema5m.emaSlow,
@@ -281,7 +267,6 @@ async function main() {
     tosDir: string;
     tosConf: number;
     agree: boolean;
-    tosRsi: number;
     tosMACD: number;
     tosStochK: number;
   }
@@ -343,7 +328,6 @@ async function main() {
       curDir: curDir, curConf,
       tosDir: tosSignal.direction, tosConf: tosSignal.confidence,
       agree: curDir === tosSignal.direction,
-      tosRsi: tosSignal.rsi,
       tosMACD: tosSignal.macdHist,
       tosStochK: tosSignal.stochK,
     });
@@ -394,9 +378,9 @@ async function main() {
   const disagreements = ticks.filter(t => !t.agree && t.curDir !== 'neutral' && t.tosDir !== 'neutral');
   if (disagreements.length > 0) {
     console.log(`\n  Notable disagreements (both systems have direction):`);
-    console.log(`  ${'Time'.padEnd(8)} ${'Price'.padEnd(10)} ${'Current'.padEnd(12)} ${'TOS'.padEnd(12)} ${'TOS RSI'.padEnd(10)} ${'TOS MACD'.padEnd(10)}`);
+    console.log(`  ${'Time'.padEnd(8)} ${'Price'.padEnd(10)} ${'Current'.padEnd(12)} ${'TOS'.padEnd(12)} ${'TOS MACD'.padEnd(10)} ${'TOS StochK'.padEnd(12)}`);
     for (const d of disagreements.slice(0, 20)) {
-      console.log(`  ${d.timeET.padEnd(8)} $${d.price.toFixed(2).padEnd(9)} ${d.curDir.padEnd(12)} ${d.tosDir.padEnd(12)} ${d.tosRsi.toFixed(1).padEnd(10)} ${d.tosMACD.toFixed(4).padEnd(10)}`);
+      console.log(`  ${d.timeET.padEnd(8)} $${d.price.toFixed(2).padEnd(9)} ${d.curDir.padEnd(12)} ${d.tosDir.padEnd(12)} ${d.tosMACD.toFixed(4).padEnd(10)} ${d.tosStochK.toFixed(1).padEnd(12)}`);
     }
     if (disagreements.length > 20) console.log(`  ... and ${disagreements.length - 20} more`);
   }
@@ -425,7 +409,7 @@ async function main() {
   }
 
   printEntries(`CURRENT SYSTEM (DMI + Velocity + Volume, threshold ${CUR_THRESHOLD * 100}%)`, currentEntries);
-  printEntries(`TOS PARITY (RSI + MACD + EMA + Stoch + BB, threshold ${TOS_THRESHOLD * 100}%)`, tosEntries);
+  printEntries(`TOS PARITY (MACD + EMA + Stoch + BB, threshold ${TOS_THRESHOLD * 100}%)`, tosEntries);
 
   // Head-to-head summary
   console.log(`\n${'─'.repeat(80)}`);
@@ -470,7 +454,7 @@ async function main() {
     for (const d of disagreements.slice(0, 10)) {
       console.log(`\n  ${d.timeET} ET — $${d.price.toFixed(2)}`);
       console.log(`    Current: ${d.curDir} (conf ${(d.curConf*100).toFixed(0)}%)`);
-      console.log(`    TOS:     ${d.tosDir} (RSI=${d.tosRsi.toFixed(1)}, MACD=${d.tosMACD.toFixed(4)}, Stoch %K=${d.tosStochK.toFixed(1)})`);
+      console.log(`    TOS:     ${d.tosDir} (MACD=${d.tosMACD.toFixed(4)}, Stoch %K=${d.tosStochK.toFixed(1)})`);
     }
   }
 
@@ -480,20 +464,17 @@ async function main() {
   console.log(`${'─'.repeat(80)}`);
 
   // Count how often TOS-specific signals fire
-  const rsiOBEvents = ticks.filter(t => t.tosRsi > 70 || t.tosRsi < 30).length;
   const macdCrossEvents = ticks.filter((t, i) => i > 0 && Math.sign(t.tosMACD) !== Math.sign(ticks[i-1]!.tosMACD)).length;
   const stochExtremeEvents = ticks.filter(t => t.tosStochK > 80 || t.tosStochK < 20).length;
 
-  console.log(`\n  RSI overbought/oversold events:  ${rsiOBEvents} ticks (${(rsiOBEvents/totalTicks*100).toFixed(1)}% of day)`);
-  console.log(`  MACD histogram zero-crosses:     ${macdCrossEvents} events`);
+  console.log(`\n  MACD histogram zero-crosses:     ${macdCrossEvents} events`);
   console.log(`  Stochastic extreme events:       ${stochExtremeEvents} ticks (${(stochExtremeEvents/totalTicks*100).toFixed(1)}% of day)`);
 
   console.log(`\n  KEY INSIGHT: The current system lacks:`)
-  console.log(`    1. RSI — ${rsiOBEvents} overbought/oversold events that could filter bad entries`);
-  console.log(`    2. MACD — ${macdCrossEvents} zero-crosses that signal momentum shifts`);
-  console.log(`    3. Stochastic — ${stochExtremeEvents} extreme events for entry timing`);
-  console.log(`    4. EMA crossovers — faster trend detection than 14-period Wilder's DMI`);
-  console.log(`    5. Bollinger Bands — squeeze detection for breakout anticipation`);
+  console.log(`    1. MACD — ${macdCrossEvents} zero-crosses that signal momentum shifts`);
+  console.log(`    2. Stochastic — ${stochExtremeEvents} extreme events for entry timing`);
+  console.log(`    3. EMA crossovers — faster trend detection than 14-period Wilder's DMI`);
+  console.log(`    4. Bollinger Bands — squeeze detection for breakout anticipation`);
 
   console.log(`\n${'═'.repeat(80)}\n`);
 }
