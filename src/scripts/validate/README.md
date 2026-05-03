@@ -12,6 +12,7 @@ Eight scripts that prove the backtest is correct via **four independent witnesse
 | 2c. Indicators (ToS) | `dump-indicators.ts` | CSVs ready for manual ToS export-and-diff | ToS (manual) |
 | 3. Decisions | `validate-decisions.ts` | Direction + indicators are pure functions of bars | (snapshot) |
 | 4. Order-sim | `validate-order-sim.ts` | Exit rules (stop/TP/trailing/...) deterministic from bars | (snapshot) |
+| 5. Missed-corpus | `validate-missed-corpus.ts` | Ideal-entry detector grades real, direction-aligned, sustained moves | (nulls) |
 
 ---
 
@@ -207,6 +208,30 @@ A fixture stores `{ticker, date, timeET, direction, variant, entryPrice, atr, re
 
 **Variant** (last arg): `spy` uses `simulateOrderAgentSpy` (5x premium floor for $720 stock); `base` uses the shared `simulateOrderAgent`. Record both to lock down both code paths.
 
+## Layer 5 — Missed-corpus detector
+
+Validates `findIdealEntries` (the ideal-entry detector that produces the missed-entry corpus used for filter mining). Five witnesses, all run from the same fetched bars:
+
+```bash
+npx tsx src/scripts/validate/validate-missed-corpus.ts 2026-04-01:2026-05-01 SPY
+#   [PASS] 1. mechanical recompute (1e-9)         — 118/118 match
+#   [PASS] 2. reachability (peak vs entry)        — 118/118 reachable
+#   [PASS] 3. causal volume (no future leak)      — 118/118 invariant under truncation
+#   [PASS] 4. direction-flip null (<30% survive)  — 0/118 (0.0%)
+#   [PASS] 5. time-jitter null (median ≥50%)      — median = 98.8%
+```
+
+What each witness rules out:
+- **1. Mechanical** — clean-room MFE/MAE re-implementation must agree with the library's reported figures to 1e-9. Catches indexing/bar-offset bugs.
+- **2. Reachability** — every ideal's `peakPrice` must be on the correct side of `entryPrice` (long peak ≥ entry, short peak ≤ entry). Catches direction-mislabeling regressions.
+- **3. Causal volume** — re-run the detector on `bars.slice(0, idealBar + windowMin + 1)` and confirm `entryVolMult` is unchanged. Detects future-bar leakage in the volume baseline. Was a real bug fixed alongside this script (full-window mean → session-to-date prefix sum).
+- **4. Direction-flip null** — flip every ideal's direction, re-grade. Healthy <30%; the 3-of-5 candle gate should make this near 0. >50% would mean the detector is volatility-driven, not direction-driven.
+- **5. Time-jitter null** — shift the decision bar by ±1, ±2 bars, recompute MFE retention. Healthy median ≥50%; sub-minute wicks collapse to ~10-20%. Catches "ideals" that are sub-minute spikes the strategy couldn't realistically catch.
+
+What this layer does **not** prove:
+- **Tradability** — that the option leg corresponding to a graded ideal actually pays out under realistic spread + exit policy. That needs an order-sim re-grade pass (separate, larger track).
+- **Backtest match completeness** — `bt_status` and `verdict` classification accuracy belong to `build-missed-corpus.ts` and aren't covered here.
+
 ---
 
 ## What this proves end-to-end
@@ -218,6 +243,7 @@ A fixture stores `{ticker, date, timeET, direction, variant, entryPrice, atr, re
 - **Layer 2c (optional) pass** ⇒ ToS chart values also match.
 - **Layer 3 pass** ⇒ The decision pipeline (direction + indicator outputs) is a pure function of bars. Same input → same output, run after run.
 - **Layer 4 pass** ⇒ The exit pipeline (stops, targets, trailing, profit-reversal) is also a pure function of bars + entry. Refactors that claim to be no-ops actually are.
+- **Layer 5 pass** ⇒ The ideal-entry detector grades real, direction-aligned, sustained price moves — not volatility, not future-leaked volume thresholds, not sub-minute wicks. The missed-corpus is a sound foundation for filter mining.
 
 **Together:** the backtest is a deterministic function of public market data, computed correctly per textbook formulas, with both data and math validated against multiple independent third-party witnesses. Disagreements between the backtest's verdict and a trader's expectation are about *strategy*, not *math*.
 

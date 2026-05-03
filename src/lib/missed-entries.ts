@@ -198,7 +198,13 @@ function gradeEntry(mfePct: number, maePct: number, ttpMin: number, args: Detect
 }
 
 export function findIdealEntries(bars: Bar[], args: DetectArgs): IdealEntry[] {
-  const avgVol = bars.length > 0 ? bars.reduce((s, b) => s + b.v, 0) / bars.length : 1;
+  // Session-to-date prefix sum so entryVolMult at bar i is comparable to a
+  // baseline that uses ONLY bars[0..i]. Using the full-window mean leaks
+  // future bars into the gating threshold (an early-session bar's mult is
+  // normalized against EOD volume that hasn't happened yet).
+  const volPrefix = new Array<number>(bars.length + 1);
+  volPrefix[0] = 0;
+  for (let k = 0; k < bars.length; k++) volPrefix[k + 1] = volPrefix[k]! + bars[k]!.v;
   const entries: IdealEntry[] = [];
   let i = 0;
   while (i < bars.length - 1) {
@@ -228,7 +234,8 @@ export function findIdealEntries(bars: Bar[], args: DetectArgs): IdealEntry[] {
       const ttpMin = (bars[ev.peakIdx]!.ts - start.ts) / 60_000;
       const grade = gradeEntry(mfePct, maePct, ttpMin, args);
       if (!grade) continue;
-      const entryVolMult = start.v / Math.max(avgVol, 1);
+      const causalAvgVol = volPrefix[i + 1]! / (i + 1);
+      const entryVolMult = start.v / Math.max(causalAvgVol, 1);
       if (entryVolMult < args.minVolMult) continue;
       candidates.push({
         ts: start.ts, direction: ev.direction, entryPrice: ev.entryPrice,
