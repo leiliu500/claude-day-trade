@@ -9,7 +9,7 @@ coverage/
 .nyc_output/
 # Bar fixture data (large JSON files fetched from Alpaca)
 src/scripts/fixtures/*.json
-src/scripts/validate/fixtures/*.json
+src/scripts/validate/fixtures/**/*.json
 # Auto-cached baselines for src/scripts/validate-change.ts (HEAD-keyed)
 .validate-cache/
 # Generated CSV outputs from src/scripts/validate/dump-bars.ts and dump-indicators.ts

@@ -1,6 +1,6 @@
 # Backtest Correctness Proof — SPY
 
-Seven scripts that prove the backtest is correct via **four independent witnesses** without using any live system data or output. Each layer isolates a single component so a failure points at exactly one thing.
+Eight scripts that prove the backtest is correct via **four independent witnesses** without using any live system data or output. Each layer isolates a single component so a failure points at exactly one thing.
 
 | Layer | Script | What it proves | Witness |
 | --- | --- | --- | --- |
@@ -11,6 +11,7 @@ Seven scripts that prove the backtest is correct via **four independent witnesse
 | 2b. Indicators (library) | `pandas-ta-cross-check.py` | Math agrees with `pandas-ta` Python library at 6-dec | pandas-ta |
 | 2c. Indicators (ToS) | `dump-indicators.ts` | CSVs ready for manual ToS export-and-diff | ToS (manual) |
 | 3. Decisions | `validate-decisions.ts` | Direction + indicators are pure functions of bars | (snapshot) |
+| 4. Order-sim | `validate-order-sim.ts` | Exit rules (stop/TP/trailing/...) deterministic from bars | (snapshot) |
 
 ---
 
@@ -171,6 +172,41 @@ npx tsx src/scripts/validate/validate-decisions.ts --record 2026-04-23 SPY 15:30
 npx tsx src/scripts/validate/validate-decisions.ts --record 2026-05-01 SPY 11:00  # full-bear
 ```
 
+## Layer 4 — Order-sim determinism
+
+Locks down the order-agent simulation that decides when an entry exits — `simulateOrderAgent` (shared) and `simulateOrderAgentSpy` (SPY-specific). Mirrors all 10 documented exit rules: hard stop, take-profit, profit-reversal, trailing decay, small-gain lock, bad-entry fast-cut, rapid decline, etc. Once a fixture is recorded, replay is fully offline.
+
+```bash
+# One-time: record a fixture (needs Alpaca creds)
+npx tsx src/scripts/validate/validate-order-sim.ts \
+  --record 2026-05-01 SPY 11:00 bullish spy
+# writes ./src/scripts/validate/fixtures/order-sim/spy-SPY-2026-05-01-11-00-bullish.json
+
+# Validate every fixture (offline, run anytime):
+npx tsx src/scripts/validate/validate-order-sim.ts
+#   ✓ spy-SPY-2026-05-01-11-00-bullish.json   STOP 2m -20.00%
+#   ✓ spy-SPY-2026-05-01-11-00-bearish.json   TP   2m +20.38%
+#   ...
+```
+
+A fixture stores `{ticker, date, timeET, direction, variant, entryPrice, atr, recentBars, futureBars, cfg}` and the golden `SimResult` (exit reason / price / hold minutes / pnlPct / peakPnlPct / maxDrawdownPct). Recompute on replay must match at `1e-6`.
+
+**Suggested fixture set** (covers exit-rule paths):
+```bash
+# Hard STOP (entry against trend, bullish over bear day)
+... --record 2026-05-01 SPY 11:00 bullish spy
+# TP hit (entry with strong move)
+... --record 2026-05-01 SPY 11:00 bearish spy
+# TRAILING_DECAY (peak then fade)
+... --record 2026-04-15 SPY 10:30 bullish spy
+# BAD_ENTRY (immediate adverse, never confirmed)
+... --record 2026-04-15 SPY 09:45 bearish spy
+# SMALL_GAIN_LOCK (peak 1-5%, fade near zero)
+... --record 2026-04-23 SPY 10:15 bullish spy
+```
+
+**Variant** (last arg): `spy` uses `simulateOrderAgentSpy` (5x premium floor for $720 stock); `base` uses the shared `simulateOrderAgent`. Record both to lock down both code paths.
+
 ---
 
 ## What this proves end-to-end
@@ -180,11 +216,14 @@ npx tsx src/scripts/validate/validate-decisions.ts --record 2026-05-01 SPY 11:00
 - **Layer 2a pass** ⇒ Every indicator agrees with an independent textbook reference to `1e-9`. The math is correct per canonical formulas.
 - **Layer 2b pass** ⇒ The same indicators also match `pandas-ta` (separate language, separate code, widely used in industry).
 - **Layer 2c (optional) pass** ⇒ ToS chart values also match.
-- **Layer 3 pass** ⇒ The decision pipeline is a pure function of bars. Same input → same output, run after run.
+- **Layer 3 pass** ⇒ The decision pipeline (direction + indicator outputs) is a pure function of bars. Same input → same output, run after run.
+- **Layer 4 pass** ⇒ The exit pipeline (stops, targets, trailing, profit-reversal) is also a pure function of bars + entry. Refactors that claim to be no-ops actually are.
 
 **Together:** the backtest is a deterministic function of public market data, computed correctly per textbook formulas, with both data and math validated against multiple independent third-party witnesses. Disagreements between the backtest's verdict and a trader's expectation are about *strategy*, not *math*.
 
 ## What this does **not** prove
 
 - **Live ↔ backtest parity.** Live can read a partial in-progress bar, persist state across restarts, or hit feed delays. Live parity needs a different track (snapshot replay; see `project_live_backtest_parity` memory).
-- **Strategy correctness.** Whether a given direction call is the right call is a strategy question, not a data/math question. This proof scope ends at "the math agrees with multiple references."
+- **Strategy correctness.** Whether a given direction call is the right call, or whether an exit rule's parameters are correct, is a strategy question. This proof scope ends at "the math is right and the code is deterministic."
+- **`validate-change.ts` self-correctness.** The meta-tool that runs backtests before/after a candidate change is not yet covered (its stash/pop, baseline cache, and verdict logic are still on faith).
+- **Other indicators not in `self-check.ts`** (OBV, TD-sequential, candle patterns, price-structure, market-structure, price-velocity, volume-surge) and the topology pipeline.
