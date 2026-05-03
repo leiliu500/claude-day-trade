@@ -93,6 +93,20 @@ function iwmShouldAllowEntry(ctx: EntryContext): true | string {
       && ctx.confidence < 0.75 && ctx.atr >= 0.40 && ctx.atr < 0.45) {
     return `bearish-trend conf ${ctx.confidence.toFixed(2)} atr ${ctx.atr.toFixed(2)} in [0.40, 0.45)`;
   }
+
+  // v16: bullish-trend 3-pocket compound (safe rules, no small-N month) — see strategies/iwm.ts.
+  if (ctx.direction === 'bullish' && ctx.signalMode === 'trend') {
+    const c = ctx.confidence, a = ctx.atr, s = ctx.strengthScore;
+    if (c >= 0.65 && c < 0.75 && a >= 0.70 && a < 0.85) {
+      return `bullish-trend low-conf high-atr c=${c.toFixed(2)} a=${a.toFixed(2)}`;
+    }
+    if (s >= 70 && s < 80 && c >= 0.85 && c < 0.95) {
+      return `bullish-trend high-strength high-conf s=${s} c=${c.toFixed(2)}`;
+    }
+    if (c >= 0.95 && a >= 0.60 && a < 0.85) {
+      return `bullish-trend extreme-conf mid-atr c=${c.toFixed(2)} a=${a.toFixed(2)}`;
+    }
+  }
   return true;
 }
 

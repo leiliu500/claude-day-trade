@@ -217,6 +217,31 @@ function iwmShouldAllowEntry(ctx: EntryContext): true | string {
     return `bearish-breakout low atr ${ctx.atr.toFixed(2)} < 0.40`;
   }
 
+  // v16: bullish-trend 3-pocket compound (skips small-N month rules from v16b revert).
+  // v16b compound (6 rules, predΔ +0.039) actual Δ+0.066 but tripped 2025-05 -0.158
+  // single-month cap. v16-narrow drops the 3 rules touching 2025-05 (rules B/C/F)
+  // and keeps only the 3 safe rules:
+  //
+  //   A: conf [0.65, 0.75) atr [0.70, 0.85) — low-conf high-atr     n=10 exp -0.500
+  //   D: strength [70, 80) conf [0.85, 0.95) — high-str high-conf   n= 8 exp -0.500
+  //   E: conf >= 0.95 atr [0.60, 0.85) — extreme-conf mid-atr       n=10 (no 2025-05)
+  //
+  // Combined: 28 entries (5A+2B+5C+2D+14F), exp -0.643. Predicted Δexp +0.023.
+  // No 2025-05 OR 2026-05 entries. Worst single-month -0.058 (2025-10), big
+  // winners 2026-03 +0.178, 2026-04 +0.129.
+  if (ctx.direction === 'bullish' && ctx.signalMode === 'trend') {
+    const c = ctx.confidence, a = ctx.atr, s = ctx.strengthScore;
+    if (c >= 0.65 && c < 0.75 && a >= 0.70 && a < 0.85) {
+      return `bullish-trend low-conf high-atr c=${c.toFixed(2)} a=${a.toFixed(2)}`;
+    }
+    if (s >= 70 && s < 80 && c >= 0.85 && c < 0.95) {
+      return `bullish-trend high-strength high-conf s=${s} c=${c.toFixed(2)}`;
+    }
+    if (c >= 0.95 && a >= 0.60 && a < 0.85) {
+      return `bullish-trend extreme-conf mid-atr c=${c.toFixed(2)} a=${a.toFixed(2)}`;
+    }
+  }
+
   // v15: bearish-trend conf<0.75 atr [0.40, 0.45) — narrow low-conf low-atr F-pocket.
   // v14-residual conf × atr fine-grid surfaced this band as a sharp anti-predictive
   // pocket on bearish-trend (mirror to v11 but at low end of confidence):
