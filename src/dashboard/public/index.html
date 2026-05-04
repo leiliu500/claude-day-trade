@@ -88,6 +88,7 @@
     <nav class="tabs" id="tabs-backtest" style="display:none">
       <button class="tab active" data-tab="backtest-chart">Chart</button>
       <button class="tab" data-tab="missed-entries">Missed Entries</button>
+      <button class="tab" data-tab="parity">Parity</button>
     </nav>
 
     <!-- Filter bar (shown only for filterable tabs) -->
@@ -586,6 +587,39 @@
         <div id="me-chart-tooltip" style="position:absolute;background:#161b22;border:1px solid #30363d;border-radius:4px;padding:6px 10px;font-size:11px;color:#c9d1d9;display:none;pointer-events:none;white-space:nowrap;z-index:10"></div>
       </div>
       <div id="me-table-wrap" style="margin:0 24px 24px;overflow-x:auto"></div>
+    </section>
+
+    <!-- ── Live ↔ Backtest Parity Report (6 layers) ── -->
+    <section id="tab-parity" class="tab-content">
+      <div class="bt-controls">
+        <div class="filter-group">
+          <label for="parity-ticker">Ticker</label>
+          <select id="parity-ticker">
+            <option value="SPY">SPY</option>
+            <option value="QQQ">QQQ</option>
+            <option value="IWM">IWM</option>
+            <option value="DIA">DIA</option>
+            <option value="AAPL">AAPL</option>
+            <option value="MSFT">MSFT</option>
+            <option value="NVDA">NVDA</option>
+            <option value="TSLA">TSLA</option>
+          </select>
+        </div>
+        <div class="filter-group">
+          <label for="parity-date">Date</label>
+          <input type="date" id="parity-date">
+        </div>
+        <div class="filter-group" style="display:flex;align-items:center;gap:6px">
+          <input type="checkbox" id="parity-skip-bt">
+          <label for="parity-skip-bt" style="margin:0">Skip backtest (layers 1–3 only, ~5s)</label>
+        </div>
+        <button class="btn-run-backtest" id="btn-run-parity" onclick="runParity()">Run Parity Check</button>
+        <span id="parity-status" class="bt-status"></span>
+      </div>
+
+      <div id="parity-overall" style="margin:0 24px 12px;font-size:13px"></div>
+      <div id="parity-cards" style="margin:0 24px 24px;display:grid;grid-template-columns:repeat(auto-fit,minmax(360px,1fr));gap:12px"></div>
+      <div id="parity-detail" style="margin:0 24px 24px"></div>
     </section>
 
     <section id="tab-database" class="tab-content">

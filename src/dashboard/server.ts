@@ -1459,6 +1459,41 @@ export function startDashboard(port: number): void {
     }
   });
 
+  // ── Parity check (live ↔ backtest, 6 layers) ────────────────────────────
+  // GET /api/parity?date=YYYY-MM-DD&ticker=SPY[&skipBacktest=1]
+  // Runs src/scripts/parity-report.ts and returns the structured JSON report.
+  app.get('/api/parity', async (req, res) => {
+    try {
+      const dateRaw = req.query['date'];
+      const tickerRaw = req.query['ticker'];
+      const date = typeof dateRaw === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(dateRaw) ? dateRaw : null;
+      const ticker = typeof tickerRaw === 'string' && /^[A-Z]{1,10}$/.test(tickerRaw) ? tickerRaw : null;
+      if (!date) { res.status(400).json({ error: 'date param required (YYYY-MM-DD)' }); return; }
+      if (!ticker) { res.status(400).json({ error: 'ticker param required' }); return; }
+      const skipBt = req.query['skipBacktest'] === '1' || req.query['skipBacktest'] === 'true';
+
+      const { execFile } = await import('child_process');
+      const { promisify } = await import('util');
+      const execFileAsync = promisify(execFile);
+      const scriptPath = join(__dirname, '..', 'scripts', 'parity-report.js');
+      const args = [scriptPath, date, ticker, '--json'];
+      if (skipBt) args.push('--skip-backtest');
+
+      const { stdout } = await execFileAsync(process.execPath, args, {
+        timeout: skipBt ? 60_000 : 240_000,
+        maxBuffer: 100 * 1024 * 1024,
+        env: { ...process.env },
+      });
+      const m = stdout.match(/__JSON_START__(.*?)__JSON_END__/s);
+      if (!m) { res.status(500).json({ error: 'parity-report produced no JSON', stdout: stdout.slice(0, 500) }); return; }
+      const report = JSON.parse(m[1]!);
+      res.json({ ok: true, report });
+    } catch (err: any) {
+      const msg = err.stderr ? err.stderr.slice(0, 500) : err.message;
+      res.status(500).json({ error: msg });
+    }
+  });
+
   // SPA fallback
   app.get('*', (_req, res) => {
     res.sendFile(join(__dirname, 'public/index.html'));

@@ -89,7 +89,7 @@ const PAGE_TABS = {
   signals:     ['signals', 'decisions', 'analysis', 'dispatches'],
   performance: ['evaluations', 'entry-analysis', 'agent-analysis'],
   system:      ['scheduler', 'activity', 'database'],
-  backtest:    ['backtest-chart'],
+  backtest:    ['backtest-chart', 'missed-entries', 'parity'],
 };
 let currentPage = 'trading';
 
@@ -2081,6 +2081,7 @@ function loadTab(tab) {
     case 'database':        /* static panel, nothing to load */ break;
     case 'backtest-chart':  /* loaded on demand via runBacktest() */ break;
     case 'missed-entries':  /* loaded on demand via runMissedEntries() */ break;
+    case 'parity':          /* loaded on demand via runParity() */ break;
   }
 }
 
@@ -2515,6 +2516,215 @@ function renderMissedChart(data) {
     }
   };
   canvas.onmouseleave = () => { tip.style.display = 'none'; };
+}
+
+// ── Live ↔ Backtest Parity Report ──────────────────────────────────────────
+// Runs src/scripts/parity-report.ts via /api/parity, renders 6-layer cards.
+
+(function initParityDate() {
+  const dateInput = document.getElementById('parity-date');
+  if (dateInput) dateInput.value = new Date().toISOString().slice(0, 10);
+})();
+
+const PARITY_LAYER_LABELS = {
+  data:       { name: 'Data',       hint: 'Live recorded bars vs Alpaca REST source' },
+  indicators: { name: 'Indicators', hint: 'Live recorded DMI vs computeDMI on REST bars' },
+  direction:  { name: 'Direction',  hint: 'detectDirection() walk over recorded bars' },
+  confidence: { name: 'Confidence', hint: 'Live snapshot confidence vs backtest tick (±2 min)' },
+  decision:   { name: 'Decision',   hint: 'Gate alignment: PASSED / STAGE-1 / WEAKENING / OVERRIDE / WAIT' },
+  entry:      { name: 'Entry',      hint: 'Confirmed entries: matched / bt-only / live-only (±3 min)' },
+};
+
+async function runParity() {
+  const ticker = document.getElementById('parity-ticker').value;
+  const date = document.getElementById('parity-date').value;
+  if (!date) { alert('Select a date'); return; }
+  const skipBt = document.getElementById('parity-skip-bt').checked;
+
+  const btn = document.getElementById('btn-run-parity');
+  const status = document.getElementById('parity-status');
+  const overall = document.getElementById('parity-overall');
+  const cards = document.getElementById('parity-cards');
+  const detail = document.getElementById('parity-detail');
+  btn.disabled = true;
+  status.textContent = skipBt ? 'Running (layers 1–3, ~5s)…' : 'Running (full, ~30–90s)…';
+  overall.innerHTML = '';
+  cards.innerHTML = '';
+  detail.innerHTML = '';
+
+  try {
+    const params = new URLSearchParams({ ticker, date });
+    if (skipBt) params.set('skipBacktest', '1');
+    const resp = await fetch(`${API}/api/parity?${params.toString()}`);
+    const data = await resp.json();
+    if (!resp.ok) throw new Error(data.error || 'Request failed');
+    renderParity(data.report, overall, cards, detail);
+    const r = data.report;
+    status.textContent = `${r.ticker} ${r.date} — ${r.overallPass ? '✓ PARITY OK' : '✗ DIVERGENCE'} (snapshots=${r.liveSnapshots}, decisions=${r.liveDecisions})`;
+  } catch (err) {
+    status.textContent = 'Error: ' + err.message;
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+function renderParity(report, overallEl, cardsEl, detailEl) {
+  const overallColor = report.overallPass ? '#3fb950' : '#f85149';
+  const skipBadge = report.skippedBacktest ? ' <span style="color:#bb8009">[backtest skipped]</span>' : '';
+  overallEl.innerHTML = `
+    <div style="font-size:14px">
+      <span style="color:${overallColor};font-weight:700">${report.overallPass ? '✓ PARITY OK' : '✗ DIVERGENCE DETECTED'}</span>
+      <span style="color:#8b949e"> — ${report.ticker} ${report.date} • ${report.liveSnapshots} snapshots / ${report.liveDecisions} decisions${skipBadge}</span>
+    </div>`;
+
+  const order = ['data', 'indicators', 'direction', 'confidence', 'decision', 'entry'];
+  cardsEl.innerHTML = order.map(k => {
+    const L = report.layers[k];
+    const meta = PARITY_LAYER_LABELS[k];
+    const passColor = L.pass ? '#3fb950' : '#f85149';
+    const passIcon = L.pass ? '✓' : '✗';
+    return `
+      <div style="background:#0d1117;border:1px solid #21262d;border-left:3px solid ${passColor};border-radius:6px;padding:12px 14px">
+        <div style="display:flex;justify-content:space-between;align-items:center">
+          <div style="font-weight:600;font-size:13px">${meta.name}</div>
+          <div style="color:${passColor};font-weight:700">${passIcon}</div>
+        </div>
+        <div style="color:#8b949e;font-size:11px;margin-top:2px">${meta.hint}</div>
+        <div style="color:#c9d1d9;font-size:12px;margin-top:8px;font-family:ui-monospace,monospace">${escapeHtml(L.summary)}</div>
+        <div style="margin-top:8px"><a href="#" style="color:#58a6ff;font-size:11px" data-parity-layer="${k}">show details ▾</a></div>
+      </div>`;
+  }).join('');
+
+  cardsEl.querySelectorAll('a[data-parity-layer]').forEach(a => {
+    a.addEventListener('click', (ev) => {
+      ev.preventDefault();
+      const layer = a.getAttribute('data-parity-layer');
+      detailEl.innerHTML = renderParityDetail(layer, report.layers[layer]);
+      detailEl.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    });
+  });
+}
+
+function renderParityDetail(layer, L) {
+  const meta = PARITY_LAYER_LABELS[layer];
+  const header = `<h3 style="margin:0 0 8px;color:#c9d1d9;font-size:14px">${meta.name} — details</h3>
+                  <div style="color:#8b949e;font-size:12px;margin-bottom:8px">${escapeHtml(L.summary)}</div>`;
+  const d = L.details || {};
+
+  if (layer === 'data') {
+    if (!d.perTf || d.perTf.length === 0) return header + '<div style="color:#6e7681">no tf samples</div>';
+    const rows = d.perTf.map(t => `
+      <tr>
+        <td>${t.label} (${t.timeframe})</td>
+        <td style="font-family:monospace">${t.matching}/${t.liveCount}</td>
+        <td style="font-family:monospace">${t.presenceMisses}</td>
+        <td style="font-family:monospace">${t.restOnly}</td>
+        <td style="font-family:monospace">${t.ohlcMisses}</td>
+        <td style="font-family:monospace">${t.worstDelta.toFixed(4)}</td>
+      </tr>`).join('');
+    return header + parityTable(['TF', 'matching', 'presenceMisses', 'restOnly', 'ohlcMisses', 'worstΔ'], rows);
+  }
+  if (layer === 'indicators') {
+    if (!d.perSnapshot || d.perSnapshot.length === 0) return header + '<div style="color:#6e7681">no snapshots</div>';
+    const rows = d.perSnapshot.flatMap(s => s.perTf.map(t => `
+      <tr>
+        <td style="font-family:monospace">${s.tickET}</td>
+        <td>${t.label}</td>
+        <td style="font-family:monospace">${t.liveDmi.trend} adx=${t.liveDmi.adx.toFixed(2)} +DI=${t.liveDmi.plusDI.toFixed(2)} -DI=${t.liveDmi.minusDI.toFixed(2)}</td>
+        <td style="font-family:monospace">${t.restDmi.trend} adx=${t.restDmi.adx.toFixed(2)} +DI=${t.restDmi.plusDI.toFixed(2)} -DI=${t.restDmi.minusDI.toFixed(2)}</td>
+        <td style="color:${t.dmiMatch ? '#3fb950' : '#f85149'};font-weight:700">${t.dmiMatch ? '✓' : '✗'}</td>
+      </tr>`)).join('');
+    return header + parityTable(['Tick ET', 'TF', 'Live DMI', 'Recompute (REST)', 'Match'], rows);
+  }
+  if (layer === 'direction') {
+    const mm = (d.walkMismatches || []).map(m => `
+      <tr>
+        <td style="font-family:monospace">${m.tickET}</td>
+        <td style="color:${dirColor(m.live)}">${m.live}</td>
+        <td style="color:${dirColor(m.replay)}">${m.replay}</td>
+      </tr>`).join('');
+    const counter = `<div style="color:#c9d1d9;font-size:12px;margin-bottom:8px">${d.walkMatches}/${d.walkTotal} matched</div>`;
+    return header + counter + (mm ? parityTable(['Tick ET', 'Live', 'Replay'], mm) : '<div style="color:#3fb950">no mismatches</div>');
+  }
+  if (layer === 'confidence') {
+    if (!d.samples || d.samples.length === 0) return header + '<div style="color:#6e7681">no samples</div>';
+    const meta2 = `<div style="color:#c9d1d9;font-size:12px;margin-bottom:8px">avg gap ${(d.avgGap*100).toFixed(2)}pp, max |gap| ${(d.maxGap*100).toFixed(2)}pp · samples=${d.totalSamples}</div>`;
+    const rows = d.samples.map(s => `
+      <tr>
+        <td style="font-family:monospace">${s.tickET}</td>
+        <td style="color:${dirColor(s.direction)}">${s.direction}</td>
+        <td>${s.mode}</td>
+        <td style="font-family:monospace">${(s.liveConf*100).toFixed(2)}%</td>
+        <td style="font-family:monospace">${(s.btConf*100).toFixed(2)}%</td>
+        <td style="font-family:monospace;color:${Math.abs(s.gap) >= 0.05 ? '#f85149' : '#c9d1d9'}">${(s.gap*100 >= 0 ? '+' : '')}${(s.gap*100).toFixed(2)}pp</td>
+      </tr>`).join('');
+    return header + meta2 + parityTable(['Tick ET', 'Dir', 'Mode', 'Live conf', 'BT conf', 'Gap'], rows);
+  }
+  if (layer === 'decision') {
+    const summary = d.live && d.bt
+      ? `<div style="color:#c9d1d9;font-size:12px;margin-bottom:8px">live entries=${d.live.entries ?? 0} · bt confirmed=${d.bt.confirmed ?? 0} blocked=${d.bt.blocked ?? 0} filtered=${d.bt.filtered ?? 0}</div>`
+      : '';
+    if (!d.rows || d.rows.length === 0) return header + summary + '<div style="color:#6e7681">no rows</div>';
+    const rows = d.rows.map(r => `
+      <tr>
+        <td style="font-family:monospace">${r.tickET}</td>
+        <td style="color:${dirColor(r.direction)}">${r.direction}</td>
+        <td style="font-family:monospace">${r.btGate}</td>
+        <td style="font-family:monospace;color:${r.liveGate ? '#c9d1d9' : '#6e7681'}">${r.liveGate ?? '— no live'}</td>
+        <td style="color:${r.agree ? '#3fb950' : (r.liveGate ? '#f85149' : '#6e7681')};font-weight:700">${r.agree ? '✓' : (r.liveGate ? '✗' : '—')}</td>
+      </tr>`).join('');
+    return header + summary + parityTable(['Tick ET', 'Dir', 'BT gate', 'Live gate', 'Agree'], rows);
+  }
+  if (layer === 'entry') {
+    const sec = (label, items, color) => items.length === 0 ? '' : `
+      <div style="margin-top:8px">
+        <div style="color:${color};font-weight:600;font-size:12px">${label} (${items.length})</div>
+        <table class="data-table" style="width:100%;margin-top:4px;border-collapse:collapse;font-size:12px">
+          <thead><tr style="background:#161b22;color:#8b949e">
+            <th style="padding:6px;text-align:left">Time ET</th>
+            <th style="padding:6px;text-align:left">Dir</th>
+            <th style="padding:6px;text-align:left">Conf</th>
+            <th style="padding:6px;text-align:left">Extra</th>
+          </tr></thead>
+          <tbody>${items.map(renderEntryRow).join('')}</tbody>
+        </table>
+      </div>`;
+    function renderEntryRow(it) {
+      if (it.live && it.bt) {
+        return `<tr>
+          <td style="font-family:monospace">live ${it.live.timeET} / bt ${it.bt.timeET}</td>
+          <td style="color:${dirColor(it.bt.direction)}">${it.bt.direction}</td>
+          <td style="font-family:monospace">live ${(it.live.confidence*100).toFixed(1)}% / bt ${(it.bt.confidence*100).toFixed(1)}%</td>
+          <td style="font-family:monospace">Δt=${it.diffMin}m, Δconf=${(it.confGap*100 >= 0 ? '+' : '')}${(it.confGap*100).toFixed(1)}pp</td>
+        </tr>`;
+      }
+      return `<tr>
+        <td style="font-family:monospace">${it.timeET}</td>
+        <td style="color:${dirColor(it.direction)}">${it.direction}</td>
+        <td style="font-family:monospace">${(it.confidence*100).toFixed(1)}%</td>
+        <td style="font-family:monospace">${it.mode || ''} ${it.grade ? 'G'+it.grade : ''}</td>
+      </tr>`;
+    }
+    return header
+      + sec('matched', d.matched || [], '#3fb950')
+      + sec('bt-only (live missed)', d.btOnly || [], '#d29922')
+      + sec('live-only (bt didn\'t confirm)', d.liveOnly || [], '#bb8009');
+  }
+  return header + '<pre style="color:#8b949e">' + escapeHtml(JSON.stringify(d, null, 2)).slice(0, 4000) + '</pre>';
+}
+
+function parityTable(headers, bodyRows) {
+  if (!bodyRows) return '<div style="color:#6e7681">no rows</div>';
+  return `
+    <table class="data-table" style="width:100%;border-collapse:collapse;font-size:12px">
+      <thead><tr style="background:#161b22;color:#8b949e">${headers.map(h => `<th style="padding:6px;text-align:left">${h}</th>`).join('')}</tr></thead>
+      <tbody>${bodyRows}</tbody>
+    </table>`;
+}
+function dirColor(d) {
+  if (d === 'bullish' || d === 'long') return '#3fb950';
+  if (d === 'bearish' || d === 'short') return '#f85149';
+  return '#8b949e';
 }
 
 // ── Boot ──────────────────────────────────────────────────────────────────────
