@@ -46,6 +46,15 @@ export interface TickerConfig {
   maxRiskPct: number;
   /** Max option contracts per entry */
   maxContracts: number;
+  /**
+   * Reverse the conviction-tier → multiplier mapping:
+   *   default    → REG=1.0× SIZ=1.25× MAX=1.5×
+   *   when true  → REG=1.5× SIZ=1.25× MAX=1.0×
+   * Tier label + safety-gate semantics are unchanged. Enable when the corpus
+   * shows confidence among confirmed entries is anti-predictive (e.g. SPY/DIA
+   * 16mo: MAX-tier AB% is 26-34% vs REG-tier 43-56%).
+   */
+  flipConvictionMultiplier?: boolean;
   /** Max option spread to accept (fraction, e.g. 0.02 = 2%) */
   maxSpreadPct: number;
   /** Minimum reward:risk ratio */
@@ -99,6 +108,8 @@ const TICKER_OVERRIDES: Record<string, Partial<Omit<TickerConfig, 'ticker' | 'st
     // Entry window: block first 30 min after open + last 30 min before close
     entryWindowStartMin: 30,
     entryWindowEndMin: 360,
+
+    flipConvictionMultiplier: true,
   },
   QQQ: {
     // Enabled 2026-04-23 after 2026-04-22 filter-mining session: 15mo baseline
@@ -130,6 +141,8 @@ const TICKER_OVERRIDES: Record<string, Partial<Omit<TickerConfig, 'ticker' | 'st
 
     entryWindowStartMin: 30,
     entryWindowEndMin: 360,
+
+    flipConvictionMultiplier: true,
   },
   NVDA: {
     // Tuned Q4 2025 + Q1 2026: 6B/1C/2F (67% good)

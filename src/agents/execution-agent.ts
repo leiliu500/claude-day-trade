@@ -54,7 +54,9 @@ function computeSizing(
     convictionScore >= 4 ? 'SIZABLE' :
     'REGULAR';
 
-  const multiplier      = tier === 'MAX_CONVICTION' ? 1.5 : tier === 'SIZABLE' ? 1.25 : 1;
+  const multiplier = tickerCfg?.flipConvictionMultiplier
+    ? (tier === 'MAX_CONVICTION' ? 1.0 : tier === 'SIZABLE' ? 1.25 : 1.5)
+    : (tier === 'MAX_CONVICTION' ? 1.5 : tier === 'SIZABLE' ? 1.25 : 1);
   const maxRiskPct = tickerCfg?.maxRiskPct ?? config.MAX_RISK_PCT;
   const maxContracts = tickerCfg?.maxContracts ?? config.MAX_CONTRACTS;
   const baseRisk        = accountEquity * maxRiskPct;
