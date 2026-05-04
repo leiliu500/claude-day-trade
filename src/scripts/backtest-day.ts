@@ -1338,14 +1338,11 @@ async function main() {
   // position would have exited. This matches live behavior where the OrderAgent holds
   // the position and subsequent signals become CONFIRM_HOLD, not NEW_ENTRY.
   //
-  // BUT — high-conviction bypass paths (strong_signal/high_conviction/phase_change)
-  // mirror live AI decisions to fire NEW_ENTRY despite a recently-closed position.
-  // Live's OrderAgent uses option-premium velocity (sub-bar timing) for fast exits
-  // that backtest's bar-based sim can't reproduce, so the sim's positionExitTs is
-  // often too generous. When entry-gate explicitly identified a bypass, trust it.
+  // No bypass can open a second same-ticker position while the simulated position
+  // is still active. This mirrors trading-pipeline.ts, where NEW_ENTRY is blocked
+  // whenever context.openPositions already has a position for the ticker; scale-ins
+  // must come through ADD_POSITION, not another fresh entry.
   const isConfirmed = (e: EntryRecord) => e.gateResult === 'PASSED' || e.gateResult === 'HIGH_CONV_OVERRIDE' || e.gateResult === 'PHASE_CHANGE_OVERRIDE';
-  const isHighConvBypass = (e: EntryRecord) =>
-    e.entryBypass === 'strong_signal' || e.entryBypass === 'high_conviction' || e.entryBypass === 'phase_change';
   // Track when the current simulated position exits (position-aware cooldown)
   let positionExitTs = 0;
   const dedupedEntries: EntryRecord[] = [];
@@ -1365,9 +1362,10 @@ async function main() {
         continue;
       }
     }
-    // Position-aware cooldown: skip while sim position is still open, UNLESS the
-    // entry came via a high-conviction bypass path (live AI would fire here too).
-    if (isConfirmed(entry) && positionExitTs > 0 && currTs < positionExitTs && !isHighConvBypass(entry)) {
+    // Position-aware cooldown: skip while sim position is still open. Live would
+    // manage the active position through its OrderAgent instead of opening another
+    // NEW_ENTRY on the same ticker.
+    if (isConfirmed(entry) && positionExitTs > 0 && currTs < positionExitTs) {
       continue; // position still open — live would send CONFIRM_HOLD, not NEW_ENTRY
     }
     if (isConfirmed(entry)) {

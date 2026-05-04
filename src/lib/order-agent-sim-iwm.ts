@@ -84,6 +84,12 @@ export function simulateOrderAgentIwm(
     const drawdown = ((highestPrice - currentPremium) / highestPrice) * 100;
     if (drawdown > maxDrawdownPct_) maxDrawdownPct_ = drawdown;
 
+    // Live OrderAgent checks the ratcheted stop before profit-decay and
+    // bad-entry exits on every monitoring tick. Honor the previously computed
+    // stop here too; otherwise replay can report a large negative decay/cut
+    // after the trade already earned a protective floor.
+    if (i >= 3 && currentPremium <= currentStop) return mkResult(i, 'STOP', currentStop);
+
     if (bestPremium >= tpTarget) return mkResult(i, 'TP', tpTarget);
     if (consecutiveDeclines >= 9 && currentPnl <= -6) return mkResult(i, 'RAPID_DECLINE', currentPremium);
 
